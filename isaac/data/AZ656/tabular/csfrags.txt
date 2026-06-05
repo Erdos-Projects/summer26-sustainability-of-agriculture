@@ -1,0 +1,3 @@
+55|60|65||||"Mixed rock fragments"|2|40|75|"Nonflat"|"Rounded"|"Indurated"|"26376276"|"5903392"
+10|15|20||||"Mixed rock fragments"|75|150|250|"Nonflat"|"Rounded"|"Indurated"|"26376276"|"5903393"
+3|9|15|||||250|425|600|"Nonflat"|||"26376235"|"5903391"

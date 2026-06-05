@@ -1,0 +1,4 @@
+"Very friable"|"Soft"||||"Slightly sticky"|"Slightly plastic"|Yes|"78687823"|"10183213"
+"Very friable"|"Soft"||||"Slightly sticky"|"Slightly plastic"|Yes|"78687824"|"10183214"
+"Very friable"|"Soft"||||"Slightly sticky"|"Slightly plastic"|Yes|"78687825"|"10183215"
+"Very friable"|"Soft"||||"Slightly sticky"|"Nonplastic"|Yes|"78687826"|"10183216"

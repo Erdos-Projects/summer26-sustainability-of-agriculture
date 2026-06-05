@@ -1,0 +1,4 @@
+85|90|95||||"Basalt fragments"|75|150|250|"Nonflat"|||"26376177"|"5903388"
+85|90|95||||"Basalt fragments"|2|40|75|"Nonflat"|||"26376169"|"5903387"
+55|60|65||||"Mixed rock fragments"|2|40|75|"Nonflat"|"Rounded"|"Indurated"|"26376201"|"5903389"
+10|15|20||||"Mixed rock fragments"|75|150|250|"Nonflat"|"Rounded"|"Indurated"|"26376201"|"5903390"

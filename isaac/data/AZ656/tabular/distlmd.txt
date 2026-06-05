@@ -1,0 +1,5 @@
+"Non-MLRA Soil Survey Area"|"AZ656"|"Colorado River Indian Reservation, Parts of La Paz County, Arizona, and Riverside and San Bernardino Counties, California"||06/01/1983 00:00:00|"fully certified"|08/26/2025 23:19:11|"1/12/2010 -- Edits to all AASHO and Unified groups made. Due to interpretation rewrite only one group could be represenative, or survey area would not upload to Datamart. KA
+09/17/2003  export for SSURGO 2 completed as requested by State Soil Scientist.
+7/15/2006 -- Data elaments updated for NB-430-5-7.
+02/12/2007 -- New download preformed due to more edits to the database, a nontechnical soils descriptions being run for all the components. Corrections and updates to the Ecological Sites, for many of the surveys.
+9/9/2008  -- New data set uploaded to Datamart, minor data changes include setting undifferentiated group component percents to zero ""0"" so soil data viewer would rate mapunits, and other very minor changes."|"10267"|"89726"|"89627"
