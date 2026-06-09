@@ -1,9 +1,0 @@
-"Non-MLRA Soil Survey Area"|"CA011"|"Colusa County, California"||05/01/1999 00:00:00|"certified, major components"|08/29/2025 22:47:50|"The SSS certified the data population for all map units, and concurred with correlation of all projects mentioned, as they were documented in Soil Survey Area Legend(s) and in the Project Correlation table.
-This dataset also contains the following changes:
-A complete set of interpretations have been run. New and/or revised interpretations with this export are:
-	FOR - Windthrow Hazard (New for FY20)
-	FOR - Mechanical Planting Suitability 
-	FOR - Mechanical Site Preparation (Deep) 
-	FOR - Mechanical Site Preparation (Surface) 
-	FOR - Potential Erosion Hazard (Off-Road/Off-Trail) 
-"|"14076"|"90912"|"90813"

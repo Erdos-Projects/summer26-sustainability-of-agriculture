@@ -1,6 +1,0 @@
-"Non-MLRA Soil Survey Area"|"AZ649"|"Yuma-Wellton Area, Parts of Yuma County, Arizona and Imperial County, California"||03/01/1978 00:00:00|"fully certified"|08/26/2025 23:19:11|"1/12/2010 -- Edits to all AASHO and Unified groups made. Due to interpretation rewrite only one group could be represenative, or survey area would not upload to Datamart. KA
-9/12/2008  -- New data set uploaded to Datamart, minor data changes include setting undifferentiated group component percents to zero ""0"" so soil data viewer would rate mapunits, and other very minor changes.
-5/2007 -- WEG for component Vint in map unit 32 changed for 5 to 2, as it should have been when published.
-7/16/2002 -- review completed for recertification, and downloaded at request of SSS
-2/2/2006 -- All data population completed for National Bulletin 430-5-7
-02/12/2007 -- New download preformed due to more edits to the database, a nontechnical soils descriptions being run for all the components. Corrections and updates to the Ecological Sites, for many of the surveys."|"10263"|"89725"|"89626"

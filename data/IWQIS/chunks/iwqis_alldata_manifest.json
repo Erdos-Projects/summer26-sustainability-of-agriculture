@@ -1,0 +1,348 @@
+{
+  "original_filename": "iwqis_alldata.csv",
+  "total_rows": 42394345,
+  "chunk_size": 500000,
+  "num_chunks": 85,
+  "chunks": [
+    {
+      "filename": "iwqis_alldata_chunk0.csv",
+      "size_bytes": 37557474
+    },
+    {
+      "filename": "iwqis_alldata_chunk1.csv",
+      "size_bytes": 43152852
+    },
+    {
+      "filename": "iwqis_alldata_chunk2.csv",
+      "size_bytes": 38047649
+    },
+    {
+      "filename": "iwqis_alldata_chunk3.csv",
+      "size_bytes": 35099336
+    },
+    {
+      "filename": "iwqis_alldata_chunk4.csv",
+      "size_bytes": 48636543
+    },
+    {
+      "filename": "iwqis_alldata_chunk5.csv",
+      "size_bytes": 32826400
+    },
+    {
+      "filename": "iwqis_alldata_chunk6.csv",
+      "size_bytes": 37125402
+    },
+    {
+      "filename": "iwqis_alldata_chunk7.csv",
+      "size_bytes": 43492749
+    },
+    {
+      "filename": "iwqis_alldata_chunk8.csv",
+      "size_bytes": 39915830
+    },
+    {
+      "filename": "iwqis_alldata_chunk9.csv",
+      "size_bytes": 42398874
+    },
+    {
+      "filename": "iwqis_alldata_chunk10.csv",
+      "size_bytes": 48092500
+    },
+    {
+      "filename": "iwqis_alldata_chunk11.csv",
+      "size_bytes": 46280247
+    },
+    {
+      "filename": "iwqis_alldata_chunk12.csv",
+      "size_bytes": 44140417
+    },
+    {
+      "filename": "iwqis_alldata_chunk13.csv",
+      "size_bytes": 38466554
+    },
+    {
+      "filename": "iwqis_alldata_chunk14.csv",
+      "size_bytes": 44350893
+    },
+    {
+      "filename": "iwqis_alldata_chunk15.csv",
+      "size_bytes": 46193641
+    },
+    {
+      "filename": "iwqis_alldata_chunk16.csv",
+      "size_bytes": 47275997
+    },
+    {
+      "filename": "iwqis_alldata_chunk17.csv",
+      "size_bytes": 45404553
+    },
+    {
+      "filename": "iwqis_alldata_chunk18.csv",
+      "size_bytes": 45168661
+    },
+    {
+      "filename": "iwqis_alldata_chunk19.csv",
+      "size_bytes": 45337454
+    },
+    {
+      "filename": "iwqis_alldata_chunk20.csv",
+      "size_bytes": 46209293
+    },
+    {
+      "filename": "iwqis_alldata_chunk21.csv",
+      "size_bytes": 46007803
+    },
+    {
+      "filename": "iwqis_alldata_chunk22.csv",
+      "size_bytes": 49730832
+    },
+    {
+      "filename": "iwqis_alldata_chunk23.csv",
+      "size_bytes": 49764005
+    },
+    {
+      "filename": "iwqis_alldata_chunk24.csv",
+      "size_bytes": 53619204
+    },
+    {
+      "filename": "iwqis_alldata_chunk25.csv",
+      "size_bytes": 45062598
+    },
+    {
+      "filename": "iwqis_alldata_chunk26.csv",
+      "size_bytes": 47129952
+    },
+    {
+      "filename": "iwqis_alldata_chunk27.csv",
+      "size_bytes": 47494188
+    },
+    {
+      "filename": "iwqis_alldata_chunk28.csv",
+      "size_bytes": 49016601
+    },
+    {
+      "filename": "iwqis_alldata_chunk29.csv",
+      "size_bytes": 45381134
+    },
+    {
+      "filename": "iwqis_alldata_chunk30.csv",
+      "size_bytes": 33922097
+    },
+    {
+      "filename": "iwqis_alldata_chunk31.csv",
+      "size_bytes": 38682631
+    },
+    {
+      "filename": "iwqis_alldata_chunk32.csv",
+      "size_bytes": 35641922
+    },
+    {
+      "filename": "iwqis_alldata_chunk33.csv",
+      "size_bytes": 32797277
+    },
+    {
+      "filename": "iwqis_alldata_chunk34.csv",
+      "size_bytes": 40171844
+    },
+    {
+      "filename": "iwqis_alldata_chunk35.csv",
+      "size_bytes": 38155237
+    },
+    {
+      "filename": "iwqis_alldata_chunk36.csv",
+      "size_bytes": 32753659
+    },
+    {
+      "filename": "iwqis_alldata_chunk37.csv",
+      "size_bytes": 37027541
+    },
+    {
+      "filename": "iwqis_alldata_chunk38.csv",
+      "size_bytes": 32685847
+    },
+    {
+      "filename": "iwqis_alldata_chunk39.csv",
+      "size_bytes": 32623282
+    },
+    {
+      "filename": "iwqis_alldata_chunk40.csv",
+      "size_bytes": 40704620
+    },
+    {
+      "filename": "iwqis_alldata_chunk41.csv",
+      "size_bytes": 35879564
+    },
+    {
+      "filename": "iwqis_alldata_chunk42.csv",
+      "size_bytes": 43832866
+    },
+    {
+      "filename": "iwqis_alldata_chunk43.csv",
+      "size_bytes": 33817868
+    },
+    {
+      "filename": "iwqis_alldata_chunk44.csv",
+      "size_bytes": 32844967
+    },
+    {
+      "filename": "iwqis_alldata_chunk45.csv",
+      "size_bytes": 33059055
+    },
+    {
+      "filename": "iwqis_alldata_chunk46.csv",
+      "size_bytes": 33134975
+    },
+    {
+      "filename": "iwqis_alldata_chunk47.csv",
+      "size_bytes": 32923072
+    },
+    {
+      "filename": "iwqis_alldata_chunk48.csv",
+      "size_bytes": 32828986
+    },
+    {
+      "filename": "iwqis_alldata_chunk49.csv",
+      "size_bytes": 33027692
+    },
+    {
+      "filename": "iwqis_alldata_chunk50.csv",
+      "size_bytes": 34638353
+    },
+    {
+      "filename": "iwqis_alldata_chunk51.csv",
+      "size_bytes": 32996593
+    },
+    {
+      "filename": "iwqis_alldata_chunk52.csv",
+      "size_bytes": 33046451
+    },
+    {
+      "filename": "iwqis_alldata_chunk53.csv",
+      "size_bytes": 33150059
+    },
+    {
+      "filename": "iwqis_alldata_chunk54.csv",
+      "size_bytes": 36675444
+    },
+    {
+      "filename": "iwqis_alldata_chunk55.csv",
+      "size_bytes": 41401797
+    },
+    {
+      "filename": "iwqis_alldata_chunk56.csv",
+      "size_bytes": 39852568
+    },
+    {
+      "filename": "iwqis_alldata_chunk57.csv",
+      "size_bytes": 40768256
+    },
+    {
+      "filename": "iwqis_alldata_chunk58.csv",
+      "size_bytes": 44211620
+    },
+    {
+      "filename": "iwqis_alldata_chunk59.csv",
+      "size_bytes": 43504734
+    },
+    {
+      "filename": "iwqis_alldata_chunk60.csv",
+      "size_bytes": 45836500
+    },
+    {
+      "filename": "iwqis_alldata_chunk61.csv",
+      "size_bytes": 38940727
+    },
+    {
+      "filename": "iwqis_alldata_chunk62.csv",
+      "size_bytes": 37902578
+    },
+    {
+      "filename": "iwqis_alldata_chunk63.csv",
+      "size_bytes": 38950013
+    },
+    {
+      "filename": "iwqis_alldata_chunk64.csv",
+      "size_bytes": 39029952
+    },
+    {
+      "filename": "iwqis_alldata_chunk65.csv",
+      "size_bytes": 34411038
+    },
+    {
+      "filename": "iwqis_alldata_chunk66.csv",
+      "size_bytes": 36780399
+    },
+    {
+      "filename": "iwqis_alldata_chunk67.csv",
+      "size_bytes": 32485557
+    },
+    {
+      "filename": "iwqis_alldata_chunk68.csv",
+      "size_bytes": 35854714
+    },
+    {
+      "filename": "iwqis_alldata_chunk69.csv",
+      "size_bytes": 42760574
+    },
+    {
+      "filename": "iwqis_alldata_chunk70.csv",
+      "size_bytes": 44923167
+    },
+    {
+      "filename": "iwqis_alldata_chunk71.csv",
+      "size_bytes": 40158693
+    },
+    {
+      "filename": "iwqis_alldata_chunk72.csv",
+      "size_bytes": 32882883
+    },
+    {
+      "filename": "iwqis_alldata_chunk73.csv",
+      "size_bytes": 37535563
+    },
+    {
+      "filename": "iwqis_alldata_chunk74.csv",
+      "size_bytes": 41027558
+    },
+    {
+      "filename": "iwqis_alldata_chunk75.csv",
+      "size_bytes": 41079346
+    },
+    {
+      "filename": "iwqis_alldata_chunk76.csv",
+      "size_bytes": 34126298
+    },
+    {
+      "filename": "iwqis_alldata_chunk77.csv",
+      "size_bytes": 32334319
+    },
+    {
+      "filename": "iwqis_alldata_chunk78.csv",
+      "size_bytes": 35348462
+    },
+    {
+      "filename": "iwqis_alldata_chunk79.csv",
+      "size_bytes": 37089252
+    },
+    {
+      "filename": "iwqis_alldata_chunk80.csv",
+      "size_bytes": 43996329
+    },
+    {
+      "filename": "iwqis_alldata_chunk81.csv",
+      "size_bytes": 37072358
+    },
+    {
+      "filename": "iwqis_alldata_chunk82.csv",
+      "size_bytes": 33041177
+    },
+    {
+      "filename": "iwqis_alldata_chunk83.csv",
+      "size_bytes": 38201421
+    },
+    {
+      "filename": "iwqis_alldata_chunk84.csv",
+      "size_bytes": 28934729
+    }
+  ]
+}
