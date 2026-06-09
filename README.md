@@ -1,6 +1,4 @@
 # summer26-sustainability-of-agriculture
-Team project: summer26-sustainability-of-agriculture
-
 
 ## Problem Definition:
 **Primary question:** Does county-level nitrogen surplus (over-application of nitrogen relative to crop uptake) predict nitrate drinking water violations, and is this relationship stronger in low-income or structurally vulnerable rural counties?
