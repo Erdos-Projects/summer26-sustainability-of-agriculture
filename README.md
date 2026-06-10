@@ -9,7 +9,7 @@
 - *Environmental regulators (such as local and state environmental/water agencies).* They care about detecting and reducing violations with limited resources.
 - *Farmers.* They care about maximizing yield/profits while maintaining sustainable farming practices and complying with local and federal regulations. 
 - *Policymakers.* They care about creating effective policy, which requires understanding the impact of agricultural policies on water quality outcomes.
-- *Rural and low-income communities.* They care about access to safe drinking water and their exposure risks.
+- *Residents.* They care about access to safe drinking water and their exposure risks.
 - *Public health officials.* They care about identifying populations which may be disproportionately affected by nitrate contamination. 
 
 ### Decisions this analysis will inform:
