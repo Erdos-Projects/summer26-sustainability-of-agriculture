@@ -1,0 +1,6 @@
+site_uid,datetime,nitrate_con,r_exc,m_exc,temp_water,ph,spec_cond,diss_oxy_con,diss_oxy_sat,chloro_v,chloro_con,turbi_mean,turbi_var,turbi_med,turbi_bes,turbi_min,turbi_max,dts_temp_water,phosphate_con,ph_v2,spec_cond_v2,diss_oxy_con_v2,diss_oxy_sat_v2,turbi_mean_v2
+UNKNOWN,2020-07-09 14:55:00-05,,,,22.1,,,,,,,,,,,,,,,,,,,
+UNKNOWN,2020-07-09 15:00:00-05,,,,22.4,,,,,,,,,,,,,,,,,,,
+UNKNOWN,2020-07-09 15:05:00-05,,,,22.7,,,,,,,,,,,,,,,,,,,
+UNKNOWN,2020-07-09 15:10:00-05,,,,22.9,,,,,,,,,,,,,,,,,,,
+UNKNOWN,2020-07-09 15:15:00-05,,,,23.2,,,,,,,,,,,,,,,,,,,

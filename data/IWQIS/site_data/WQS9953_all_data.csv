@@ -1,0 +1,5 @@
+site_uid,datetime,nitrate_con,r_exc,m_exc,temp_water,ph,spec_cond,diss_oxy_con,diss_oxy_sat,chloro_v,chloro_con,turbi_mean,turbi_var,turbi_med,turbi_bes,turbi_min,turbi_max,dts_temp_water,phosphate_con,ph_v2,spec_cond_v2,diss_oxy_con_v2,diss_oxy_sat_v2,turbi_mean_v2
+WQS9953,2017-12-04 21:00:00-06,0.42,0.24,0.34,9.14,8.1,460.0,9.43,84.31,,,,,,,,,,,,,,,
+WQS9953,2018-02-19 02:35:00-06,4.81,0.44,1.24,,,,,,,,,,,,,,,,,,,,
+WQS9953,2018-02-19 02:40:00-06,4.81,0.44,1.25,,,,,,,,,,,,,,,,,,,,
+WQS9953,2018-02-19 02:45:00-06,4.81,0.44,1.25,,,,,,,,,,,,,,,,,,,,

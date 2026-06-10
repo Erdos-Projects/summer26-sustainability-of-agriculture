@@ -92,6 +92,7 @@ def get_tables_from_point(lat, lon):
         with component name and percent composition.
     """
     mukey = get_location_data_from_point(lat, lon).iloc[0]["mukey"]
+    print(mukey)
 
     # crop data 
     crop_sql = f"""

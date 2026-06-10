@@ -1,0 +1,3 @@
+site_uid,datetime,nitrate_con,r_exc,m_exc,temp_water,ph,spec_cond,diss_oxy_con,diss_oxy_sat,chloro_v,chloro_con,turbi_mean,turbi_var,turbi_med,turbi_bes,turbi_min,turbi_max,dts_temp_water,phosphate_con,ph_v2,spec_cond_v2,diss_oxy_con_v2,diss_oxy_sat_v2,turbi_mean_v2
+9903   ,2022-11-21 14:12:00-06,,,,,,,,,,,1.05,,1.07,1.06,0.83,1.17,26.2,,6.82,,8.4,101.9,
+9903   ,2022-11-21 14:45:00-06,,,,,,,,,,,,,,,,,26.0,,6.81,,8.45,104.8,
