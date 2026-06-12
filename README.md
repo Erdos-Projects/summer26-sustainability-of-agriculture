@@ -1,9 +1,9 @@
 # summer26-sustainability-of-agriculture
 
 ## Problem Definition:
-**Primary question:** Does county-level nitrogen surplus (over-application of nitrogen relative to crop uptake) predict nitrate drinking water violations, and is this relationship stronger in low-income or structurally vulnerable rural counties?
+**Primary question:** Does nitrogen surplus (over-application of nitrogen relative to crop uptake) predict nitrate drinking water violations?
 
-**As a prediction problem:** Given agricultural nitrogen surplus and county characteristics, can we predict the likelihood of nitrate drinking water violations in that county?
+**As a prediction problem:** Given a specified rectangle in the state of Iowa, a value for the average nitrogen surplus in that area, and a date, can we predict the likelihood of observing a nitrate concentation exceeding $10 \text{(mg/L)}$ at specific water sites downstream of the specified area within a month of the the given date?
 
 ### Stakeholders: 
 - *Environmental regulators (such as local and state environmental/water agencies).* They care about detecting and reducing violations with limited resources.
@@ -23,19 +23,19 @@
 We plan to use county-level data. The time unit will depend on data availability, but potentially we will use **county-year** observations. Water data appears to be available at a higher frequency than data on agricultural nutrient application.
 
 ### Scope and boundaries:
-Geographically, we will only focus on counties in the **United States**. This may be reduced to only specific regions and/or rural counties. The time frame will depend on the data we can collect. A possible scope would be: “US counties from 2000-2025 with available agricultural and drinking water data.” 
+Geographically, we will only focus on counties in **Iowa**. The time frame will depend on the data we can collect.
 
 The included features (at the county level) are:
 - Agricultural: nitrogen surplus and fertilizer application
-- Water: nitrate levels and nitrate violations
-- Socioeconomic: median household income, poverty rate, rurality index (such as USDA Rural-Urban Continuum Codes)
+- Weather: rainfall amounts
+- ET: evapotranspiration data
+- Water: nitrate levels
 
 We do not plan to include non-agricultural (such as industrial) causes of nitrate contamination. We will focus on general nitrate surplus in agriculture (from fertilizer, livestock, etc.) or only on fertilizer application based on data we find.
 
-### Anit-goals:
+### Anti-goals:
 This project will not:
 - Prove causation -- it will only ask whether nitrogen surplus is useful in predicting risk of nitrate drinking water violations.
-- Predict individual exposure -- it will only supply a county-level analysis.
 - Evaluate nitrate sources outside of agriculture.
 
 

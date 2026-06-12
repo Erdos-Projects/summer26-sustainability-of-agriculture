@@ -1,17 +1,15 @@
-# Guide to data
-
-## IWQIS (Iowa Water Quality Information Systems)
+# Guide to IWQIS (Iowa Water Quality Information Systems) data
 
 This is the data you can see live [here](https://iwqis.iowawis.org/) and was given to us by Jerry. It integrates data gathered by IIHR (University of Iowa's Hydroscience and Engineering center) and the USGS (United States Geological Survey). It offers nutrient data with a range of water-related information such as precipitation, stream flow, and soil moisture.
 
 The complete data forms a 3.3 GB CSV. This is the unaggregated raw data from all sites in the study going back to 2012. Measurements are made in 5-15 minute intervals. To save space and time, **don't push the uncompressed CSV to the github repo,** use the provided script to rebuild it from chunks.
 
-### Access
+## Access
 Use `reassemble.csv` to reassemble the chunked files from `IWQIS/chunks` into a single file with the command
 
 `python reassemble.py chunks/iwqis_alldata_manifest.json --output fulldata.csv`
 
-### List of files
+## List of files
 - `chunks/`: contains the chunked data for easier transimission.
 - `fulldata.csv`: the main dataset. Contains all unaggregated data going back to the start of the study in 2012, observations made in 5-15 minute increments.
 - `measures.csv`: metadata on measurements.
