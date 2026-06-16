@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent
-SCRIPTS = ["water/make_data.py"]
+SCRIPTS = ["water/make_data.py", "map_overlays/make_overlays.py"]
 
 
 def get_api_keys():

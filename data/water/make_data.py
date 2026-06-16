@@ -10,7 +10,7 @@ import make_iwqis_data as make_iwqis
 import make_usgs_data as make_usgs
 import make_basins as make_basins
 
-DATA_DIR = Path(__file__).parent
+DATA_DIR = Path(__file__).resolve().parent
 MAKE_USGS = DATA_DIR / "make_usgs_data.py"
 MAKE_IWQIS = DATA_DIR / "make_iwqis_data.py"
 MAKE_BASINS = DATA_DIR / "make_basins.py"
