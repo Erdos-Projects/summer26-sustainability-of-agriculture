@@ -1,0 +1,5 @@
+/* Hide the native Leaflet.draw toolbar; draw modes are triggered
+   programmatically via the custom buttons in the tools panel. */
+.leaflet-draw.leaflet-control {
+    display: none !important;
+}

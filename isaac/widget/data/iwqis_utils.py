@@ -2,13 +2,18 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 
-site_data = Path("../../data/IWQIS/site_clean.csv")
 sites_of_interest = Path("../../data/IWQIS/sites_of_interest.csv")
-measures_data = Path("../../data/IWQIS/measures.csv")
+usgs_sites_of_interest = Path("../../data/USGS-NWIS/site_locations.csv")
 full_data = Path("../../data/IWQIS/iwqis_alldata.csv")
 site_data_dir = Path("../../data/IWQIS/site_data/")
 site_data_ext = "_all_data.csv"
 
+def get_all_site_locations():
+    iwqis = pd.read_csv(sites_of_interest, engine='python', on_bad_lines='warn')[["uid", "latitude", "longitude"]]
+    usgs = pd.read_csv(usgs_sites_of_interest)
+    usgs.rename(columns={"monitoring_location_id" : "uid", "lat":"latitude", "lon":"longitude"}, inplace=True)
+    return pd.concat([iwqis, usgs])
+    
 def get_iwqis_sites():
     return pd.read_csv(sites_of_interest, engine='python', on_bad_lines='warn')
 
@@ -35,7 +40,6 @@ def get_site_data(site_uid: str):
     """
     return pd.read_csv(Path(site_data_dir, site_uid + site_data_ext))
 
-# stands for "water quality" but is missing some
 def get_site_uids():
     uids = get_iwqis_sites()["uid"].unique()
     uids = [str(id).strip() for id in uids]
