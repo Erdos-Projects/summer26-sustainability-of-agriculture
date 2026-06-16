@@ -1,7 +1,14 @@
-import importlib.util
-import os
 from pathlib import Path
 import pandas as pd
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+import make_iwqis_data as make_iwqis
+import make_usgs_data as make_usgs
+import make_basins as make_basins
 
 DATA_DIR = Path(__file__).parent
 MAKE_USGS = DATA_DIR / "make_usgs_data.py"
@@ -13,23 +20,7 @@ IWQIS_KEEPERS = DATA_DIR / "iwqis_site_metadata.csv"
 SITE_CLEAN = DATA_DIR.parent / "IWQIS_archive/site_clean.csv"
 
 SITE_LOCATION_METADATA = DATA_DIR / "site_location_metadata.csv"
-
-
-def load_and_run(script, api_keys):
-    # import the script properly as a module -------------------------------------------------
-    spec = importlib.util.spec_from_file_location(f"dataset_{script.parent.name}", script)
-    module = importlib.util.module_from_spec(spec)
-
-    # change directory to presrve relative-path assumptions in the script --------------------
-    cwd = os.getcwd()
-    os.chdir(script.parent)
-
-    # run the script -------------------------------------------------------------------------
-    try:
-        spec.loader.exec_module(module)  # run top-level code like global var definitions
-        module.main(api_keys)  # execute the method main()
-    finally:
-        os.chdir(cwd)
+SENTINEL = DATA_DIR / ".pipeline_complete"
 
 
 def create_site_locations():
@@ -73,6 +64,7 @@ def create_site_locations():
 
     # create the new locations file
     new_df = pd.concat([site_clean, new_rows], ignore_index=True)
+    new_df = new_df.rename(columns={"uid": "site_uid"})
     new_df.to_csv(SITE_LOCATION_METADATA, index=False)
 
 
@@ -93,14 +85,11 @@ def rename_columns():
     usgs_uids = pd.read_csv(USGS_METADATA).monitoring_location_id.unique()
     for uid in usgs_uids:
         name = DATA_DIR / f"sites/{uid}_all_data.csv"
-        if name.exists() == False:
-            print(f"Tried to rename {name} but it does not exist.")
+        header = pd.read_csv(name, nrows=0)
+        if "time" not in header.columns:
+            print(f"Columns of {name} have already been renamed")
             continue
-        try:
-            usgs_df = pd.read_csv(name, index_col="time")
-        except ValueError:
-            print(f"Columns of {name} have already been renamed.")
-            continue
+
         usgs_df.index.name = "datetime"
         usgs_df = usgs_df.rename(columns=usgs_to_iwqis_full)
         usgs_df.to_csv(DATA_DIR / f"sites/{uid}_all_data.csv", index=True, index_label="datetime")
@@ -108,18 +97,72 @@ def rename_columns():
     print("\nRenaming concluded.")
 
 
+def summarize_state():
+    """Basic summary of the state of the data"""
+    USGS_METADATA = DATA_DIR / "usgs_site_metadata.csv"
+    IWQIS_METADATA = DATA_DIR / "iwqis_site_metadata.csv"
+    LOC_METADATA = DATA_DIR / "site_location_metadata.csv"
+
+    unique_usgs_m = pd.read_csv(USGS_METADATA).monitoring_location_id.unique()
+    unique_iwqis_m = pd.read_csv(IWQIS_METADATA).uid.unique()
+    unique_loc_m = pd.read_csv(LOC_METADATA).site_uid.unique()
+
+    print(f"\n--- SUMMARY OF WATER -----------------")
+    print(f" usgs metadata sites: {len(unique_usgs_m)}")
+    print(f"iwqis metadata sites: {len(unique_iwqis_m)}")
+    print(f"   combined metadata: {len(unique_loc_m)}")
+    if len(unique_iwqis_m) + len(unique_usgs_m) == len(unique_loc_m):
+        print(f"{len(unique_usgs_m)} (usgs) + {len(unique_iwqis_m)} (iwqis) = {len(unique_loc_m)} (combined)")
+    else:
+        usgs_out = set(unique_usgs_m).difference(set(unique_loc_m))
+        iwqis_out = set(unique_iwqis_m).difference(set(unique_loc_m))
+        print(f"!! {len(unique_iwqis_m)} (usgs) + {len(unique_usgs_m)} (iwqis) != {len(unique_loc_m)} (combined)!!")
+        print(f"""The USGS sites
+              \n   {list(usgs_out)}\nin
+              \n   {USGS_METADATA}
+              \nare not in the combined metadata""")
+        print(f"""The IWQIS sites
+              \n   {list(iwqis_out)}\nin
+              \n   {IWQIS_METADATA}
+              \nare not in the combined metadata""")
+
+    USGS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("USGS-*.csv"))
+    IWQIS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("WQ*.csv"))
+
+    print(f"\nThere are {USGS_COUNT} USGS files in {DATA_DIR / "sites"}.")
+    print(f"There are {IWQIS_COUNT} IWQIS files in {DATA_DIR / "sites"}.")
+
+    USGS_BASIN_COUNT = sum(1 for _ in Path(DATA_DIR / "basins").glob("USGS-*.parquet"))
+    IWQIS_BASIN_COUNT = sum(1 for _ in Path(DATA_DIR / "basins").glob("WQ*.parquet"))
+
+    print(f"\nThere are {USGS_BASIN_COUNT} USGS basin files in {DATA_DIR / "basins"}.")
+    print(f"There are {IWQIS_BASIN_COUNT} IWQIS basin files in {DATA_DIR / "basins"}.")
+
+
+def precheck():
+    """Basic precheck step to avoid rebuilding
+
+    Returns
+    -------
+    bool
+        True if data already built
+    """
+    return SENTINEL.exists()
+
+
 def main(api_keys):
-    def lil_helper(script):
-        if not script.exists():
-            raise FileNotFoundError(f"Expected {script}")
+    if precheck():
+        print(f"Water pipeline already complete. Delete {SENTINEL} to rebuild.")
+        summarize_state()
+        return
 
-        print(f"=== {script.name} ===")
-        load_and_run(script, api_keys=api_keys)
-
-    # lil_helper(MAKE_USGS)
-    # lil_helper(MAKE_IWQIS)
+    make_usgs.main(api_keys)
+    make_iwqis.main(api_keys)
     create_site_locations()
     rename_columns()
+    make_basins.main(api_keys)
+
+    SENTINEL.touch()
 
 
 if __name__ == "__main__":

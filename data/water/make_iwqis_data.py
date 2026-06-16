@@ -172,7 +172,7 @@ def precheck():
     expected_uids = {str(u).strip() for u in meta["uid"]}
 
     # uids present as site files
-    written_uids = {f.name[: -len("_all_data.csv")] for f in SITES_DIR.glob("*_all_data.csv")}
+    written_uids = {f.name[: -len("_all_data.csv")] for f in SITES_DIR.glob("WQ*.csv")}
 
     return expected_uids == written_uids
 

@@ -11,8 +11,10 @@ NLDI_BASE = "https://api.water.usgs.gov/nldi/linked-data"
 EQUAL_AREA_CRS = "EPSG:5070"  # NAD83 / Conus Albers -- the standard equal-area CRS for CONUS
 
 THIS_DIR = Path(__file__).resolve().parent  # the directory in which this file is located
-USGS_METADATA = THIS_DIR / "usgs-site-metadata.csv"
-IWQIS_METADATA = THIS_DIR / "iwqis-site-metadata.csv"
+TARGET_DIR = THIS_DIR / "basins"
+TARGET_DIR.mkdir(parents=True, exist_ok=True)
+
+LOC_METADATA = THIS_DIR / "site_location_metadata.csv"
 
 
 def delineate_basin(
@@ -139,8 +141,26 @@ def save_basins(gdf: gpd.GeoDataFrame, path) -> str:
 
 
 def get_all_site_locations():
-    iwqis = pd.read_csv(IWQIS_METADATA, engine="python", on_bad_lines="warn")[["uid", "latitude", "longitude"]]
-    usgs = pd.read_csv(USGS_METADATA)
-    usgs.rename(columns={"monitoring_location_id": "uid", "lat": "latitude", "lon": "longitude"}, inplace=True)
-    print(usgs.columns)
-    return pd.concat([iwqis, usgs])
+    loc_metadata = pd.read_csv(LOC_METADATA)
+    return loc_metadata[["site_uid", "latitude", "longitude"]]
+
+
+def make_all_basins():
+    # get all locations
+    locations = get_all_site_locations()
+    n_sites = len(locations.site_uid.unique())
+    print(f"Making the water basins for {n_sites} sites.")
+    for i, uid in enumerate(locations.site_uid.unique()):
+        lat = locations.loc[locations.site_uid == uid, "latitude"].iloc[0]
+        lon = locations.loc[locations.site_uid == uid, "longitude"].iloc[0]
+        basin = delineate_basin(lat, lon)
+        save_basins(basin, path=TARGET_DIR / f"{uid}_basins.parquet")
+        print(f"  ({i}/{n_sites}): saved {TARGET_DIR / f"{uid}_basins.parquet"}")
+
+
+def main(api_keys):
+    make_all_basins()
+
+
+if __name__ == "__main__":
+    main(None)

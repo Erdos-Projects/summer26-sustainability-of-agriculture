@@ -217,8 +217,6 @@ def generate_metadata(generate_relevant_sites=False):
     )
     # no parameter_code filter -> returns every series at each site
 
-    all_meta.to_csv(METADATA_FILE)
-    print(f"Saved full metadata from {len(monitoring_location_ids)} sites to {METADATA_FILE}")
     return all_meta
 
 
@@ -316,21 +314,33 @@ def main(api_keys):
     # check whether dataset for site already exists ------------------------
     def site_exists(site_id):
         try:
-            dt = pd.read_csv(filename(site_id))["time"]
+            header = pd.read_csv(filename(site_id), nrows=0)
+            t_col = "time" if "time" in header.columns else "datetime"
+            dt = pd.read_csv(filename(site_id))[t_col]
         except FileNotFoundError:
+            print(f"File {filename(site_id)} not found. Retrieving data.")
             return False
         if dt.empty:
+            print(f"File {filename(site_id)} has no data. Retrieving data.")
             return False
         s1, e1 = get_lifespan(site_id)
         s2 = pd.to_datetime(dt.iloc[0], utc=True)
         e2 = pd.to_datetime(dt.iloc[-1], utc=True)
+
         # tolerate snap/boundary offset; "done" if file spans ~the metadata window
-        return abs((s2 - s1).total_seconds()) < 86400 and abs((e2 - e1).total_seconds()) < 86400
+        lifespan_match = abs((s2 - s1).total_seconds()) < 86400 and abs((e2 - e1).total_seconds()) < 86400
+
+        if lifespan_match != True:
+            print(f"Lifespan mismatch. Retrieving data.")
+            return lifespan_match
+
+        return True
 
     def params_from_meta(site_id):
         sub = meta[(meta["monitoring_location_id"] == site_id) & meta["parameter_code"].astype(str).isin(CORE_PCODES)]
         return max(1, sub["parameter_code"].nunique())
 
+    completed_site_ids = []
     for site_id in site_ids:
         if site_exists(site_id=site_id):
             print(f"Site {site_id} already exists at {filename(site_id)}, skipping")
@@ -386,6 +396,14 @@ def main(api_keys):
             qa.to_csv(LONG_DIR / f"{site_id}_qa.csv", index=False)
             update_measures(long_keep)
             print(f"\nWrote {out}")
+
+        # add siteid in either event
+        completed_site_ids.append(site_id)
+
+    # write the metadata file to a csv
+    meta = meta[meta.monitoring_location_id.isin(completed_site_ids) == True]
+    meta.to_csv(METADATA_FILE)
+    print(f"Saved full metadata from {len(completed_site_ids)} sites to {METADATA_FILE}")
 
 
 # ---------------------------------------------------------------------------

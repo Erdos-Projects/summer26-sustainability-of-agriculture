@@ -40,7 +40,7 @@ def main():
         if not script.exists():
             raise FileNotFoundError(f"Expected {script}")
 
-        print(f"=== {script.name} ===")
+        print(f"=== {script.parent.name + "/" + script.name} ===")
         load_and_run(script)
 
 
