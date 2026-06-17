@@ -17,7 +17,7 @@ from pathlib import Path
 
 DATASET_DIR = Path(__file__).resolve().parent  # the directory in which this file is located
 SITE_DIR = DATASET_DIR / "sites"  # the directory we save to
-LONG_DIR = DATASET_DIR / "LONG_data_dump"
+LONG_DIR = DATASET_DIR.parent / "IWQIS_archive" / "USGS_QA_DUMP"
 
 SITE_DIR.mkdir(parents=True, exist_ok=True)
 LONG_DIR.mkdir(parents=True, exist_ok=True)
