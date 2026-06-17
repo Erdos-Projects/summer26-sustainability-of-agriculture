@@ -22,8 +22,8 @@ LONG_DIR = DATASET_DIR.parent / "IWQIS_archive" / "USGS_QA_DUMP"
 SITE_DIR.mkdir(parents=True, exist_ok=True)
 LONG_DIR.mkdir(parents=True, exist_ok=True)
 
-UNITS_FILE = DATASET_DIR / "usgs_units.csv"
-METADATA_FILE = DATASET_DIR / "usgs_site_metadata.csv"
+UNITS_FILE = DATASET_DIR / "metadata" / "usgs_units.csv"
+METADATA_FILE = DATASET_DIR / "metadata" / "usgs_site_metadata.csv"
 
 import logging
 import time as _time
@@ -269,7 +269,7 @@ def update_measures(long_keep, pcodes=CORE_PCODES, path=UNITS_FILE):
     return combined
 
 
-def main(api_keys):
+def main(api_keys, extra_filter):
     """Builds the USGS data site by site. Creates the files
     - `usgs-site-metadata.csv`: metadata for all relevant sites
     - `<site-id>_all_data.csv`: full timeseries data for every relevant site
@@ -298,7 +298,9 @@ def main(api_keys):
     except FileNotFoundError:
         meta = generate_metadata()
 
-    site_ids = meta["monitoring_location_id"].unique().tolist()
+    site_ids = (
+        meta[meta["monitoring_location_id"].isin(extra_filter) == False]["monitoring_location_id"].unique().tolist()
+    )
 
     # helper function for defining filename --------------------------------
     def filename(site_id):

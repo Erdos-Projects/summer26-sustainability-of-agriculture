@@ -10,8 +10,10 @@ import numpy as np
 from pathlib import Path
 
 _THIS_DIR = Path(__file__).resolve().parent
-_LOC_METADATA_PATH = _THIS_DIR / "site_location_metadata.csv"
+_METADATA_DIR = _THIS_DIR / "metadata"
+_LOC_METADATA_PATH = _METADATA_DIR / "site_location_metadata.csv"
 _SITE_DATA_DIR = _THIS_DIR / "sites"
+_STATS_FILE = _METADATA_DIR / "site_statistics.csv"
 
 # lazy loading of location metadata
 _LOCATION_META_DF = None
@@ -22,6 +24,22 @@ def _loc_df():
     if _LOCATION_META_DF is None:
         _LOCATION_META_DF = pd.read_csv(_LOC_METADATA_PATH)
     return _LOCATION_META_DF
+
+
+# lazy loading of stats data
+_STATS_DF = None
+
+
+def _stats_df():
+    global _STATS_DF
+    if _STATS_DF is None:
+        try:
+            _STATS_DF = pd.read_csv(_STATS_FILE)
+        except FileNotFoundError:
+            _STATS_DF = _gen_statistics()
+            _STATS_DF.to_csv(_STATS_FILE, index=False)
+
+    return _STATS_DF
 
 
 def get_site_metadata() -> "pd.DataFrame":
@@ -64,6 +82,18 @@ def get_site_data(site_uid: str):
         the full data of the site
     """
     return pd.read_parquet(_SITE_DATA_DIR / f"{site_uid}_all_data.parquet")
+
+
+def get_full_data():
+    """Gets all data in THIS_DIR / sites.
+
+    Returns
+    -------
+    DataFrame
+        the full water sites dataset.
+    """
+    dfs = {uid: get_site_data(uid) for uid in get_all_water_sites()}
+    return pd.concat(dfs, names=["uid", "datetime"]).reset_index(level=1).reset_index(drop=True)
 
 
 def aggregate_by_interval(site_uid=None, df=None, value_col="nitrate_con", interval="1D", agg_func="mean"):
@@ -146,7 +176,7 @@ def get_all_basins_union() -> "geopandas.GeoDataFrame":
     return _ALL_BASINS_UNION_DF
 
 
-def get_basins(site_uid: str):
+def get_basin(site_uid: str):
     """Return the upstream drainage basin geometry for a site.
 
     Parameters
@@ -161,10 +191,73 @@ def get_basins(site_uid: str):
     """
     import geopandas as gpd
 
-    return gpd.read_parquet(_THIS_DIR / "basins" / f"{site_uid}_basins.parquet")
+    return gpd.read_parquet(_THIS_DIR / "basins" / f"{site_uid}_basin.parquet")
 
 
-def make_site_timeseries_plot(site_uid, value_col="nitrate_con", interval="1D", agg_func="mean"):
+def _gen_statistics():
+    df = get_full_data()
+
+    print(df.columns)
+    grouped = df.groupby("site_uid", sort=False)
+
+    # fraction of rows with non-null nitrate, per site
+    sparsity = grouped["nitrate_con"].count() / grouped.size()
+
+    # first and last dates
+    first_date = grouped["datetime"].min()
+    last_date = grouped["datetime"].max()
+
+    # lifespan
+    lifespan = (last_date - first_date).dt.total_seconds() / (365.25 * 24 * 3600)
+    vals = pd.DataFrame(
+        {
+            "nitrate_sparsity": sparsity,
+            "start_date": first_date,
+            "last_date": last_date,
+            "lifespan": lifespan,
+        }
+    ).reset_index()  # site_uid, the key in each of these, becomes column
+
+    return vals
+
+
+def get_full_stats():
+    """Get all statistics from data/water/site_statistics.csv.
+                column : description
+      nitrate_sparsity : % rows with a non-nan nitrate_con entry
+            first_date : earliest entry date
+     last_date: latest : entry date
+              lifespan : total time deployed
+    Returns
+    -------
+    DataFrame
+        DataFrame containing all site statistics.
+    """
+    return _stats_df()
+
+
+def get_stats(site_uid):
+    """Get statistics on a site. Currently have
+                column : description
+      nitrate_sparsity : % rows with a non-nan nitrate_con entry
+            first_date : earliest entry date
+     last_date: latest : entry date
+              lifespan : total time deployed
+
+    Parameters
+    ----------
+    site_uid : str
+        The unique identifier of the site
+
+    Returns
+    -------
+    DataFrame
+        One row dataframe with the site statistics
+    """
+    return _stats_df()[_stats_df()["site_uid"] == site_uid]
+
+
+def make_site_timeseries_plot(site_uid=None, df=None, value_col="nitrate_con", interval="1D", agg_func="mean"):
     """Wrapper that integrates aggregate_by_interval with plotting code.
 
     Parameters
@@ -181,7 +274,14 @@ def make_site_timeseries_plot(site_uid, value_col="nitrate_con", interval="1D", 
 
     import plotly.express as px
 
-    agg_df = aggregate_by_interval(site_uid=site_uid, value_col=value_col, interval=interval, agg_func=agg_func)
+    if df is None:
+        if site_uid is None:
+            raise ValueError("provide either df or site_uid")
+
+        agg_df = aggregate_by_interval(site_uid=site_uid, value_col=value_col, interval=interval, agg_func=agg_func)
+    else:
+        agg_df = df
+
     fig = px.line(
         agg_df.reset_index(),
         x=agg_df.index.name,
@@ -204,11 +304,17 @@ def make_site_timeseries_plot(site_uid, value_col="nitrate_con", interval="1D", 
     fig.update_yaxes(fixedrange=True)
     fig.add_annotation(
         text=f"{site_uid} Daily Avg. Nitrate Concentration",
-        xref="paper", yref="paper",
-        x=0.5, y=-0.18,
+        xref="paper",
+        yref="paper",
+        x=0.5,
+        y=-0.18,
         showarrow=False,
         font=dict(size=11, color="#555"),
         xanchor="center",
     )
     fig.update_layout(margin=dict(l=40, r=10, t=20, b=50))
     return fig
+
+
+if __name__ == "__main__":
+    df = _stats_df()

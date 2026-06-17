@@ -6,7 +6,53 @@ mode) or a Polygon (rectangle/polygon draw mode). The functions here turn that
 selection into whatever shape downstream consumers need.
 """
 
+import json
+import requests
+import geopandas as gpd
 from shapely.geometry import shape, mapping
+
+_NLDI_BASE = "https://api.water.usgs.gov/nldi/linked-data"
+
+
+def delineate_basin_for_pin(lat: float, lon: float, timeout: int = 60) -> dict:
+    """Fetch the upstream drainage basin for an arbitrary (lat, lon) pin.
+
+    Makes two NLDI requests:
+      1. Resolve the pin to the nearest NHDPlus COMID.
+      2. Fetch the upstream basin polygon for that COMID.
+
+    Returns a GeoJSON FeatureCollection dict (EPSG:4326) suitable for passing
+    directly to ``dl.GeoJSON(data=...)``.
+
+    Raises ValueError if the point is outside CONUS or off the NHD network.
+    """
+    pos = requests.get(
+        f"{_NLDI_BASE}/comid/position",
+        params={"coords": f"POINT({lon} {lat})", "f": "json"},
+        timeout=timeout,
+    )
+    pos.raise_for_status()
+    feats = pos.json().get("features", [])
+    if not feats:
+        raise ValueError(
+            f"No NHDPlus catchment for (lat={lat}, lon={lon}); "
+            "point may be outside CONUS or off-network."
+        )
+    comid = feats[0]["properties"]["comid"]
+
+    resp = requests.get(
+        f"{_NLDI_BASE}/comid/{comid}/basin",
+        params={"f": "json", "simplified": "true"},
+        timeout=timeout,
+    )
+    resp.raise_for_status()
+    gdf = gpd.GeoDataFrame.from_features(resp.json()["features"], crs="EPSG:4326")
+    if gdf.empty:
+        raise ValueError(f"NLDI returned an empty basin for COMID {comid}.")
+    return json.loads(gdf.to_json())
+
+
+
 
 # Rough placeholder: ~1km, used to turn a clicked point into a small area for
 # forecast purposes. Not geodesically accurate — revisit once the model

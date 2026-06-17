@@ -4,9 +4,12 @@ from .access import (
     get_all_iwqis_sites,
     get_all_usgs_sites,
     get_site_data,
-    get_basins,
+    get_full_data,
+    get_basin,
     get_all_basins,
     get_all_basins_union,
     aggregate_by_interval,
     make_site_timeseries_plot,
+    get_stats,
+    get_full_stats,
 )

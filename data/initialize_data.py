@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 DATA_DIR = Path(__file__).parent
-SCRIPTS = ["water/make_data.py", "map_overlays/make_overlays.py"]
+SCRIPTS = ["water/make_water.py", "map_overlays/make_overlays.py", "weather/make_weather.py"]
 
 
 def get_api_keys():
@@ -40,7 +40,7 @@ def main():
         if not script.exists():
             raise FileNotFoundError(f"Expected {script}")
 
-        print(f"=== {script.parent.name + "/" + script.name} ===")
+        print(f"\n=== {script.parent.name + "/" + script.name} ===")
         load_and_run(script)
 
 
