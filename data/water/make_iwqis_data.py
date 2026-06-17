@@ -172,7 +172,7 @@ def precheck():
     expected_uids = {str(u).strip() for u in meta["uid"]}
 
     # uids present as site files
-    written_uids = {f.name[: -len("_all_data.csv")] for f in SITES_DIR.glob("WQ*.csv")}
+    written_uids = {f.name[: -len("_all_data.parquet")] for f in SITES_DIR.glob("WQ*.parquet")}
 
     return expected_uids == written_uids
 
@@ -216,9 +216,12 @@ def main(api_keys):
 
     # store the full datasets of the good sites
     for uid in keep_uids:
-        file = SITES_DIR / f"{str(uid).strip()}_all_data.csv"
+        file = SITES_DIR / f"{str(uid).strip()}_all_data.parquet"
         print(f"  Saving {file}...", end="", flush=True)
-        full_data[full_data.site_uid == uid].to_csv(file, index=False)
+        site_df = full_data[full_data.site_uid == uid].copy()
+        site_df["datetime"] = pd.to_datetime(site_df["datetime"], utc=True)
+        site_df = site_df.set_index("datetime")
+        site_df.to_parquet(file)
         print("done.")
 
     # store the new relevant site metadata

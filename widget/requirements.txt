@@ -1,0 +1,7 @@
+dash
+dash-leaflet>=1.0
+geopandas
+shapely
+plotly
+pandas
+pyarrow

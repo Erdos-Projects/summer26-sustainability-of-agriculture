@@ -68,35 +68,6 @@ def create_site_locations():
     new_df.to_csv(SITE_LOCATION_METADATA, index=False)
 
 
-def rename_columns():
-    usgs_to_iwqis_full = {
-        "time": "datetime",
-        "site_id": "site_uid",
-        "temp_water": "temp_water",
-        "nitrate_con": "nitrate_con",
-        "diss_oxy_con": "diss_oxy_con",
-        "diss_oxy_sat": "diss_oxy_sat",
-        "ph": "ph",
-        "spec_cond": "spec_cond",
-        # USGS-only columns (discharge, stage) have no IWQIS name
-    }
-
-    print("Renaming USGS columns to align with IWQIS")
-    usgs_uids = pd.read_csv(USGS_METADATA).monitoring_location_id.unique()
-    for uid in usgs_uids:
-        name = DATA_DIR / f"sites/{uid}_all_data.csv"
-        header = pd.read_csv(name, nrows=0)
-        if "time" not in header.columns:
-            print(f"Columns of {name} have already been renamed")
-            continue
-
-        usgs_df.index.name = "datetime"
-        usgs_df = usgs_df.rename(columns=usgs_to_iwqis_full)
-        usgs_df.to_csv(DATA_DIR / f"sites/{uid}_all_data.csv", index=True, index_label="datetime")
-
-    print("\nRenaming concluded.")
-
-
 def summarize_state():
     """Basic summary of the state of the data"""
     USGS_METADATA = DATA_DIR / "usgs_site_metadata.csv"
@@ -126,8 +97,8 @@ def summarize_state():
               \n   {IWQIS_METADATA}
               \nare not in the combined metadata""")
 
-    USGS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("USGS-*.csv"))
-    IWQIS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("WQ*.csv"))
+    USGS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("USGS-*.parquet"))
+    IWQIS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("WQ*.parquet"))
 
     print(f"\nThere are {USGS_COUNT} USGS files in {DATA_DIR / "sites"}.")
     print(f"There are {IWQIS_COUNT} IWQIS files in {DATA_DIR / "sites"}.")
@@ -159,7 +130,6 @@ def main(api_keys):
     make_usgs.main(api_keys)
     make_iwqis.main(api_keys)
     create_site_locations()
-    rename_columns()
     make_basins.main(api_keys)
 
     SENTINEL.touch()

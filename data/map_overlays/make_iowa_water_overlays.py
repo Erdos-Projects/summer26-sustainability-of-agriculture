@@ -57,20 +57,29 @@ def download_waterbodies(iowa_geom):
     return waterbodies
 
 
-def main(api_key):
+def main(api_key, force: bool = False):
+    flowlines_path = SAVE_DIR / "iowa_flowlines.parquet"
+    waterbodies_path = SAVE_DIR / "iowa_waterbodies.parquet"
+
+    if flowlines_path.exists() and waterbodies_path.exists() and not force:
+        print("Overlay files already exist; skipping download (pass force=True to overwrite).")
+        return
+
     iowa_geom = iowa_geometry()
 
-    flowlines = download_flowlines(iowa_geom)
-    flowlines_path = SAVE_DIR / "iowa_flowlines.parquet"
-    flowlines.to_parquet(flowlines_path)
-    print(f"Saved flowlines → {flowlines_path}  ({flowlines_path.stat().st_size / 1e6:.1f} MB)")
+    if not flowlines_path.exists() or force:
+        flowlines = download_flowlines(iowa_geom)
+        flowlines.to_parquet(flowlines_path)
+        print(f"Saved flowlines → {flowlines_path}  ({flowlines_path.stat().st_size / 1e6:.1f} MB)")
+    else:
+        print(f"Flowlines already exist, skipping.")
 
-    waterbodies = download_waterbodies(iowa_geom)
-    waterbodies_path = SAVE_DIR / "iowa_waterbodies.parquet"
-    waterbodies.to_parquet(waterbodies_path)
-    print(f"Saved waterbodies → {waterbodies_path}  ({waterbodies_path.stat().st_size / 1e6:.1f} MB)")
-
-    print("\nDone. Update FLOWLINES_PATH / WATERBODIES_PATH in map_panel.py to point here.")
+    if not waterbodies_path.exists() or force:
+        waterbodies = download_waterbodies(iowa_geom)
+        waterbodies.to_parquet(waterbodies_path)
+        print(f"Saved waterbodies → {waterbodies_path}  ({waterbodies_path.stat().st_size / 1e6:.1f} MB)")
+    else:
+        print(f"Waterbodies already exist, skipping.")
 
 
 if __name__ == "__main__":

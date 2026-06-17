@@ -302,7 +302,7 @@ def main(api_keys):
 
     # helper function for defining filename --------------------------------
     def filename(site_id):
-        return SITE_DIR / f"{site_id}_all_data.csv"
+        return SITE_DIR / f"{site_id}_all_data.parquet"
 
     # get start and end dates ----------------------------------------------
     def get_lifespan(site_id):
@@ -313,28 +313,27 @@ def main(api_keys):
 
     # check whether dataset for site already exists ------------------------
     def site_exists(site_id):
-        try:
-            header = pd.read_csv(filename(site_id), nrows=0)
-            t_col = "time" if "time" in header.columns else "datetime"
-            dt = pd.read_csv(filename(site_id))[t_col]
-        except FileNotFoundError:
-            print(f"File {filename(site_id)} not found. Retrieving data.")
+        path = filename(site_id)
+        if not path.exists():
+            print(f"File {path} not found. Retrieving data.")
             return False
-        if dt.empty:
-            print(f"File {filename(site_id)} has no data. Retrieving data.")
+        try:
+            # read only the index — avoids loading all columns
+            idx = pd.read_parquet(path, columns=[]).index
+        except Exception:
+            print(f"File {path} unreadable. Retrieving data.")
+            return False
+        if idx.empty:
+            print(f"File {path} has no data. Retrieving data.")
             return False
         s1, e1 = get_lifespan(site_id)
-        s2 = pd.to_datetime(dt.iloc[0], utc=True)
-        e2 = pd.to_datetime(dt.iloc[-1], utc=True)
+        s2, e2 = idx.min(), idx.max()
 
         # tolerate snap/boundary offset; "done" if file spans ~the metadata window
         lifespan_match = abs((s2 - s1).total_seconds()) < 86400 and abs((e2 - e1).total_seconds()) < 86400
-
-        if lifespan_match != True:
+        if not lifespan_match:
             print(f"Lifespan mismatch. Retrieving data.")
-            return lifespan_match
-
-        return True
+        return lifespan_match
 
     def params_from_meta(site_id):
         sub = meta[(meta["monitoring_location_id"] == site_id) & meta["parameter_code"].astype(str).isin(CORE_PCODES)]
@@ -387,9 +386,11 @@ def main(api_keys):
             empty = wide.drop(columns="site_id").isna().all(axis=1).sum()
             print(f"\nfully-empty rows: {empty} / {len(wide)}")
 
-            # write the main file ---------------------------------------------
+            # write the main file — align schema with IWQIS (site_uid, datetime index)
             out = filename(site_id)
-            wide.to_csv(out, index_label="time")
+            wide = wide.rename(columns={"site_id": "site_uid"})
+            wide.index.name = "datetime"
+            wide.to_parquet(out)
 
             # update the units and create the qa summary -----------------------------
             qa = qa_summary(long_keep)

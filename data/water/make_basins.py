@@ -145,12 +145,18 @@ def get_all_site_locations():
     return loc_metadata[["site_uid", "latitude", "longitude"]]
 
 
-def make_all_basins():
+def make_all_basins(force: bool = False):
     # get all locations
     locations = get_all_site_locations()
     n_sites = len(locations.site_uid.unique())
     print(f"Making the water basins for {n_sites} sites.")
     for i, uid in enumerate(locations.site_uid.unique()):
+        name = TARGET_DIR / f"{uid}_basins.parquet"
+        if name.exists() and force == False:
+            print(
+                f"  ({i}/{n_sites}): {name.parent.name + name.name} already exists, skipping. (Use force=True to force a rewrite.)"
+            )
+            continue
         lat = locations.loc[locations.site_uid == uid, "latitude"].iloc[0]
         lon = locations.loc[locations.site_uid == uid, "longitude"].iloc[0]
         basin = delineate_basin(lat, lon)
@@ -158,8 +164,75 @@ def make_all_basins():
         print(f"  ({i}/{n_sites}): saved {TARGET_DIR / f"{uid}_basins.parquet"}")
 
 
+def build_all_basins(force: bool = False) -> gpd.GeoDataFrame:
+    """Concatenate all per-site basin files into a single GeoDataFrame.
+
+    Reads every ``*_basins.parquet`` file in TARGET_DIR (excluding the output
+    files themselves) and writes ``all_basins.parquet``.
+
+    Parameters
+    ----------
+    force : bool
+        Rebuild even if ``all_basins.parquet`` already exists.
+
+    Returns
+    -------
+    GeoDataFrame (EPSG:4326), one row per site.
+    """
+    out_path = TARGET_DIR / "all_basins.parquet"
+    if out_path.exists() and not force:
+        print(f"all_basins.parquet already exists; skipping (pass force=True to rebuild).")
+        return gpd.read_parquet(out_path)
+
+    site_files = sorted(
+        p
+        for p in TARGET_DIR.glob("*_basins.parquet")
+        if p.name not in {"all_basins.parquet", "all_basins_union.parquet"}
+    )
+    if not site_files:
+        raise FileNotFoundError(f"No per-site basin files found in {TARGET_DIR}; run make_all_basins() first.")
+
+    print(f"Concatenating {len(site_files)} basin files...")
+    gdfs = [gpd.read_parquet(p) for p in site_files]
+    combined = gpd.GeoDataFrame(pd.concat(gdfs, ignore_index=True), crs=gdfs[0].crs)
+    combined.to_parquet(out_path)
+    print(f"Saved {out_path}")
+    return combined
+
+
+def build_all_basins_union(force: bool = False) -> gpd.GeoDataFrame:
+    """Dissolve all basin geometries into a single unified AOI polygon.
+
+    Depends on ``all_basins.parquet`` existing (runs build_all_basins first if
+    needed). Writes ``all_basins_union.parquet`` with a single row and geometry.
+
+    Parameters
+    ----------
+    force : bool
+        Rebuild even if ``all_basins_union.parquet`` already exists.
+
+    Returns
+    -------
+    GeoDataFrame (EPSG:4326), one row, columns: area_km2, geometry.
+    """
+    out_path = TARGET_DIR / "all_basins_union.parquet"
+    if out_path.exists() and not force:
+        print(f"all_basins_union.parquet already exists; skipping (pass force=True to rebuild).")
+        return gpd.read_parquet(out_path)
+
+    combined = build_all_basins(force=False)
+    print("Dissolving into union geometry...")
+    union = combined.dissolve()[["geometry"]].reset_index(drop=True)
+    union = add_area_km2(union)
+    union.to_parquet(out_path)
+    print(f"Saved {out_path}  (area: {union['area_km2'].iloc[0]:,.0f} km²)")
+    return union
+
+
 def main(api_keys):
     make_all_basins()
+    build_all_basins()
+    build_all_basins_union()
 
 
 if __name__ == "__main__":
