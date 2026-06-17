@@ -33,9 +33,9 @@ SITES_DIR.mkdir(parents=True, exist_ok=True)
 MEASURES_SOURCE_FILE = SOURCE_DIR / "measures.csv"
 METADATA_SOURCE_FILE = SOURCE_DIR / "site_clean.csv"
 PARAMS_SOURCE_FILE = SOURCE_DIR / "params.csv"
-MEASURES_TARGET_FILE = THIS_DIR / "iwqis_measures.csv"
-METADATA_TARGET_FILE = THIS_DIR / "iwqis_site_metadata.csv"
-PARAMS_TARGET_FILE = THIS_DIR / "iwqis_params.csv"
+MEASURES_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_measures.csv"
+METADATA_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_site_metadata.csv"
+PARAMS_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_params.csv"
 
 
 def get_site_metadata():
@@ -177,22 +177,24 @@ def precheck():
     return expected_uids == written_uids
 
 
-def main(api_keys):
+def main(api_keys=None, extra_filter=[]):
+    """Makes the IWQIS dataset
+
+    Parameters
+    ----------
+    api_keys : dict
+        dictionary containing the api_keys needed for access. Not required here.
+    extra_filter : list, optional
+        list of extra site_uids to filter out.
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
 
     SPARSITY_CUTOFF = 0.5
     LIFESPAN_CUTOFF = 3.92
-    KNOWN_BAD = [
-        "WQS0113",
-        "WQS9901",
-        "WQS9903",
-        "WQS9904",
-        "WQS9902",
-        "WQS0091",
-        "WQS0088",
-        "WQS0090",
-        "WQS0045",
-        "WQS0075",
-    ]  # known garbage sites that aren't picked up in filtering
 
     print("---- Building IWQIS Water Data ----")
 
@@ -209,8 +211,8 @@ def main(api_keys):
     print("Filtering out garbage sites (this may take a minute)")
     keep, _ = filter_sites(SPARSITY_CUTOFF, LIFESPAN_CUTOFF, source=full_data)
 
-    # filter the known bad sites, get the uids of the keepers
-    keep = keep[keep.site_uid.isin(KNOWN_BAD) == False]
+    # filter out extra sites, get the uids of the keepers
+    keep = keep[keep.site_uid.isin(extra_filter) == False]
     keep_uids = keep.site_uid.unique()
     print(f"Checked against known garbage sites, ended with {keep_uids.shape[0]} sites.")
 

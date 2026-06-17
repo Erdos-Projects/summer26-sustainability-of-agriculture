@@ -14,7 +14,7 @@ THIS_DIR = Path(__file__).resolve().parent  # the directory in which this file i
 TARGET_DIR = THIS_DIR / "basins"
 TARGET_DIR.mkdir(parents=True, exist_ok=True)
 
-LOC_METADATA = THIS_DIR / "site_location_metadata.csv"
+LOC_METADATA = THIS_DIR / "metadata" / "site_location_metadata.csv"
 
 
 def delineate_basin(
@@ -151,7 +151,7 @@ def make_all_basins(force: bool = False):
     n_sites = len(locations.site_uid.unique())
     print(f"Making the water basins for {n_sites} sites.")
     for i, uid in enumerate(locations.site_uid.unique()):
-        name = TARGET_DIR / f"{uid}_basins.parquet"
+        name = TARGET_DIR / f"{uid}_basin.parquet"
         if name.exists() and force == False:
             print(
                 f"  ({i}/{n_sites}): {name.parent.name + name.name} already exists, skipping. (Use force=True to force a rewrite.)"
@@ -160,14 +160,14 @@ def make_all_basins(force: bool = False):
         lat = locations.loc[locations.site_uid == uid, "latitude"].iloc[0]
         lon = locations.loc[locations.site_uid == uid, "longitude"].iloc[0]
         basin = delineate_basin(lat, lon)
-        save_basins(basin, path=TARGET_DIR / f"{uid}_basins.parquet")
-        print(f"  ({i}/{n_sites}): saved {TARGET_DIR / f"{uid}_basins.parquet"}")
+        save_basins(basin, path=TARGET_DIR / f"{uid}_basin.parquet")
+        print(f"  ({i}/{n_sites}): saved {TARGET_DIR / f"{uid}_basin.parquet"}")
 
 
 def build_all_basins(force: bool = False) -> gpd.GeoDataFrame:
     """Concatenate all per-site basin files into a single GeoDataFrame.
 
-    Reads every ``*_basins.parquet`` file in TARGET_DIR (excluding the output
+    Reads every ``*_basin.parquet`` file in TARGET_DIR (excluding the output
     files themselves) and writes ``all_basins.parquet``.
 
     Parameters
@@ -186,7 +186,7 @@ def build_all_basins(force: bool = False) -> gpd.GeoDataFrame:
 
     site_files = sorted(
         p
-        for p in TARGET_DIR.glob("*_basins.parquet")
+        for p in TARGET_DIR.glob("*_basin.parquet")
         if p.name not in {"all_basins.parquet", "all_basins_union.parquet"}
     )
     if not site_files:
