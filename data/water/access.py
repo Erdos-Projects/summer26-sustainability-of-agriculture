@@ -33,12 +33,11 @@ _STATS_DF = None
 def _stats_df():
     global _STATS_DF
     if _STATS_DF is None:
-        try:
-            _STATS_DF = pd.read_csv(_STATS_FILE)
-        except FileNotFoundError:
-            _STATS_DF = _gen_statistics()
-            _STATS_DF.to_csv(_STATS_FILE, index=False)
-
+        if not _STATS_FILE.exists():
+            raise FileNotFoundError(
+                f"Site statistics not found at {_STATS_FILE}. Run make_water.py to generate them."
+            )
+        _STATS_DF = pd.read_csv(_STATS_FILE)
     return _STATS_DF
 
 
@@ -129,98 +128,6 @@ def aggregate_by_interval(site_uid=None, df=None, value_col="nitrate_con", inter
     return df[value_col].resample(interval).agg(agg_func)
 
 
-_ALL_BASINS_DF = None
-_ALL_BASINS_UNION_DF = None
-
-
-def get_all_basins() -> "geopandas.GeoDataFrame":
-    """Return all site basin polygons as a single GeoDataFrame.
-
-    One row per monitoring site. Use for downstream-site lookup: a spatial join
-    of a point against this GDF returns the sites whose upstream catchment
-    contains that point, i.e. the sites that are downstream of it.
-
-    Requires ``data/water/basins/all_basins.parquet`` to exist; run
-    ``make_basins.build_all_basins()`` to generate it.
-
-    Returns
-    -------
-    GeoDataFrame (EPSG:4326), columns: site_id, comid, site_lat, site_lon, area_km2, geometry.
-    """
-    import geopandas as gpd
-
-    global _ALL_BASINS_DF
-    if _ALL_BASINS_DF is None:
-        _ALL_BASINS_DF = gpd.read_parquet(_THIS_DIR / "basins" / "all_basins.parquet")
-    return _ALL_BASINS_DF
-
-
-def get_all_basins_union() -> "geopandas.GeoDataFrame":
-    """Return the dissolved union of all site basins as a single-row GeoDataFrame.
-
-    Use as an area-of-interest mask for modeling: clips rasters or filters
-    features to the full extent of the monitored drainage network.
-
-    Requires ``data/water/basins/all_basins_union.parquet`` to exist; run
-    ``make_basins.build_all_basins_union()`` to generate it.
-
-    Returns
-    -------
-    GeoDataFrame (EPSG:4326), columns: area_km2, geometry.
-    """
-    import geopandas as gpd
-
-    global _ALL_BASINS_UNION_DF
-    if _ALL_BASINS_UNION_DF is None:
-        _ALL_BASINS_UNION_DF = gpd.read_parquet(_THIS_DIR / "basins" / "all_basins_union.parquet")
-    return _ALL_BASINS_UNION_DF
-
-
-def get_basin(site_uid: str):
-    """Return the upstream drainage basin geometry for a site.
-
-    Parameters
-    ----------
-    site_uid : str
-        The unique identifier of the site.
-
-    Returns
-    -------
-    GeoDataFrame (EPSG:4326)
-        Columns: site_id, comid, site_lat, site_lon, area_km2, geometry.
-    """
-    import geopandas as gpd
-
-    return gpd.read_parquet(_THIS_DIR / "basins" / f"{site_uid}_basin.parquet")
-
-
-def _gen_statistics():
-    df = get_full_data()
-
-    print(df.columns)
-    grouped = df.groupby("site_uid", sort=False)
-
-    # fraction of rows with non-null nitrate, per site
-    sparsity = grouped["nitrate_con"].count() / grouped.size()
-
-    # first and last dates
-    first_date = grouped["datetime"].min()
-    last_date = grouped["datetime"].max()
-
-    # lifespan
-    lifespan = (last_date - first_date).dt.total_seconds() / (365.25 * 24 * 3600)
-    vals = pd.DataFrame(
-        {
-            "nitrate_sparsity": sparsity,
-            "start_date": first_date,
-            "last_date": last_date,
-            "lifespan": lifespan,
-        }
-    ).reset_index()  # site_uid, the key in each of these, becomes column
-
-    return vals
-
-
 def get_full_stats():
     """Get all statistics from data/water/site_statistics.csv.
                 column : description
@@ -233,6 +140,7 @@ def get_full_stats():
     DataFrame
         DataFrame containing all site statistics.
     """
+    print("Get stats")
     return _stats_df()
 
 
@@ -316,5 +224,3 @@ def make_site_timeseries_plot(site_uid=None, df=None, value_col="nitrate_con", i
     return fig
 
 
-if __name__ == "__main__":
-    df = _stats_df()

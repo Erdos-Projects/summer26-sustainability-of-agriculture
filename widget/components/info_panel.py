@@ -20,7 +20,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, html, dash_table, no_update
 
-from data import water, weather
+from data import water, rain as rain_data
 
 
 def _render_tables(pairs):
@@ -60,7 +60,7 @@ def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_s
     fig = go.Figure()
     try:
         precip_col = f"precip_{interval.lower()}"
-        rain = weather.aggregate_by_interval(site_uid, interval=interval, agg_func="sum")
+        rain = rain_data.aggregate_by_interval(site_uid, interval=interval, agg_func="sum")
         rain = rain.groupby("date")[precip_col].agg(func=agg_func).reset_index()
         if rain.shape[0] < _BAR_THRESH:
             fig.add_trace(
