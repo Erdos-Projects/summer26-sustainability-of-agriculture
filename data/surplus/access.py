@@ -14,8 +14,8 @@ _THIS_DIR = Path(__file__).resolve().parent
 _DATA_DIR = _THIS_DIR / "surplus_data"
 
 # HSL colorscale endpoints — match widget/colors.py SURPLUS_LOW / SURPLUS_HIGH
-_LOW_HSL  = (120, 80, 45)   # green
-_HIGH_HSL = (0,   80, 45)   # red
+_LOW_HSL = (120, 80, 45)  # green
+_HIGH_HSL = (0, 80, 45)  # red
 
 
 def get_surplus(site_uid: str) -> pd.DataFrame:
@@ -28,9 +28,7 @@ def get_surplus(site_uid: str) -> pd.DataFrame:
     """
     path = _DATA_DIR / f"{site_uid}_surplus.parquet"
     if not path.exists():
-        raise FileNotFoundError(
-            f"No surplus data for {site_uid}. Run make_surplus.py to generate it."
-        )
+        raise FileNotFoundError(f"No surplus data for {site_uid}. Run make_surplus.py to generate it.")
     return pd.read_parquet(path)
 
 
@@ -40,7 +38,7 @@ def _hsl_to_rgb255(h_deg: float, s_pct: float, l_pct: float) -> tuple[int, int, 
     return int(r * 255), int(g * 255), int(b * 255)
 
 
-@functools.lru_cache(maxsize=64)
+@functools.lru_cache(maxsize=64)  # cache image
 def get_surplus_image(site_uid: str, year: int) -> tuple[str, list]:
     """Return (data_url, bounds) for a surplus heatmap PNG.
 
@@ -58,13 +56,13 @@ def get_surplus_image(site_uid: str, year: int) -> tuple[str, list]:
 
     # ── Build regular grid indices from projected x/y (EPSG:5070, metres) ──
     xs = np.sort(pixels["x"].unique())
-    ys = np.sort(pixels["y"].unique())[::-1]   # descending → north at top
+    ys = np.sort(pixels["y"].unique())[::-1]  # descending → north at top
 
     x_step = float(np.diff(xs).min()) if len(xs) > 1 else 1.0
     y_step = float(np.diff(np.sort(pixels["y"].unique())).min()) if len(ys) > 1 else 1.0
 
     col_idx = np.round((pixels["x"].values - xs[0]) / x_step).astype(int)
-    row_idx = np.round((ys[0]  - pixels["y"].values) / y_step).astype(int)
+    row_idx = np.round((ys[0] - pixels["y"].values) / y_step).astype(int)
 
     n_rows, n_cols = len(ys), len(xs)
 
@@ -85,7 +83,7 @@ def get_surplus_image(site_uid: str, year: int) -> tuple[str, list]:
 
     for i in range(len(t)):
         r, g, b = _hsl_to_rgb255(h_vals[i], s_vals[i], l_vals[i])
-        rgba[row_idx[i], col_idx[i]] = [r, g, b, 204]   # ~80 % opacity
+        rgba[row_idx[i], col_idx[i]] = [r, g, b, 204]  # ~80 % opacity
 
     # ── Encode to base64 PNG ──────────────────────────────────────────────────
     img = Image.fromarray(rgba, mode="RGBA")
