@@ -4,5 +4,6 @@ parameter_code,name,unit_of_measure
 00065,stage,ft
 00095,spec_cond,uS/cm
 00300,diss_oxy_con,mg/l
+00301,diss_oxy_sat,%
 00400,ph,pH Units
 99133,nitrate_con,mg/l

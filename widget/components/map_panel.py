@@ -33,8 +33,10 @@ import dash_leaflet as dl
 from dash import Input, Output, State, html, dcc, no_update, ALL, ctx
 from shapely.geometry import shape, Point
 
-from data import water, map_overlays, weather
-from geo_utils import delineate_basin_for_pin
+from data import water, map_overlays, rain as rain_data, basins, surplus
+from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
+from components import basin_editor
+import colors
 
 IOWA_CENTER = [42.0, -93.5]
 IOWA_ZOOM = 7
@@ -171,24 +173,48 @@ _CHECKBOX_ROW = {"display": "flex", "gap": "12px", "flexWrap": "wrap", "marginTo
 _CHECKBOX_STYLE = {"fontSize": "13px"}
 _CHECKBOX_LABEL = {"fontSize": "13px", "display": "flex", "alignItems": "center", "cursor": "pointer"}
 
-# Tools panel style constants — kept in sync with the toggle callback below.
-_PANEL_BASE = {
-    "position": "absolute",
-    "top": "0",
-    "right": "0",
-    "height": "100%",
-    "width": "26%",
-    "minWidth": "240px",
+# Permanent side panel — always visible, 20 % of viewport width
+_PANEL_STYLE = {
+    "flex": "0 0 32%",
+    "width": "32%",
+    "height": "100vh",
     "background": "rgba(255,255,255,0.97)",
     "borderLeft": "1px solid rgba(0,0,0,0.15)",
-    "boxShadow": "-3px 0 10px rgba(0,0,0,0.12)",
-    "zIndex": 1200,
+    "boxShadow": "-3px 0 8px rgba(0,0,0,0.10)",
     "overflowY": "auto",
-    "padding": "44px 12px 12px 12px",
+    "padding": "0 12px 12px 12px",
     "boxSizing": "border-box",
 }
-_PANEL_OPEN = _PANEL_BASE
-_PANEL_CLOSED = {**_PANEL_BASE, "display": "none"}
+
+# Area-select draw button styles
+_DRAW_BTN_BASE = {
+    "borderRadius": "3px",
+    "padding": "5px",
+    "cursor": "pointer",
+    "display": "flex",
+    "alignItems": "center",
+    "justifyContent": "center",
+    "width": "30px",
+    "height": "30px",
+    "boxSizing": "border-box",
+}
+_DRAW_BTN_INACTIVE = {**_DRAW_BTN_BASE, "background": "white",   "border": "1px solid #bbb"}
+_DRAW_BTN_ACTIVE   = {**_DRAW_BTN_BASE, "background": "#dbeafe", "border": "1.5px solid #3b82f6"}
+
+# Menu selector tab styles
+_MENU_TAB_ACTIVE = {
+    "flex": "1",
+    "padding": "8px 0",
+    "fontSize": "11px",
+    "fontWeight": "700",
+    "background": "#1e3a8a",
+    "color": "white",
+    "border": "none",
+    "cursor": "pointer",
+    "letterSpacing": "0.4px",
+    "textTransform": "uppercase",
+}
+_MENU_TAB_INACTIVE = {**_MENU_TAB_ACTIVE, "background": "#f1f5f9", "color": "#64748b", "fontWeight": "600"}
 
 _GRAPH_OVERLAY_BASE = {
     "position": "absolute",
@@ -255,22 +281,27 @@ def _sites_in_polygon(geojson_geom):
     ]
 
 
-def make_iwqis_markers(selected_uids=None):
+def make_iwqis_markers(selected_uids=None, visible_uids=None):
     """Build small clickable circle markers for the IWQIS sites.
 
     Each marker uses bubblingMouseEvents=False so clicking it does not also
     trigger the map's click handler. Each marker has a pattern-matching id
     so on_iwqis_marker_click can tell which site was clicked.
+
+    visible_uids : set or None
+        If provided, only markers whose site_uid is in this set are rendered.
     """
     selected = set(selected_uids or [])
     sites = list(IWQIS_SITES[["site_uid", "latitude", "longitude"]].itertuples(index=False, name=None))
+    if visible_uids is not None:
+        sites = [(uid, lat, lon) for uid, lat, lon in sites if uid in visible_uids]
     return [
         dl.CircleMarker(
             id={"type": "iwqis-marker", "index": site_uid},
             center=[lat, lon],
             radius=7 if site_uid in selected else 5,
-            color="darkred" if site_uid in selected else ("#6b21a8" if site_uid.startswith("USGS") else "darkgreen"),
-            fillColor="red" if site_uid in selected else ("#a855f7" if site_uid.startswith("USGS") else "limegreen"),
+            color=colors.SITE_SELECTED["stroke"] if site_uid in selected else (colors.SITE_USGS["stroke"] if site_uid.startswith("USGS") else colors.SITE_DEFAULT["stroke"]),
+            fillColor=colors.SITE_SELECTED["fill"] if site_uid in selected else (colors.SITE_USGS["fill"] if site_uid.startswith("USGS") else colors.SITE_DEFAULT["fill"]),
             fillOpacity=0.8,
             weight=1,
             pane="sites-pane",
@@ -544,47 +575,35 @@ def _build_map_display_section():
         [
             html.Summary("Map Display Options", style=_SECTION_LABEL_SUMMARY),
 
-            # ── water overlay ─────────────────────────────────────────────────
-            html.Div("water overlay", style=_SUBSECTION_LABEL),
+            dcc.Checklist(
+                id="hydro-toggle",
+                options=[{"label": " Show rivers & lakes", "value": "show"}],
+                value=["show"],
+                style={**_CHECKBOX_STYLE, "marginTop": "6px"},
+                labelStyle=_CHECKBOX_LABEL,
+            ),
+
+            # ── basin display ─────────────────────────────────────────────────
+            html.Div("basin display", style=_SUBSECTION_LABEL),
             html.Div([
                 dcc.Checklist(
-                    id="iwqis-toggle",
-                    options=[{"label": " Show water sites", "value": "show"}],
-                    value=["show"],
+                    id="basin-preferred-toggle",
+                    options=[{"label": " Show basin", "value": "show"}],
+                    value=[],
                     style=_CHECKBOX_STYLE,
                     labelStyle=_CHECKBOX_LABEL,
                 ),
                 dcc.Checklist(
-                    id="hydro-toggle",
-                    options=[{"label": " Show rivers & lakes", "value": "show"}],
-                    value=["show"],
+                    id="basin-all-toggle",
+                    options=[{"label": " Show all basins", "value": "show"}],
+                    value=[],
                     style=_CHECKBOX_STYLE,
                     labelStyle=_CHECKBOX_LABEL,
                 ),
             ], style=_CHECKBOX_ROW),
 
-            # ── basin display ─────────────────────────────────────────────────
-            html.Div("basin display", style=_SUBSECTION_LABEL),
-            dcc.Checklist(
-                id="upstream-toggle",
-                options=[
-                    {"label": " Show all basins", "value": "show-all"},
-                    {"label": " Show selected basin", "value": "show-site"},
-                ],
-                value=[],
-                style={**_CHECKBOX_STYLE, **_CHECKBOX_ROW},
-                labelStyle=_CHECKBOX_LABEL,
-            ),
-            dcc.Checklist(
-                id="pin-basin-toggle",
-                options=[{"label": " Compute basin at pin drop", "value": "show"}],
-                value=[],
-                style={**_CHECKBOX_STYLE, "marginTop": "4px"},
-                labelStyle=_CHECKBOX_LABEL,
-            ),
-
-            # ── weather ───────────────────────────────────────────────────────
-            html.Div("weather", style=_SUBSECTION_LABEL),
+            # ── rain ──────────────────────────────────────────────────────────
+            html.Div("rain", style=_SUBSECTION_LABEL),
             html.Div([
                 dcc.Checklist(
                     id="rain-grid-toggle",
@@ -594,6 +613,33 @@ def _build_map_display_section():
                     labelStyle=_CHECKBOX_LABEL,
                 ),
             ], style=_CHECKBOX_ROW),
+
+            # ── nitrogen surplus ──────────────────────────────────────────────
+            html.Div("nitrogen surplus", style=_SUBSECTION_LABEL),
+            html.Div(
+                style={"display": "flex", "alignItems": "center", "gap": "10px", "marginTop": "4px"},
+                children=[
+                    dcc.Checklist(
+                        id="surplus-heatmap-toggle",
+                        options=[{"label": " Show N surplus heatmap", "value": "show"}],
+                        value=[],
+                        style=_CHECKBOX_STYLE,
+                        labelStyle=_CHECKBOX_LABEL,
+                    ),
+                    html.Div(
+                        dcc.Slider(
+                            id="surplus-year-slider",
+                            min=2000,
+                            max=2017,
+                            step=1,
+                            value=2017,
+                            marks=None,
+                            tooltip={"placement": "bottom", "always_visible": True},
+                        ),
+                        style={"flex": "1", "minWidth": "80px"},
+                    ),
+                ],
+            ),
         ],
         open=True,
     )
@@ -604,16 +650,12 @@ def _build_map_display_section():
         popup_id="map-display-help-popup",
         heading="Map Display Options",
         body=[
-            html.Strong("Show water sites", style={"fontSize": "11px"}),
-            html.P("Toggles IWQIS and USGS monitoring station markers on the map.", style=_HP),
             html.Strong("Show rivers & lakes", style={"fontSize": "11px"}),
             html.P("Toggles the NHD hydrography overlay (streams, rivers, and waterbodies).", style=_HP),
+            html.Strong("Show basin", style={"fontSize": "11px"}),
+            html.P("Displays the preferred drainage basin for each selected site (purple). See Basin Editor in the Debug menu to compare individual basin types.", style=_HP),
             html.Strong("Show all basins", style={"fontSize": "11px"}),
-            html.P("Displays the union of all monitoring site drainage basins.", style=_HP),
-            html.Strong("Show selected basin", style={"fontSize": "11px"}),
-            html.P("Displays the individual drainage basin for each selected monitoring site.", style=_HP),
-            html.Strong("Compute basin at pin drop", style={"fontSize": "11px"}),
-            html.P("When enabled, dropping a pin computes and displays the upstream drainage basin for that point via the NLDI API. Shown in orange.", style=_HP),
+            html.P("Displays the dissolved union of all monitoring site drainage basins.", style=_HP),
             html.Strong("Show site rain grid", style={"fontSize": "11px"}),
             html.P(
                 "Displays the IEM precipitation grid cell positions for the active graph site.",
@@ -660,6 +702,7 @@ def _build_map_layers_section():
     )
 
 
+
 def _build_debugging_section():
     return html.Details(
         [
@@ -676,119 +719,139 @@ def _build_debugging_section():
 
 
 def layout():
-    """Return the full-width map with an expandable tools panel on the right."""
+    """Return the full-viewport layout: map (80 %) left, tools panel (20 %) right."""
     return html.Div(
-        style={"position": "relative", "width": "100%"},
+        style={"display": "flex", "height": "100vh", "overflow": "hidden"},
         children=[
-            dcc.Store(id="tools-open", data=False),
-            dl.Map(
-                id="map",
-                center=IOWA_CENTER,
-                zoom=IOWA_ZOOM,
-                zoomControl=False,
+            dcc.Store(id="active-area-tool", data=None),
+            dcc.Store(id="active-menu", data="explore"),
+            dcc.Store(id="preferred-basin-version", data=0),
+            # ── Map (80 %) ─────────────────────────────────────────────────
+            html.Div(
+                style={"position": "relative", "flex": "0 0 68%", "width": "68%"},
                 children=[
-                    dl.TileLayer(id="tile-layer"),
-                    dl.GeoJSON(
-                        data=_IOWA_MASK,
-                        options={
-                            "style": {"fillColor": "black", "fillOpacity": 0.2, "weight": 0, "interactive": False}
-                        },
+                    dl.Map(
+                        id="map",
+                        center=IOWA_CENTER,
+                        zoom=IOWA_ZOOM,
+                        zoomControl=False,
+                        children=[
+                            dl.TileLayer(id="tile-layer"),
+                            dl.GeoJSON(
+                                data=_IOWA_MASK,
+                                options={
+                                    "style": {"fillColor": "black", "fillOpacity": 0.2, "weight": 0, "interactive": False}
+                                },
+                            ),
+                            dl.ZoomControl(position="bottomleft"),
+                            dl.GeoJSON(
+                                data=iowa_geojson,
+                                options={"style": {"color": "#555", "weight": 2, "fillOpacity": 0}},
+                            ),
+                            dl.LayerGroup(id="iem-bbox-layer"),
+                            dl.Pane(name="hydro-pane", style={"zIndex": 410}),
+                            dl.Pane(name="surplus-pane", style={"zIndex": 413}),
+                            dl.Pane(name="rain-grid-pane", style={"zIndex": 415}),
+                            dl.Pane(name="basin-pane", style={"zIndex": 420}),
+                            dl.Pane(name="sites-pane", style={"zIndex": 430}),
+                            dl.LayerGroup(id="mapunit-layer"),
+                            dl.LayerGroup(id="hydro-layer"),
+                            dl.LayerGroup(id="surplus-heatmap-layer"),
+                            dl.LayerGroup(id="rain-grid-layer"),
+                            dl.LayerGroup(id="upstream-layer"),
+                            dl.LayerGroup(id="basin1-layer"),
+                            dl.LayerGroup(id="basin2-layer"),
+                            dl.LayerGroup(id="basin3-layer"),
+                            dl.LayerGroup(id="pin-basin-layer"),
+                            dl.LayerGroup(id="pin-basin-v3-layer"),
+                            dl.LayerGroup(id="iwqis-layer"),
+                            dl.LayerGroup(id="marker-layer"),
+                            dl.FeatureGroup(
+                                [
+                                    dl.EditControl(
+                                        id="edit-control",
+                                        position="bottomleft",
+                                        draw=DRAW_TOOLS,
+                                        edit={"edit": False, "remove": True},
+                                    )
+                                ]
+                            ),
+                            dl.LayerGroup(id="forecast-layer"),
+                        ],
+                        style={"height": "100vh", "width": "100%"},
                     ),
-                    dl.ZoomControl(position="bottomleft"),
-                    dl.GeoJSON(
-                        data=iowa_geojson,
-                        options={"style": {"color": "#555", "weight": 2, "fillOpacity": 0}},
+                    html.Div(
+                        id="map-graph-overlay",
+                        style=_GRAPH_OVERLAY_HIDDEN,
+                        children=[
+                            html.Button(
+                                "×",
+                                id="close-graph-btn",
+                                n_clicks=0,
+                                style={
+                                    "position": "absolute",
+                                    "top": "4px",
+                                    "right": "6px",
+                                    "background": "none",
+                                    "border": "none",
+                                    "fontSize": "18px",
+                                    "lineHeight": "1",
+                                    "cursor": "pointer",
+                                    "color": "#666",
+                                    "padding": "2px 6px",
+                                    "zIndex": 1,
+                                },
+                            ),
+                            dcc.Graph(
+                                id="timeseries-graph",
+                                style={"width": "100%", "height": "100%"},
+                                config={"responsive": True, "scrollZoom": True},
+                                figure=go.Figure(),
+                            ),
+                        ],
                     ),
-                    dl.LayerGroup(id="iem-bbox-layer"),
-                    dl.Pane(name="hydro-pane", style={"zIndex": 410}),
-                    dl.Pane(name="rain-grid-pane", style={"zIndex": 415}),
-                    dl.Pane(name="basin-pane", style={"zIndex": 420}),
-                    dl.Pane(name="sites-pane", style={"zIndex": 430}),
-                    dl.LayerGroup(id="mapunit-layer"),
-                    dl.LayerGroup(id="hydro-layer"),
-                    dl.LayerGroup(id="rain-grid-layer"),
-                    dl.LayerGroup(id="upstream-layer"),
-                    dl.LayerGroup(id="pin-basin-layer"),
-                    dl.LayerGroup(id="iwqis-layer"),
-                    dl.LayerGroup(id="marker-layer"),
-                    dl.FeatureGroup(
-                        [
-                            dl.EditControl(
-                                id="edit-control",
-                                position="bottomleft",
-                                draw=DRAW_TOOLS,
-                                edit={"edit": False, "remove": True},
-                            )
-                        ]
-                    ),
-                    dl.LayerGroup(id="forecast-layer"),
                 ],
-                style={"height": "85vh", "minHeight": "500px", "width": "100%"},
             ),
+            # ── Tools panel (20 %) ─────────────────────────────────────────
             html.Div(
                 id="tools-panel",
-                style=_PANEL_CLOSED,
+                style=_PANEL_STYLE,
                 children=[
-                    _build_selection_section(),
-                    _hr(),
-                    _build_graph_display_section(),
-                    _hr(),
-                    _build_forecast_section(),
-                    _hr(),
-                    _build_map_display_section(),
-                    _hr(),
-                    _build_map_layers_section(),
-                    _hr(),
-                    _build_debugging_section(),
-                ],
-            ),
-            html.Button(
-                "☰",
-                id="hamburger-btn",
-                n_clicks=0,
-                style={
-                    "position": "absolute",
-                    "top": "10px",
-                    "right": "10px",
-                    "zIndex": 1500,
-                    "background": "white",
-                    "border": "1px solid rgba(0,0,0,0.2)",
-                    "borderRadius": "4px",
-                    "boxShadow": "0 1px 4px rgba(0,0,0,0.2)",
-                    "padding": "4px 8px",
-                    "cursor": "pointer",
-                    "fontSize": "18px",
-                    "lineHeight": "1",
-                    "color": "#333",
-                },
-            ),
-            html.Div(
-                id="map-graph-overlay",
-                style=_GRAPH_OVERLAY_HIDDEN,
-                children=[
-                    html.Button(
-                        "×",
-                        id="close-graph-btn",
-                        n_clicks=0,
-                        style={
-                            "position": "absolute",
-                            "top": "4px",
-                            "right": "6px",
-                            "background": "none",
-                            "border": "none",
-                            "fontSize": "18px",
-                            "lineHeight": "1",
-                            "cursor": "pointer",
-                            "color": "#666",
-                            "padding": "2px 6px",
-                            "zIndex": 1,
-                        },
+                    # Menu selector tabs (full-bleed, no side padding inherited)
+                    html.Div(
+                        style={"display": "flex", "margin": "0 -12px 12px -12px"},
+                        children=[
+                            html.Button("Explore Data", id="menu-tab-explore", n_clicks=0, style=_MENU_TAB_ACTIVE),
+                            html.Button("Debug",        id="menu-tab-debug",   n_clicks=0, style=_MENU_TAB_INACTIVE),
+                        ],
                     ),
-                    dcc.Graph(
-                        id="timeseries-graph",
-                        style={"width": "100%", "height": "100%"},
-                        config={"responsive": True, "scrollZoom": True},
-                        figure=go.Figure(),
+                    # Explore Data Menu
+                    html.Div(
+                        id="explore-menu-content",
+                        style={"display": "block"},
+                        children=[
+                            _build_selection_section(),
+                            _hr(),
+                            _build_graph_display_section(),
+                            _hr(),
+                            _build_forecast_section(),
+                            _hr(),
+                            _build_map_display_section(),
+                            _hr(),
+                            _build_map_layers_section(),
+                        ],
+                    ),
+                    # Debug Menu
+                    html.Div(
+                        id="debug-menu-content",
+                        style={"display": "none"},
+                        children=[
+                            html.Div(id="debug-sites-table", style={"marginBottom": "8px"}),
+                            _hr(),
+                            basin_editor.layout(),
+                            _hr(),
+                            _build_debugging_section(),
+                        ],
                     ),
                 ],
             ),
@@ -844,6 +907,7 @@ def register_callbacks(app):
     @app.callback(
         Output("sites-selected-list", "children"),
         Output("clear-selection-btn", "style"),
+        Output("debug-sites-table", "children"),
         Input("selected-site", "data"),
         Input("active-graph-site", "data"),
     )
@@ -864,7 +928,8 @@ def register_callbacks(app):
         )
 
         if not selected_uids:
-            return html.Table([header], style={"width": "100%", "borderCollapse": "collapse"}), _CLEAR_BTN_HIDDEN
+            empty = html.Table([header], style={"width": "100%", "borderCollapse": "collapse"})
+            return empty, _CLEAR_BTN_HIDDEN, empty
 
         rows = []
         for uid in selected_uids:
@@ -915,10 +980,8 @@ def register_callbacks(app):
                 )
             )
 
-        return (
-            html.Table([header, html.Tbody(rows)], style={"width": "100%", "borderCollapse": "collapse"}),
-            _CLEAR_BTN_VISIBLE,
-        )
+        table = html.Table([header, html.Tbody(rows)], style={"width": "100%", "borderCollapse": "collapse"})
+        return table, _CLEAR_BTN_VISIBLE, table
 
     @app.callback(
         Output("selected-site", "data"),
@@ -928,9 +991,10 @@ def register_callbacks(app):
         Input("edit-control", "geojson"),
         State("selected-site", "data"),
         State("selection-mode", "value"),
+        State("active-menu", "data"),
         prevent_initial_call=True,
     )
-    def update_selected_sites(marker_clicks, remove_clicks, _clear, edit_geojson, current, mode):
+    def update_selected_sites(marker_clicks, remove_clicks, _clear, edit_geojson, current, mode, active_menu):
         current = current or []
         triggered = ctx.triggered_id
 
@@ -941,6 +1005,9 @@ def register_callbacks(app):
             if not any(marker_clicks):
                 return no_update
             uid = triggered["index"]
+            if active_menu == "debug":
+                # Single selection: clicking the selected site deselects; clicking another replaces
+                return [] if uid in current else [uid]
             return [s for s in current if s != uid] if uid in current else current + [uid]
 
         if isinstance(triggered, dict) and triggered.get("type") == "remove-site-btn":
@@ -1013,7 +1080,7 @@ def register_callbacks(app):
             return []
         return [dl.Rectangle(
             bounds=[[38.8, -97.7], [45.3, -87.4]],
-            pathOptions={"color": "#f97316", "weight": 2, "dashArray": "6 4", "fillOpacity": 0},
+            pathOptions={"color": colors.IEM_BBOX["stroke"], "weight": 2, "dashArray": "6 4", "fillOpacity": 0},
         )]
 
     @app.callback(
@@ -1029,9 +1096,9 @@ def register_callbacks(app):
                 options={
                     "pane": "hydro-pane",
                     "style": {
-                        "color": "#2563eb",
+                        "color": colors.HYDRO["stroke"],
                         "weight": 0.8,
-                        "fillColor": "#3b82f6",
+                        "fillColor": colors.HYDRO["fill"],
                         "fillOpacity": 0.45,
                         "interactive": False,
                     },
@@ -1042,7 +1109,7 @@ def register_callbacks(app):
                 options={
                     "pane": "hydro-pane",
                     "style": {
-                        "color": "#2563eb",
+                        "color": colors.HYDRO["stroke"],
                         "weight": 1.2,
                         "interactive": False,
                     },
@@ -1052,54 +1119,134 @@ def register_callbacks(app):
 
     _BASIN_STYLE = {
         "pane": "basin-pane",
-        "color": "purple",
+        "color": colors.BASIN["stroke"],
         "weight": 2,
         "fillOpacity": 0.15,
-        "fillColor": "purple",
+        "fillColor": colors.BASIN["fill"],
         "interactive": False,
     }
 
     @app.callback(
         Output("upstream-layer", "children"),
-        Input("upstream-toggle", "value"),
+        Input("basin-preferred-toggle", "value"),
+        Input("basin-all-toggle", "value"),
         Input("selected-site", "data"),
+        Input("preferred-basin-version", "data"),
     )
-    def render_upstream_area(toggle_values, selected_uids):
+    def render_upstream_area(preferred_toggle, all_toggle, selected_uids, _version):
         layers = []
         selected_uids = selected_uids or []
 
-        if "show-all" in toggle_values:
+        if "show" in all_toggle:
             try:
-                gdf = water.get_all_basins_union()
+                gdf = basins.get_all_basins_union()
                 layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN_STYLE}))
             except Exception:
                 pass
 
-        if "show-site" in toggle_values:
+        if "show" in preferred_toggle:
             for uid in selected_uids:
                 try:
-                    gdf = water.get_basin(uid)
+                    gdf = basins.get_basin(uid)
                     layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN_STYLE}))
                 except Exception:
                     pass
 
         return layers
 
+    _BASIN2_STYLE = {
+        "pane": "basin-pane",
+        "color": colors.BASIN_V2["stroke"],
+        "weight": 2,
+        "fillOpacity": 0.12,
+        "fillColor": colors.BASIN_V2["fill"],
+        "interactive": False,
+    }
+
+    @app.callback(
+        Output("basin1-layer", "children"),
+        Input("basin1-toggle", "value"),
+        Input("selected-site", "data"),
+    )
+    def render_basin1(toggle, selected_uids):
+        if "show" not in toggle:
+            return []
+        layers = []
+        for uid in (selected_uids or []):
+            try:
+                gdf = basins.get_basin(uid, type=1)
+                layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN_STYLE}))
+            except FileNotFoundError:
+                pass
+        return layers
+
+    @app.callback(
+        Output("basin2-layer", "children"),
+        Input("basin2-toggle", "value"),
+        Input("selected-site", "data"),
+    )
+    def render_basin2(toggle, selected_uids):
+        if "show" not in toggle:
+            return []
+        layers = []
+        for uid in (selected_uids or []):
+            try:
+                gdf = basins.get_basin(uid, type=2)
+                layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN2_STYLE}))
+            except FileNotFoundError:
+                pass
+        return layers
+
+    _BASIN3_STYLE = {
+        "pane": "basin-pane",
+        "color": colors.BASIN_V3["stroke"],
+        "weight": 2,
+        "fillOpacity": 0.12,
+        "fillColor": colors.BASIN_V3["fill"],
+        "interactive": False,
+    }
+
+    @app.callback(
+        Output("basin3-layer", "children"),
+        Input("basin3-toggle", "value"),
+        Input("selected-site", "data"),
+    )
+    def render_basin3(toggle, selected_uids):
+        if "show" not in toggle:
+            return []
+        layers = []
+        for uid in (selected_uids or []):
+            try:
+                gdf = basins.get_basin(uid, type=3)
+                layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN3_STYLE}))
+            except FileNotFoundError:
+                pass
+        return layers
+
     _PIN_BASIN_STYLE = {
         "pane": "basin-pane",
-        "color": "#f97316",
+        "color": colors.PIN_BASIN_V1["stroke"],
         "weight": 2,
         "fillOpacity": 0.15,
-        "fillColor": "#f97316",
+        "fillColor": colors.PIN_BASIN_V1["fill"],
+        "interactive": False,
+    }
+
+    _PIN_BASIN_V3_STYLE = {
+        "pane": "basin-pane",
+        "color": colors.PIN_BASIN_V3["stroke"],
+        "weight": 2,
+        "fillOpacity": 0.15,
+        "fillColor": colors.PIN_BASIN_V3["fill"],
         "interactive": False,
     }
 
     @app.callback(
         Output("pin-basin-layer", "children"),
-        Input("pin-basin-toggle", "value"),
+        Input("pin-basin-v1-toggle", "value"),
         Input("region-geom", "data"),
     )
-    def render_pin_basin(toggle, region_geom):
+    def render_pin_basin_v1(toggle, region_geom):
         if "show" not in toggle:
             return []
         if not region_geom or region_geom.get("type") != "Point":
@@ -1112,6 +1259,23 @@ def register_callbacks(app):
             return []
 
     @app.callback(
+        Output("pin-basin-v3-layer", "children"),
+        Input("pin-basin-v3-toggle", "value"),
+        Input("region-geom", "data"),
+    )
+    def render_pin_basin_v3(toggle, region_geom):
+        if "show" not in toggle:
+            return []
+        if not region_geom or region_geom.get("type") != "Point":
+            return []
+        lng, lat = region_geom["coordinates"]
+        try:
+            geojson = delineate_basin_v3_for_pin(lat, lng)
+            return [dl.GeoJSON(data=geojson, options={"style": _PIN_BASIN_V3_STYLE})]
+        except Exception:
+            return []
+
+    @app.callback(
         Output("rain-grid-layer", "children"),
         Input("rain-grid-toggle", "value"),
         Input("active-graph-site", "data"),
@@ -1120,14 +1284,14 @@ def register_callbacks(app):
         if "show" not in toggle or not active_uid:
             return []
         try:
-            df = weather.get_site_rain(active_uid)
+            df = rain_data.get_site_rain(active_uid)
             cells = df[["lon", "lat"]].drop_duplicates()
             return [
                 dl.CircleMarker(
                     center=[row.lat, row.lon],
                     radius=4,
-                    color="#0284c7",
-                    fillColor="#38bdf8",
+                    color=colors.RAIN_GRID["stroke"],
+                    fillColor=colors.RAIN_GRID["fill"],
                     fillOpacity=0.5,
                     weight=1,
                     pane="rain-grid-pane",
@@ -1138,15 +1302,72 @@ def register_callbacks(app):
         except FileNotFoundError:
             return []
 
+    def _surplus_color(v: float) -> str:
+        h0, s0, l0 = colors.SURPLUS_LOW
+        h1, s1, l1 = colors.SURPLUS_HIGH
+        h = int(h0 + (h1 - h0) * v)
+        s = int(s0 + (s1 - s0) * v)
+        l = int(l0 + (l1 - l0) * v)
+        return f"hsl({h}, {s}%, {l}%)"
+
+    @app.callback(
+        Output("surplus-heatmap-layer", "children"),
+        Input("surplus-heatmap-toggle", "value"),
+        Input("active-graph-site", "data"),
+        Input("surplus-year-slider", "value"),
+    )
+    def render_surplus_heatmap(toggle, active_uid, year):
+        if "show" not in toggle or not active_uid:
+            return []
+        try:
+            df = surplus.get_surplus(active_uid)
+        except FileNotFoundError:
+            return []
+
+        pixels = df[df["year"] == year][["lon", "lat", "surplus_kgha"]]
+        if pixels.empty:
+            return []
+
+        vmin, vmax = pixels["surplus_kgha"].min(), pixels["surplus_kgha"].max()
+        rng = vmax - vmin if vmax != vmin else 1.0
+
+        return [
+            dl.CircleMarker(
+                center=[row.lat, row.lon],
+                radius=5,
+                color="none",
+                fillColor=_surplus_color((row.surplus_kgha - vmin) / rng),
+                fillOpacity=0.75,
+                weight=0,
+                pane="surplus-pane",
+                bubblingMouseEvents=False,
+                children=dl.Tooltip(f"{year}: {row.surplus_kgha:.1f} kg/ha"),
+            )
+            for row in pixels.itertuples()
+        ]
+
     @app.callback(
         Output("iwqis-layer", "children"),
-        Input("iwqis-toggle", "value"),
         Input("selected-site", "data"),
+        Input("basin-review-flagged-only", "value"),
+        Input("basin-review-unreviewed-only", "value"),
     )
-    def render_iwqis_sites(value, selected_uids):
-        if "show" in value:
-            return make_iwqis_markers(selected_uids or [])
-        return []
+    def render_iwqis_sites(selected_uids, flagged_only, unreviewed_only):
+        visible_uids = None
+        if "on" in (flagged_only or []) or "on" in (unreviewed_only or []):
+            try:
+                meta = basins.get_preferred_basin_metadata()
+                df = meta.copy()
+                flag_cols = ["flag_area", "flag_river", "flag_not_contained", "flag_basin1_over_basin2"]
+                if "on" in (flagged_only or []):
+                    flag_df = df[flag_cols].fillna(False)
+                    df = df[flag_df.any(axis=1)]
+                if "on" in (unreviewed_only or []):
+                    df = df[~df["reviewed"].fillna(False).astype(bool)]
+                visible_uids = set(df["site_uid"])
+            except FileNotFoundError:
+                pass
+        return make_iwqis_markers(selected_uids or [], visible_uids=visible_uids)
 
     @app.callback(
         Output("area-tool-container", "style"),
@@ -1178,20 +1399,6 @@ def register_callbacks(app):
         return no_update, no_update
 
     @app.callback(
-        Output("tools-panel", "style"),
-        Output("tools-open", "data"),
-        Input("hamburger-btn", "n_clicks"),
-        State("tools-open", "data"),
-        prevent_initial_call=True,
-    )
-    def toggle_tools(n_clicks, is_open):
-        new_open = not is_open
-        style = dict(_PANEL_OPEN)
-        if not new_open:
-            style["display"] = "none"
-        return style, new_open
-
-    @app.callback(
         Output("region-geom", "data"),
         Output("marker-layer", "children"),
         Input("map", "clickData"),
@@ -1221,3 +1428,51 @@ def register_callbacks(app):
             return geom, []
 
         return no_update, no_update
+
+    @app.callback(
+        Output("explore-menu-content", "style"),
+        Output("debug-menu-content", "style"),
+        Output("menu-tab-explore", "style"),
+        Output("menu-tab-debug", "style"),
+        Output("active-menu", "data"),
+        Output("selected-site", "data", allow_duplicate=True),
+        Input("menu-tab-explore", "n_clicks"),
+        Input("menu-tab-debug", "n_clicks"),
+        State("selected-site", "data"),
+        State("active-graph-site", "data"),
+        prevent_initial_call=True,
+    )
+    def switch_menu(_, __, selected_sites, active_site):
+        if ctx.triggered_id == "menu-tab-debug":
+            trimmed = [active_site] if active_site else (selected_sites[:1] if selected_sites else [])
+            return {"display": "none"}, {"display": "block"}, _MENU_TAB_INACTIVE, _MENU_TAB_ACTIVE, "debug", trimmed
+        return {"display": "block"}, {"display": "none"}, _MENU_TAB_ACTIVE, _MENU_TAB_INACTIVE, "explore", no_update
+
+    @app.callback(
+        Output("active-area-tool", "data"),
+        Input("draw-rect-btn", "n_clicks"),
+        Input("draw-poly-btn", "n_clicks"),
+        Input("selection-mode", "value"),
+        prevent_initial_call=True,
+    )
+    def update_active_area_tool(_rect, _poly, mode):
+        if ctx.triggered_id == "selection-mode":
+            return "rect" if mode == "area" else None
+        if ctx.triggered_id == "draw-rect-btn":
+            return "rect"
+        if ctx.triggered_id == "draw-poly-btn":
+            return "poly"
+        return no_update
+
+    @app.callback(
+        Output("draw-rect-btn", "style"),
+        Output("draw-poly-btn", "style"),
+        Input("active-area-tool", "data"),
+    )
+    def update_area_btn_styles(active_tool):
+        return (
+            _DRAW_BTN_ACTIVE if active_tool == "rect" else _DRAW_BTN_INACTIVE,
+            _DRAW_BTN_ACTIVE if active_tool == "poly" else _DRAW_BTN_INACTIVE,
+        )
+
+    basin_editor.register_callbacks(app)
