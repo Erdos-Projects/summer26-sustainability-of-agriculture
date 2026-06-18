@@ -442,47 +442,46 @@ def _build_graph_display_section():
             ),
             html.Div(
                 [
-                    html.Label(
-                        "Aggregate Interval",
-                        style={"fontSize": "12px", "color": "#555", "whiteSpace": "nowrap", "marginRight": "8px"},
-                    ),
-                    dcc.Dropdown(
-                        id="aggregate-interval",
-                        options=[
-                            {"label": "1D", "value": "1D"},
-                            {"label": "3D", "value": "3D"},
-                            {"label": "1W", "value": "1W"},
-                            {"label": "2W", "value": "2W"},
-                            {"label": "1MS", "value": "1MS"},
-                            {"label": "3MS", "value": "3MS"},
-                            {"label": "1YS", "value": "1YS"},
+                    html.Div(
+                        [
+                            html.Label("Aggregation Interval", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}),
+                            dcc.Dropdown(
+                                id="aggregate-interval",
+                                options=[
+                                    {"label": "1D",  "value": "1D"},
+                                    {"label": "3D",  "value": "3D"},
+                                    {"label": "1W",  "value": "1W"},
+                                    {"label": "2W",  "value": "2W"},
+                                    {"label": "1MS", "value": "1MS"},
+                                    {"label": "3MS", "value": "3MS"},
+                                    {"label": "1YS", "value": "1YS"},
+                                ],
+                                value="1D",
+                                clearable=False,
+                                style={"fontSize": "13px"},
+                            ),
                         ],
-                        value="1D",
-                        clearable=False,
-                        style={"fontSize": "13px", "flex": "1"},
+                        style={"flex": "1", "minWidth": "0", "display": "flex", "flexDirection": "column"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label("Aggregation Method", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}),
+                            dcc.Dropdown(
+                                id="agg-func",
+                                options=[
+                                    {"label": "mean", "value": "mean"},
+                                    {"label": "min",  "value": "min"},
+                                    {"label": "max",  "value": "max"},
+                                ],
+                                value="mean",
+                                clearable=False,
+                                style={"fontSize": "13px"},
+                            ),
+                        ],
+                        style={"flex": "1", "minWidth": "0", "display": "flex", "flexDirection": "column"},
                     ),
                 ],
-                style={"display": "flex", "alignItems": "center", "marginTop": "8px"},
-            ),
-            html.Div(
-                [
-                    html.Label(
-                        "Aggregation Method",
-                        style={"fontSize": "12px", "color": "#555", "whiteSpace": "nowrap", "marginRight": "8px"},
-                    ),
-                    dcc.Dropdown(
-                        id="agg-func",
-                        options=[
-                            {"label": "mean", "value": "mean"},
-                            {"label": "min", "value": "min"},
-                            {"label": "max", "value": "max"},
-                        ],
-                        value="mean",
-                        clearable=False,
-                        style={"fontSize": "13px", "flex": "1"},
-                    ),
-                ],
-                style={"display": "flex", "alignItems": "center", "marginTop": "8px"},
+                style={"display": "flex", "gap": "8px", "alignItems": "flex-start", "marginTop": "8px"},
             ),
         ],
         open=True,
@@ -635,6 +634,7 @@ def _build_map_display_section():
                             value=2017,
                             marks=None,
                             tooltip={"placement": "bottom", "always_visible": True},
+                            updatemode="mouseup",
                         ),
                         style={"flex": "1", "minWidth": "80px"},
                     ),
@@ -821,11 +821,12 @@ def layout():
                     html.Div(
                         style={"display": "flex", "margin": "0 -12px 12px -12px"},
                         children=[
-                            html.Button("Explore Data", id="menu-tab-explore", n_clicks=0, style=_MENU_TAB_ACTIVE),
-                            html.Button("Debug",        id="menu-tab-debug",   n_clicks=0, style=_MENU_TAB_INACTIVE),
+                            html.Button("Explore",  id="menu-tab-explore",   n_clicks=0, style=_MENU_TAB_ACTIVE),
+                            html.Button("Forecast", id="menu-tab-forecast",  n_clicks=0, style=_MENU_TAB_INACTIVE),
+                            html.Button("Debug",    id="menu-tab-debug",     n_clicks=0, style=_MENU_TAB_INACTIVE),
                         ],
                     ),
-                    # Explore Data Menu
+                    # Explore Menu
                     html.Div(
                         id="explore-menu-content",
                         style={"display": "block"},
@@ -834,11 +835,17 @@ def layout():
                             _hr(),
                             _build_graph_display_section(),
                             _hr(),
-                            _build_forecast_section(),
-                            _hr(),
                             _build_map_display_section(),
                             _hr(),
                             _build_map_layers_section(),
+                        ],
+                    ),
+                    # Forecast Menu
+                    html.Div(
+                        id="forecast-menu-content",
+                        style={"display": "none"},
+                        children=[
+                            _build_forecast_section(),
                         ],
                     ),
                     # Debug Menu
@@ -1302,14 +1309,6 @@ def register_callbacks(app):
         except FileNotFoundError:
             return []
 
-    def _surplus_color(v: float) -> str:
-        h0, s0, l0 = colors.SURPLUS_LOW
-        h1, s1, l1 = colors.SURPLUS_HIGH
-        h = int(h0 + (h1 - h0) * v)
-        s = int(s0 + (s1 - s0) * v)
-        l = int(l0 + (l1 - l0) * v)
-        return f"hsl({h}, {s}%, {l}%)"
-
     @app.callback(
         Output("surplus-heatmap-layer", "children"),
         Input("surplus-heatmap-toggle", "value"),
@@ -1320,31 +1319,10 @@ def register_callbacks(app):
         if "show" not in toggle or not active_uid:
             return []
         try:
-            df = surplus.get_surplus(active_uid)
-        except FileNotFoundError:
+            url, bounds = surplus.get_surplus_image(active_uid, year)
+        except (FileNotFoundError, ValueError):
             return []
-
-        pixels = df[df["year"] == year][["lon", "lat", "surplus_kgha"]]
-        if pixels.empty:
-            return []
-
-        vmin, vmax = pixels["surplus_kgha"].min(), pixels["surplus_kgha"].max()
-        rng = vmax - vmin if vmax != vmin else 1.0
-
-        return [
-            dl.CircleMarker(
-                center=[row.lat, row.lon],
-                radius=5,
-                color="none",
-                fillColor=_surplus_color((row.surplus_kgha - vmin) / rng),
-                fillOpacity=0.75,
-                weight=0,
-                pane="surplus-pane",
-                bubblingMouseEvents=False,
-                children=dl.Tooltip(f"{year}: {row.surplus_kgha:.1f} kg/ha"),
-            )
-            for row in pixels.itertuples()
-        ]
+        return [dl.ImageOverlay(url=url, bounds=bounds, opacity=0.8, pane="surplus-pane")]
 
     @app.callback(
         Output("iwqis-layer", "children"),
@@ -1431,22 +1409,29 @@ def register_callbacks(app):
 
     @app.callback(
         Output("explore-menu-content", "style"),
+        Output("forecast-menu-content", "style"),
         Output("debug-menu-content", "style"),
         Output("menu-tab-explore", "style"),
+        Output("menu-tab-forecast", "style"),
         Output("menu-tab-debug", "style"),
         Output("active-menu", "data"),
         Output("selected-site", "data", allow_duplicate=True),
         Input("menu-tab-explore", "n_clicks"),
+        Input("menu-tab-forecast", "n_clicks"),
         Input("menu-tab-debug", "n_clicks"),
         State("selected-site", "data"),
         State("active-graph-site", "data"),
         prevent_initial_call=True,
     )
-    def switch_menu(_, __, selected_sites, active_site):
+    def switch_menu(_, __, ___, selected_sites, active_site):
+        _show = {"display": "block"}
+        _hide = {"display": "none"}
         if ctx.triggered_id == "menu-tab-debug":
             trimmed = [active_site] if active_site else (selected_sites[:1] if selected_sites else [])
-            return {"display": "none"}, {"display": "block"}, _MENU_TAB_INACTIVE, _MENU_TAB_ACTIVE, "debug", trimmed
-        return {"display": "block"}, {"display": "none"}, _MENU_TAB_ACTIVE, _MENU_TAB_INACTIVE, "explore", no_update
+            return _hide, _hide, _show, _MENU_TAB_INACTIVE, _MENU_TAB_INACTIVE, _MENU_TAB_ACTIVE, "debug", trimmed
+        if ctx.triggered_id == "menu-tab-forecast":
+            return _hide, _show, _hide, _MENU_TAB_INACTIVE, _MENU_TAB_ACTIVE, _MENU_TAB_INACTIVE, "forecast", no_update
+        return _show, _hide, _hide, _MENU_TAB_ACTIVE, _MENU_TAB_INACTIVE, _MENU_TAB_INACTIVE, "explore", no_update
 
     @app.callback(
         Output("active-area-tool", "data"),

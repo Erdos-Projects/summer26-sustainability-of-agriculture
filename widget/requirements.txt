@@ -5,3 +5,4 @@ shapely
 plotly
 pandas
 pyarrow
+Pillow
