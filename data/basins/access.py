@@ -6,14 +6,14 @@ from pathlib import Path
 
 _THIS_DIR = Path(__file__).resolve().parent
 _BASIN_DATA_DIR = _THIS_DIR / "basin_data"
-_PREFERRED_CSV = _THIS_DIR / "preferred_basin.csv"
+_PREFERRED_CSV = _THIS_DIR / "basin_meta" / "preferred_basin.csv"
 
 _PREFERRED_META_DF = None
 _ALL_BASINS_DF = None
 _ALL_BASINS_UNION_DF = None
 
 
-def get_preferred_basin_metadata() -> pd.DataFrame:
+def get_metadata() -> pd.DataFrame:
     """Return preferred_basin.csv as a DataFrame (cached after first call)."""
     global _PREFERRED_META_DF
     if _PREFERRED_META_DF is None:
@@ -36,7 +36,7 @@ def get_basin(site_uid: str, type: int = 0) -> gpd.GeoDataFrame:
     Raises KeyError if type=0 and site_uid is not in preferred_basin.csv.
     """
     if type == 0:
-        meta = get_preferred_basin_metadata()
+        meta = get_metadata()
         row = meta[meta["site_uid"] == site_uid]
         if row.empty:
             raise KeyError(f"No preferred basin entry for {site_uid}.")
@@ -57,7 +57,7 @@ def get_all_basins() -> gpd.GeoDataFrame:
     """
     global _ALL_BASINS_DF
     if _ALL_BASINS_DF is None:
-        meta = get_preferred_basin_metadata()
+        meta = get_metadata()
         gdfs = []
         for _, row in meta.iterrows():
             path = _BASIN_DATA_DIR / row["basin_name"]

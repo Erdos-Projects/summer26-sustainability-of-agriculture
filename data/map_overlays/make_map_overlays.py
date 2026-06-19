@@ -16,7 +16,7 @@ import geopandas as gpd
 from pynhd import NHD
 
 THIS_DIR = Path(__file__).resolve().parent
-SAVE_DIR = THIS_DIR / "overlays"
+SAVE_DIR = THIS_DIR / "overlays_data"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
 # ──────────────────────────────────────────────────────────────────────────────

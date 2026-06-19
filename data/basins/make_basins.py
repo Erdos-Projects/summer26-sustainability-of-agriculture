@@ -57,11 +57,11 @@ from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
 _THIS_DIR       = Path(__file__).resolve().parent
-_METADATA       = _THIS_DIR.parent / "water" / "metadata" / "site_location_metadata.csv"
+_METADATA       = _THIS_DIR.parent / "water" / "water_meta" / "site_location_metadata.csv"
 _BASIN_DATA_DIR = _THIS_DIR / "basin_data"
 _CACHE_DIR      = _THIS_DIR / "cache"
-_PREFERRED_CSV  = _THIS_DIR / "preferred_basin.csv"
-_ARCHIVE_CSV    = _THIS_DIR / ".preferred_basin_archive.csv"
+_PREFERRED_CSV  = _THIS_DIR / "basin_meta" / "preferred_basin.csv"
+_ARCHIVE_CSV    = _THIS_DIR / "basin_meta" / ".preferred_basin_archive.csv"
 
 # Columns that indicate a meaningful change in the archive vs. working CSV.
 # Float columns (areas, distances) are excluded — they may drift on recompute.

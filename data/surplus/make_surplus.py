@@ -17,21 +17,27 @@ Usage
 """
 
 import argparse
+import json
 import sys
+import time
+import numpy as np
 import pandas as pd
 import geopandas as gpd
+from matplotlib import colormaps
 from pathlib import Path
+from PIL import Image
 
 _THIS_DIR = Path(__file__).resolve().parent
 _TOP_DATA = _THIS_DIR.parent
-_SOURCE_DIR  = _THIS_DIR / "surplus_source"
-_RAW_DIR     = _THIS_DIR / "surplus_raw"
-_DATA_DIR    = _THIS_DIR / "surplus_data"
-_MERGED_FILE = _RAW_DIR  / "iowa_nitrogen_surplus.parquet"
+_SOURCE_DIR = _THIS_DIR / "surplus_source"
+_RAW_DIR = _THIS_DIR / "surplus_raw"
+_DATA_DIR = _THIS_DIR / "surplus_data"
+_MERGED_FILE = _RAW_DIR / "iowa_nitrogen_surplus.parquet"
 _MANIFEST_FILE = _DATA_DIR / ".basin_manifest.csv"
 
 sys.path.insert(0, str(_TOP_DATA.parent))
 from data import basins
+import gen_surplus_statistics as stats
 
 EQUAL_AREA_CRS = "EPSG:5070"
 
@@ -41,7 +47,7 @@ def build_merged() -> pd.DataFrame:
     chunks = [pd.read_parquet(_SOURCE_DIR / f"surplus{i}.parquet") for i in range(1, 4)]
     surplus = pd.concat(chunks, ignore_index=True)
     lookup = pd.read_parquet(_SOURCE_DIR / "iowa_grid_lookup.parquet")
-    merged = surplus.merge(lookup, on="pixel_id").drop(columns=["pixel_id"])
+    merged = surplus.merge(lookup, on="pixel_id")
     _RAW_DIR.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(_MERGED_FILE, index=False)
     print(f"Wrote {len(merged):,} rows → {_MERGED_FILE}")
@@ -56,6 +62,7 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
     out = _DATA_DIR / f"{site_uid}_surplus.parquet"
     if out.exists() and not force:
         return False
+    t0 = time.perf_counter()
 
     try:
         basin = basins.get_basin(site_uid)
@@ -73,13 +80,15 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
         print(f"  {site_uid}: no grid points in bounding box")
         return False
 
-    # Vectorized contains check — index must align with candidates
+    # Spatial check on unique pixels only (pixel_id deduplicates across years)
+    unique_pixels = candidates.drop_duplicates("pixel_id")
     pts = gpd.GeoSeries(
-        gpd.points_from_xy(candidates["x"], candidates["y"]),
-        index=candidates.index,
+        gpd.points_from_xy(unique_pixels["x"], unique_pixels["y"]),
+        index=unique_pixels.index,
         crs=EQUAL_AREA_CRS,
     )
-    inside = candidates[pts.within(poly)]
+    inside_ids = unique_pixels.loc[pts.within(poly), "pixel_id"]
+    inside = candidates[candidates["pixel_id"].isin(inside_ids)]
 
     if inside.empty:
         print(f"  {site_uid}: no grid points inside basin polygon")
@@ -87,8 +96,62 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
 
     inside.to_parquet(out, index=False)
     n_pixels = len(inside) // inside["year"].nunique()
-    print(f"  {site_uid}: {n_pixels} pixels × {inside['year'].nunique()} years = {len(inside):,} rows")
+    elapsed = time.perf_counter() - t0
+    print(f"  {site_uid}: {n_pixels} pixels × {inside['year'].nunique()} years = {len(inside):,} rows   ({elapsed:.0f} sec)")
     return True
+
+
+def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None:
+    """Generate and save Iowa-wide surplus PNG + JSON bounds for each year.
+
+    Uses pixel_id as a flat row-major index into the (height, width) grid array
+    so no unique() call is needed — fully vectorized, no OOM risk.
+    Bounds are stored in lon/lat for correct Leaflet geographic alignment.
+    Skips years whose PNG and JSON sidecar already exist unless force=True.
+    """
+    from data.surplus.access import _min_surplus, _max_surplus
+
+    grid = pd.read_parquet(_SOURCE_DIR / "iowa_grid_lookup.parquet")
+    width  = grid["x"].nunique()
+    height = len(grid) // width
+    if height * width != len(grid):
+        raise ValueError("Grid lookup doesn't reshape into a clean rectangle.")
+
+    cmap = colormaps["YlOrRd"]
+    lo, hi = _min_surplus(), _max_surplus()
+    rng = hi - lo if hi != lo else 1.0
+
+    bounds = [
+        [float(grid["lat"].min()), float(grid["lon"].min())],
+        [float(grid["lat"].max()), float(grid["lon"].max())],
+    ]
+
+    years = sorted(merged["year"].unique())
+    skipped = 0
+    for year in years:
+        img_path   = _RAW_DIR / f"iowa_surplus_{year}.png"
+        bounds_path = _RAW_DIR / f"iowa_surplus_{year}.json"
+        if not force and img_path.exists() and bounds_path.exists():
+            skipped += 1
+            continue
+
+        panel = merged[merged["year"] == year]
+
+        flat = np.full(height * width, np.nan, dtype="float32")
+        flat[panel["pixel_id"].to_numpy()] = panel["surplus_kgha"].to_numpy()
+        img_arr = flat.reshape(height, width)
+
+        t = np.clip((img_arr - lo) / rng, 0.0, 1.0)
+        rgba = (cmap(t) * 255).astype(np.uint8)
+        rgba[np.isnan(img_arr), 3] = 0   # transparent where no data
+
+        Image.fromarray(rgba, mode="RGBA").save(img_path, format="PNG")
+        with open(bounds_path, "w") as f:
+            json.dump({"bounds": bounds}, f)
+        print(f"  iowa {year}: saved")
+
+    if skipped:
+        print(f"  iowa images: {skipped}/{len(years)} already up to date, skipped.")
 
 
 def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
@@ -123,15 +186,22 @@ def _write_manifest(preferred_meta: pd.DataFrame) -> None:
 def main(api_keys=None, force: bool = False) -> None:
     _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-    preferred_meta = basins.get_preferred_basin_metadata()
+    preferred_meta = basins.get_metadata()
 
     to_process = preferred_meta["site_uid"].tolist() if force else _stale_sites(preferred_meta)
 
     n_total = len(preferred_meta)
-    n_skip  = n_total - len(to_process)
+    n_skip = n_total - len(to_process)
     print(f"Precheck: {n_skip}/{n_total} sites up to date, {len(to_process)} to build.")
 
-    if not to_process:
+    iowa_years_missing = [
+        y
+        for y in range(2000, 2018)
+        if not (_RAW_DIR / f"iowa_surplus_{y}.png").exists() or not (_RAW_DIR / f"iowa_surplus_{y}.json").exists()
+    ]
+    needs_merged = bool(to_process) or bool(iowa_years_missing) or force
+
+    if not needs_merged:
         print("Nothing to do.")
         return
 
@@ -143,17 +213,21 @@ def main(api_keys=None, force: bool = False) -> None:
         merged = build_merged()
     print(f"{len(merged):,} rows loaded.\n")
 
-    written = failed = 0
-    print(f"Processing {len(to_process)} sites...")
-    for uid in to_process:
-        ok = write_site_surplus(uid, merged, force=True)
-        if ok:
-            written += 1
-        else:
-            failed += 1
+    if to_process:
+        written = failed = 0
+        print(f"Processing {len(to_process)} sites...")
+        for uid in to_process:
+            ok = write_site_surplus(uid, merged, force=True)
+            if ok:
+                written += 1
+            else:
+                failed += 1
+        print(f"\nSites done: {written} written, {failed} failed/empty.")
+        _write_manifest(preferred_meta)
+        stats.gen_surplus_statistics()
 
-    print(f"\nDone: {written} written, {failed} failed/empty.")
-    _write_manifest(preferred_meta)
+    print("\nGenerating Iowa surplus images...")
+    write_iowa_surplus_images(merged, force=force)
 
 
 if __name__ == "__main__":

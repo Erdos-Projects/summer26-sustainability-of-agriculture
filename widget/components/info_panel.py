@@ -51,7 +51,7 @@ _BAR_THRESH = 200  # if there are more than this many bars, do a scatter for rai
 
 
 def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_seasons: bool = False) -> go.Figure:
-    """Build the site timeseries figure with nitrate and (eventually) rain traces.
+    """Build the site timeseries figure with nitrate and rain traces.
 
     Nitrate is plotted on the primary y-axis.  A secondary y-axis is reserved
     for rainfall — uncomment the rain block below once the rain parquets are
@@ -117,6 +117,7 @@ def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_s
                 dict(count=1, label="1M", step="month", stepmode="backward"),
                 dict(count=3, label="3M", step="month", stepmode="backward"),
                 dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=3, label="3Y", step="year", stepmode="backward"),
                 dict(step="all", label="All"),
             ]
         ),

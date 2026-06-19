@@ -1,60 +1,96 @@
 # Documentation for `data/`
 
-All raw data acquisition and access for the SUSTAG project — one subfolder per data source, each with a `make_*.py` script that downloads/builds it and an `access.py` module that exposes a clean read-only API.
+Unified data creation/access for the sustainability of agriculture project. Top level folder organized as follows:
 
-Run through the `examples.ipynb` to see examples.
+```
+data/
+  basins/
+  crops/
+  map_overlays/
+  rain/
+  surplus/
+  water/
+  access.py
+  make_data.py
+```
 
----
+Each of the above directories is a submodule of data organized as follows:
+```
+<name>/
+  access.py        read-only API — import this from other code
+  make_<name>.py   downloads / builds the data
+  <name>_data/     processed outputs (parquet, geojson, …)
+  <name>_meta/     metadata files (CSVs, manifests)
+  <name>_raw/      raw source files — gitignored
+```
 
 ## Quickstart
 
-Copy `api-keys-example.toml` to `api-keys.toml` and fill in your keys, then run the full pipeline:
+You shouldn't need api-keys since the data should be accessible on Github, but if you do, copy `api-keys-example.toml` to `api-keys.toml` and fill in your keys. Then run the full pipeline to make sure everything is there:
 
 ```bash
 cd data/
-python initialize_data.py
+python make_data.py
 ```
 
-This runs `water/make_water.py`, `map_overlays/make_overlays.py` and `weather/make_weather.py` in that order. If pulled from git, the source files should be present and `initialize_data.py` should finish quickly. If not, then prepare to wait a while. The scripts should intelligently save work, so if the install is interrupted, simply run `python initialize_data.py` again.
+Scripts run in dependency order: `water → map_overlays → basins → rain → surplus`. Each script skips work that is already up to date, so interrupted runs can be resumed by running `make_data.py` again. Pass `--force` to rebuild everything from scratch (but don't do this).
 
-Weather data takes the longest to download. To build it separately:
-```bash
-python weather/make_weather.py
+Once you've done that, run through the `examples.ipynb`. It shouldn't take long, maybe 5-10 minutes.
+
+## Main Entrypoint — `data/access.py`
+
+The top-level `access.py` provides a single entry point for loading all data for a site. The two methods `get_data` and `get_site_ids` are typically all you'd ever need. It also provides `aggregate_by_interval`, convenient for aggregating rain and water data simultaneously.
+
+Designed to be imported from elsewhere in the project as follows:
+```python
+import sys
+sys.path.insert(0, "path/to/project/root/")
+from data import get_data, get_site_ids, aggregate_by_interval
 ```
 
-To target specific sites only:
+See the `data/examples.ipynb` notebook for details.
+
+--- EVERYTHING BELOW THIS POINT CLAUDE GENERATED DOCUMENTATION ---
+
+--- MIGHT BE USEFUL BUT ALSO YOU CAN JUST READ THE VARIOUS `access.py` SCRIPTS ---
+### `get_site_ids() → list[str]`
+
+Returns all valid site UID codes. Uses `water/water_meta/site_location_metadata.csv` as the ground truth, so the list reflects the filtered set of sites (sites excluded by `water/config/` filters will not appear).
 
 ```python
-from data.weather import make_rain
-make_rain.main(site_uids=["USGS-05482500", "USGS-05412500"])
+uids = get_site_ids()
+# ['WQS0003', 'WQS0054', ..., 'USGS-05412500', ...]
 ```
 
-### Key access patterns
+### `get_data(site_uid, include=None) → SiteData`
+
+Loads all available data for a site into a `SiteData` dataclass. Missing data sources are silently skipped — check `.available()` to see what loaded.
 
 ```python
-from data import water, map_overlays, weather
+site = get_data("WQS0003")
+site.water    # DataFrame or None
+site.rain     # DataFrame or None
+site.surplus  # DataFrame or None
+site.basin    # GeoDataFrame or None
+site.crops    # DataFrame or None
 
-# get all valid site_uid codes as a list
-uids = water.get_all_water_sites()
+site.has("water")     # True / False
+site.available()      # ['basin', 'rain', 'surplus', 'water']
+```
 
-# nitrate time series for one site, aggregated to a 1W average
-water.get_site_data("USGS-05412500")
-water.aggregate_by_interval("USGS-05412500", interval="1W")
+Pass `include=` to load only specific fields and avoid unnecessary disk reads:
 
-# rainfall for one site, aggregated to 3-day periods per grid cell
-weather.get_site_rain("USGS-05412500")
-weather.aggregate_by_interval("USGS-05412500", interval="3D")
-
-# NHD hydrography
-map_overlays.get_flowlines()
-map_overlays.get_waterbodies()
+```python
+site = get_data("WQS0003", include=["water", "rain"])
 ```
 
 ---
 
-## water/
+## Submodules
 
-Nitrate concentration time series and site metadata from IWQIS and USGS-NWIS monitoring stations across Iowa.
+### `water/`
+
+Nitrate concentration time series from IWQIS (`WQS*`) and USGS-NWIS (`USGS-*`) monitoring stations across Iowa. Source files are downloaded from the IWQIS and USGS REST APIs by the `make_water.py` script.
 
 ```python
 from data import water
@@ -62,30 +98,22 @@ from data import water
 
 | Function | Returns |
 |---|---|
-| `get_all_water_sites()` | List of all site UIDs |
-| `get_all_iwqis_sites()` | List of IWQIS site UIDs (`WQS*`) |
-| `get_all_usgs_sites()` | List of USGS site UIDs (`USGS-*`) |
-| `get_site_metadata()` | DataFrame of location metadata for all sites |
-| `get_site_data(uid)` | Full nitrate time series for one site |
-| `get_full_data()` | Concatenated time series for all sites |
-| `aggregate_by_interval(uid, interval, agg_func)` | Resampled time series |
-| `get_stats(uid)` | One-row DataFrame of site statistics |
-| `get_full_stats()` | Statistics for all sites |
-| `get_basin(uid)` | Upstream drainage basin polygon (GeoDataFrame) |
-| `get_all_basins()` | All basin polygons in one GeoDataFrame |
-| `get_all_basins_union()` | Dissolved union of all basins |
-| `make_site_timeseries_plot(uid, interval, agg_func)` | Plotly figure |
+| `get_site_ids()` | `list[str]` — all site UIDs |
+| `get_metadata()` | `DataFrame` — location metadata for all sites |
+| `get_water(uid)` | `DataFrame` — full nitrate time series for one site |
+| `get_all_water()` | `DataFrame` — concatenated time series for all sites |
+| `aggregate_by_interval(uid, interval, agg_func)` | `DataFrame` — resampled time series |
+| `get_stats(uid)` | `DataFrame` — statistics for one site |
+| `get_all_stats()` | `DataFrame` — statistics for all sites |
+| `plot_water(uid, interval, agg_func)` | Plotly figure |
 
 ```python
-# list all sites
-water.get_all_water_sites()
-# ['WQS0003', 'WQS0054', ..., 'USGS-05412500', ...]
+# site metadata (lat, lon, name, network)
+water.get_metadata()
 
-# location metadata (lat, lon, name, network)
-water.get_site_metadata()
-
-# raw time series for one site
-df = water.get_site_data("USGS-05412500")
+# raw nitrate time series
+df = water.get_water("USGS-05412500")
+# columns: datetime, value, …
 
 # resample to monthly mean
 water.aggregate_by_interval("USGS-05412500", interval="1MS", agg_func="mean")
@@ -93,57 +121,109 @@ water.aggregate_by_interval("USGS-05412500", interval="1MS", agg_func="mean")
 # resample from a pre-loaded DataFrame
 water.aggregate_by_interval(df=df, interval="1W", agg_func="max")
 
-# site statistics (sparsity, date range, lifespan)
+# site statistics (date range, sparsity, …)
 water.get_stats("USGS-05412500")
-water.get_full_stats()
+water.get_all_stats()
 
-# drainage basin polygon
-water.get_basin("USGS-05412500")
-water.get_all_basins()
-water.get_all_basins_union()
-
-# interactive Plotly timeseries figure
-fig = water.make_site_timeseries_plot("USGS-05412500", interval="1W", agg_func="mean")
+# interactive Plotly figure
+fig = water.plot_water("USGS-05412500", interval="1W", agg_func="mean")
 fig.show()
 ```
 
 ---
 
-## weather/
+### `basins/`
 
-Daily precipitation from IEM (Iowa Environmental Mesonet) grid polygons, filtered to each monitoring site's upstream drainage basin.
+Upstream drainage basin polygons for each monitoring site, in three variants: v1 (NLDI), v2 (authenticated NLDI), and v3 (D8 flow accumulation). A per-site "preferred basin" is tracked in `basin_meta/preferred_basin.csv` and is what `get_basin()` returns.
 
-Output is one parquet per site at `weather/rain/<uid>_rain.parquet`, with one row per (grid cell, day). Grid cells are the ~4 km IEM precipitation polygons that intersect the basin.
+The basin editor in the widget UI can be used to manually review and reassign preferred basins.
 
 ```python
-from data import weather
+from data import basins
 ```
 
 | Function | Returns |
 |---|---|
-| `get_site_rain(uid)` | Raw per-cell daily rain DataFrame |
-| `aggregate_by_interval(uid, interval, agg_func)` | Per-cell rainfall aggregated to N-day periods |
-| `plot_site_rain(uid)` | Three-panel matplotlib summary figure |
+| `get_basin(uid)` | `GeoDataFrame` — preferred basin polygon for one site |
+| `get_all_basins()` | `GeoDataFrame` — all preferred basins |
+| `get_all_basins_union()` | `GeoDataFrame` — dissolved union of all basins |
+| `get_metadata()` | `DataFrame` — preferred basin selection metadata and review flags |
+| `update_basin(uid, fields, basin_geom)` | Writes a new basin selection to disk |
 
 ```python
-# raw data: one row per (grid cell, day)
-df = weather.get_site_rain("USGS-05412500")
+basin = basins.get_basin("WQS0003")   # GeoDataFrame, EPSG:4326
+basins.get_all_basins()
+basins.get_all_basins_union()
+
+# review metadata: basin_type, reviewed, flags, …
+basins.get_metadata()
+```
+
+**Basin priority when running the pipeline:**
+The `rain` and `surplus` scripts both read `basin_meta/preferred_basin.csv` and detect stale sites via a `.basin_manifest.csv` file in their data directories. Changing a site's preferred basin will trigger a rebuild of that site's rain and surplus parquets on the next `make_data.py` run.
+
+---
+
+### `rain/`
+
+Daily precipitation per site, derived from IEM (Iowa Environmental Mesonet) 4 km grid polygons spatially filtered to each site's preferred basin. Output is one parquet per site with one row per (grid cell, day).
+
+Sites whose basin overlaps the IEM data footprint by less than 75% are skipped (their basins extend too far outside Iowa for the data to be meaningful).
+
+```python
+from data import rain
+```
+
+| Function | Returns |
+|---|---|
+| `get_rain(uid)` | `DataFrame` — daily per-cell precipitation |
+| `aggregate_by_interval(uid, interval, agg_func)` | `DataFrame` — aggregated precipitation |
+| `plot_rain(uid)` | Matplotlib summary figure |
+
+```python
+df = rain.get_rain("WQS0003")
 # columns: date, lon, lat, precip_in_1d, year, month, day_of_year, week
 
-# aggregate to 3-day totals, preserving spatial structure
-weather.aggregate_by_interval("USGS-05412500", interval="3D", agg_func="sum")
-# columns: date, lon, lat, precip_3d  — dates in 3-day increments
+# aggregate to 3-day totals (spatial structure preserved)
+rain.aggregate_by_interval("WQS0003", interval="3D", agg_func="sum")
 
 # aggregate from a pre-loaded DataFrame
-weather.aggregate_by_interval(df=df, interval="1W", agg_func="sum")
-
-# summary figure (time series, grid cell map, monthly pattern)
-weather.plot_site_rain("USGS-05412500")
+rain.aggregate_by_interval(df=df, interval="1W", agg_func="sum")
 ```
 
 ---
 
-## map_overlays/
+### `surplus/`
+
+Per-site nitrogen surplus time series and heatmap images derived from the Iowa nitrogen surplus grid dataset (ISU Extension). Pixels whose Albers (x, y) position falls inside a site's preferred basin are extracted and stored as one parquet per site.
+
+```python
+from data import surplus
+```
+
+| Function | Returns |
+|---|---|
+| `get_surplus(uid)` | `DataFrame` — annual nitrogen surplus per grid pixel |
+| `get_surplus_image(year, site_uid)` | `(PIL.Image, bounds)` — heatmap image for one site/year |
+| `get_surplus_image_buffer(uid, year)` | `(data_url, bounds)` — base64 PNG data URL (cached) |
+| `get_iowa_surplus_image_buffer(year)` | `(data_url, bounds)` — Iowa-wide heatmap (cached) |
+| `get_stats()` | `DataFrame` — global min/max surplus statistics |
+
+```python
+df = surplus.get_surplus("WQS0003")
+# columns: pixel_id, year, surplus_kgha, total_kg_N, x, y, lon, lat
+
+# heatmap rendering (used by the widget)
+url, bounds = surplus.get_surplus_image_buffer("WQS0003", 2017)
+```
+
+The image is built in Albers (EPSG:5070) space so pixels align to the regular grid. Colors use the `YlOrRd` colormap normalised to the global min/max across all sites and years. Pixels with surplus below the global minimum (functionally, values of 0) are transparent.
+
+**Stale detection:** `make_surplus.py` tracks which basin was used to generate each parquet in `surplus_data/.basin_manifest.csv`. Reassigning a preferred basin will trigger a rebuild on the next run.
+
+---
+
+### `map_overlays/`
 
 Iowa NHD (National Hydrography Dataset) flowlines and waterbodies, simplified and stored as GeoParquet. Used by the widget's hydrography layer.
 
@@ -153,20 +233,18 @@ from data import map_overlays
 
 | Function | Returns |
 |---|---|
-| `get_flowlines()` | NHD flowlines, stream order ≥ 3 (GeoDataFrame, EPSG:4326) |
-| `get_waterbodies()` | NHD waterbodies (GeoDataFrame, EPSG:4326) |
+| `get_flowlines()` | `GeoDataFrame` — NHD flowlines, stream order ≥ 3 (EPSG:4326) |
+| `get_waterbodies()` | `GeoDataFrame` — NHD waterbodies (EPSG:4326) |
 
-```python
-rivers = map_overlays.get_flowlines()
-lakes  = map_overlays.get_waterbodies()
-```
-
-Both return cached GeoDataFrames — the parquet is only read once per process.
+Both return cached GeoDataFrames — the parquet is read from disk only once per process.
 
 ---
 
-## SDA (Soil Data Access)
+### `crops/`
 
-Queries USDA Web Soil Survey via the Soil Data Access REST API. Returns soil composition, horizon data, mapunit polygons, and crop yield summaries for arbitrary lat/lon points.
+Placeholder — not yet implemented. The access layer and make script exist but return empty DataFrames.
 
-This module is only partially implemented and not yet integrated into the main pipeline.
+```python
+from data import crops
+crops.get_crops("WQS0003")   # returns empty DataFrame
+```

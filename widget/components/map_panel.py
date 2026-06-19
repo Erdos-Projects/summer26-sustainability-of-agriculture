@@ -41,6 +41,12 @@ import colors
 IOWA_CENTER = [42.0, -93.5]
 IOWA_ZOOM = 7
 
+# 1×1 transparent PNG used as the placeholder url for hidden ImageOverlays
+_TRANSPARENT_PNG = (
+    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII="
+)
+_IOWA_BOUNDS = [[40.3, -96.7], [43.5, -90.1]]
+
 # Inverted mask: world polygon with Iowa bounding box (+ padding) cut as a hole.
 # Dims everything outside the box at 50% opacity while leaving data layers on top unaffected.
 _IOWA_MASK = {
@@ -198,8 +204,8 @@ _DRAW_BTN_BASE = {
     "height": "30px",
     "boxSizing": "border-box",
 }
-_DRAW_BTN_INACTIVE = {**_DRAW_BTN_BASE, "background": "white",   "border": "1px solid #bbb"}
-_DRAW_BTN_ACTIVE   = {**_DRAW_BTN_BASE, "background": "#dbeafe", "border": "1.5px solid #3b82f6"}
+_DRAW_BTN_INACTIVE = {**_DRAW_BTN_BASE, "background": "white", "border": "1px solid #bbb"}
+_DRAW_BTN_ACTIVE = {**_DRAW_BTN_BASE, "background": "#dbeafe", "border": "1.5px solid #3b82f6"}
 
 # Menu selector tab styles
 _MENU_TAB_ACTIVE = {
@@ -220,7 +226,7 @@ _GRAPH_OVERLAY_BASE = {
     "position": "absolute",
     "top": "10px",
     "left": "10px",
-    "width": "38%",
+    "width": "48%",
     "height": "35vh",
     "background": "rgba(255,255,255,0.95)",
     "borderRadius": "6px",
@@ -270,7 +276,7 @@ def load_iowa_geojson():
 
 
 iowa_geojson = load_iowa_geojson()
-IWQIS_SITES = water.get_site_metadata()[["site_uid", "latitude", "longitude"]]
+IWQIS_SITES = water.get_metadata()[["site_uid", "latitude", "longitude"]]
 
 
 def _sites_in_polygon(geojson_geom):
@@ -300,8 +306,16 @@ def make_iwqis_markers(selected_uids=None, visible_uids=None):
             id={"type": "iwqis-marker", "index": site_uid},
             center=[lat, lon],
             radius=7 if site_uid in selected else 5,
-            color=colors.SITE_SELECTED["stroke"] if site_uid in selected else (colors.SITE_USGS["stroke"] if site_uid.startswith("USGS") else colors.SITE_DEFAULT["stroke"]),
-            fillColor=colors.SITE_SELECTED["fill"] if site_uid in selected else (colors.SITE_USGS["fill"] if site_uid.startswith("USGS") else colors.SITE_DEFAULT["fill"]),
+            color=(
+                colors.SITE_SELECTED["stroke"]
+                if site_uid in selected
+                else (colors.SITE_USGS["stroke"] if site_uid.startswith("USGS") else colors.SITE_DEFAULT["stroke"])
+            ),
+            fillColor=(
+                colors.SITE_SELECTED["fill"]
+                if site_uid in selected
+                else (colors.SITE_USGS["fill"] if site_uid.startswith("USGS") else colors.SITE_DEFAULT["fill"])
+            ),
             fillOpacity=0.8,
             weight=1,
             pane="sites-pane",
@@ -444,14 +458,17 @@ def _build_graph_display_section():
                 [
                     html.Div(
                         [
-                            html.Label("Aggregation Interval", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}),
+                            html.Label(
+                                "Aggregation Interval",
+                                style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"},
+                            ),
                             dcc.Dropdown(
                                 id="aggregate-interval",
                                 options=[
-                                    {"label": "1D",  "value": "1D"},
-                                    {"label": "3D",  "value": "3D"},
-                                    {"label": "1W",  "value": "1W"},
-                                    {"label": "2W",  "value": "2W"},
+                                    {"label": "1D", "value": "1D"},
+                                    {"label": "3D", "value": "3D"},
+                                    {"label": "1W", "value": "1W"},
+                                    {"label": "2W", "value": "2W"},
                                     {"label": "1MS", "value": "1MS"},
                                     {"label": "3MS", "value": "3MS"},
                                     {"label": "1YS", "value": "1YS"},
@@ -465,13 +482,15 @@ def _build_graph_display_section():
                     ),
                     html.Div(
                         [
-                            html.Label("Aggregation Method", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}),
+                            html.Label(
+                                "Aggregation Method", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}
+                            ),
                             dcc.Dropdown(
                                 id="agg-func",
                                 options=[
                                     {"label": "mean", "value": "mean"},
-                                    {"label": "min",  "value": "min"},
-                                    {"label": "max",  "value": "max"},
+                                    {"label": "min", "value": "min"},
+                                    {"label": "max", "value": "max"},
                                 ],
                                 value="mean",
                                 clearable=False,
@@ -499,7 +518,9 @@ def _build_graph_display_section():
                 style=_HP,
             ),
             html.Strong("Display seasons", style={"fontSize": "11px"}),
-            html.P("Overlays thin vertical lines at each solstice and equinox (Mar 21, Jun 21, Sep 21, Dec 21).", style=_HP),
+            html.P(
+                "Overlays thin vertical lines at each solstice and equinox (Mar 21, Jun 21, Sep 21, Dec 21).", style=_HP
+            ),
             html.Strong("Aggregate Interval", style={"fontSize": "11px"}),
             html.P(
                 [
@@ -573,7 +594,6 @@ def _build_map_display_section():
     details = html.Details(
         [
             html.Summary("Map Display Options", style=_SECTION_LABEL_SUMMARY),
-
             dcc.Checklist(
                 id="hydro-toggle",
                 options=[{"label": " Show rivers & lakes", "value": "show"}],
@@ -581,62 +601,137 @@ def _build_map_display_section():
                 style={**_CHECKBOX_STYLE, "marginTop": "6px"},
                 labelStyle=_CHECKBOX_LABEL,
             ),
-
             # ── basin display ─────────────────────────────────────────────────
             html.Div("basin display", style=_SUBSECTION_LABEL),
-            html.Div([
-                dcc.Checklist(
-                    id="basin-preferred-toggle",
-                    options=[{"label": " Show basin", "value": "show"}],
-                    value=[],
-                    style=_CHECKBOX_STYLE,
-                    labelStyle=_CHECKBOX_LABEL,
-                ),
-                dcc.Checklist(
-                    id="basin-all-toggle",
-                    options=[{"label": " Show all basins", "value": "show"}],
-                    value=[],
-                    style=_CHECKBOX_STYLE,
-                    labelStyle=_CHECKBOX_LABEL,
-                ),
-            ], style=_CHECKBOX_ROW),
-
-            # ── rain ──────────────────────────────────────────────────────────
-            html.Div("rain", style=_SUBSECTION_LABEL),
-            html.Div([
-                dcc.Checklist(
-                    id="rain-grid-toggle",
-                    options=[{"label": " Show site rain grid", "value": "show"}],
-                    value=[],
-                    style=_CHECKBOX_STYLE,
-                    labelStyle=_CHECKBOX_LABEL,
-                ),
-            ], style=_CHECKBOX_ROW),
-
-            # ── nitrogen surplus ──────────────────────────────────────────────
-            html.Div("nitrogen surplus", style=_SUBSECTION_LABEL),
             html.Div(
-                style={"display": "flex", "alignItems": "center", "gap": "10px", "marginTop": "4px"},
-                children=[
+                [
                     dcc.Checklist(
-                        id="surplus-heatmap-toggle",
-                        options=[{"label": " Show N surplus heatmap", "value": "show"}],
+                        id="basin-preferred-toggle",
+                        options=[{"label": " Show basin", "value": "show"}],
                         value=[],
                         style=_CHECKBOX_STYLE,
                         labelStyle=_CHECKBOX_LABEL,
                     ),
+                    dcc.Checklist(
+                        id="basin-all-toggle",
+                        options=[{"label": " Show all basins", "value": "show"}],
+                        value=[],
+                        style=_CHECKBOX_STYLE,
+                        labelStyle=_CHECKBOX_LABEL,
+                    ),
+                ],
+                style=_CHECKBOX_ROW,
+            ),
+            # ── rain ──────────────────────────────────────────────────────────
+            html.Div("rain", style=_SUBSECTION_LABEL),
+            html.Div(
+                [
+                    dcc.Checklist(
+                        id="rain-grid-toggle",
+                        options=[{"label": " Show site rain grid", "value": "show"}],
+                        value=[],
+                        style=_CHECKBOX_STYLE,
+                        labelStyle=_CHECKBOX_LABEL,
+                    ),
+                ],
+                style=_CHECKBOX_ROW,
+            ),
+            # ── nitrogen surplus ──────────────────────────────────────────────
+            html.Div("nitrogen surplus", style=_SUBSECTION_LABEL),
+            html.Div(
+                style={"display": "flex", "gap": "10px", "marginTop": "4px"},
+                children=[
+                    # Left column — checkboxes
                     html.Div(
-                        dcc.Slider(
-                            id="surplus-year-slider",
-                            min=2000,
-                            max=2017,
-                            step=1,
-                            value=2017,
-                            marks=None,
-                            tooltip={"placement": "bottom", "always_visible": True},
-                            updatemode="mouseup",
-                        ),
-                        style={"flex": "1", "minWidth": "80px"},
+                        style={
+                            "flex": "1",
+                            "minWidth": "0",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "4px",
+                        },
+                        children=[
+                            dcc.Checklist(
+                                id="surplus-heatmap-toggle",
+                                options=[{"label": " Show site heatmap", "value": "show"}],
+                                value=[],
+                                style=_CHECKBOX_STYLE,
+                                labelStyle=_CHECKBOX_LABEL,
+                            ),
+                            dcc.Checklist(
+                                id="iowa-surplus-heatmap-toggle",
+                                options=[{"label": " Show Iowa heatmap", "value": "show"}],
+                                value=[],
+                                style=_CHECKBOX_STYLE,
+                                labelStyle=_CHECKBOX_LABEL,
+                            ),
+                        ],
+                    ),
+                    # Right column — sliders
+                    html.Div(
+                        style={
+                            "flex": "1",
+                            "minWidth": "0",
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "4px",
+                        },
+                        children=[
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "6px"},
+                                children=[
+                                    html.Label(
+                                        "Year",
+                                        style={
+                                            "fontSize": "11px",
+                                            "color": "#555",
+                                            "whiteSpace": "nowrap",
+                                            "width": "40px",
+                                        },
+                                    ),
+                                    html.Div(
+                                        dcc.Slider(
+                                            id="surplus-year-slider",
+                                            min=2000,
+                                            max=2017,
+                                            step=1,
+                                            value=2017,
+                                            marks=None,
+                                            tooltip={"placement": "bottom", "always_visible": True},
+                                            updatemode="mouseup",
+                                        ),
+                                        style={"flex": "1", "marginTop": "-8px", "marginBottom": "-8px"},
+                                    ),
+                                ],
+                            ),
+                            html.Div(
+                                style={"display": "flex", "alignItems": "center", "gap": "6px"},
+                                children=[
+                                    html.Label(
+                                        "Opacity",
+                                        style={
+                                            "fontSize": "11px",
+                                            "color": "#555",
+                                            "whiteSpace": "nowrap",
+                                            "width": "40px",
+                                        },
+                                    ),
+                                    html.Div(
+                                        dcc.Slider(
+                                            id="surplus-opacity-slider",
+                                            min=0.0,
+                                            max=1.0,
+                                            step=0.05,
+                                            value=0.8,
+                                            marks=None,
+                                            tooltip={"placement": "bottom", "always_visible": True},
+                                            updatemode="mouseup",
+                                        ),
+                                        style={"flex": "1", "marginTop": "-8px", "marginBottom": "-8px"},
+                                    ),
+                                ],
+                            ),
+                        ],
                     ),
                 ],
             ),
@@ -653,7 +748,10 @@ def _build_map_display_section():
             html.Strong("Show rivers & lakes", style={"fontSize": "11px"}),
             html.P("Toggles the NHD hydrography overlay (streams, rivers, and waterbodies).", style=_HP),
             html.Strong("Show basin", style={"fontSize": "11px"}),
-            html.P("Displays the preferred drainage basin for each selected site (purple). See Basin Editor in the Debug menu to compare individual basin types.", style=_HP),
+            html.P(
+                "Displays the preferred drainage basin for each selected site (purple). See Basin Editor in the Debug menu to compare individual basin types.",
+                style=_HP,
+            ),
             html.Strong("Show all basins", style={"fontSize": "11px"}),
             html.P("Displays the dissolved union of all monitoring site drainage basins.", style=_HP),
             html.Strong("Show site rain grid", style={"fontSize": "11px"}),
@@ -702,7 +800,6 @@ def _build_map_layers_section():
     )
 
 
-
 def _build_debugging_section():
     return html.Details(
         [
@@ -740,7 +837,12 @@ def layout():
                             dl.GeoJSON(
                                 data=_IOWA_MASK,
                                 options={
-                                    "style": {"fillColor": "black", "fillOpacity": 0.2, "weight": 0, "interactive": False}
+                                    "style": {
+                                        "fillColor": "black",
+                                        "fillOpacity": 0.2,
+                                        "weight": 0,
+                                        "interactive": False,
+                                    }
                                 },
                             ),
                             dl.ZoomControl(position="bottomleft"),
@@ -756,7 +858,20 @@ def layout():
                             dl.Pane(name="sites-pane", style={"zIndex": 430}),
                             dl.LayerGroup(id="mapunit-layer"),
                             dl.LayerGroup(id="hydro-layer"),
-                            dl.LayerGroup(id="surplus-heatmap-layer"),
+                            dl.ImageOverlay(
+                                id="surplus-image-overlay",
+                                url=_TRANSPARENT_PNG,
+                                bounds=_IOWA_BOUNDS,
+                                opacity=0,
+                                pane="surplus-pane",
+                            ),
+                            dl.ImageOverlay(
+                                id="iowa-surplus-image-overlay",
+                                url=_TRANSPARENT_PNG,
+                                bounds=_IOWA_BOUNDS,
+                                opacity=0,
+                                pane="surplus-pane",
+                            ),
                             dl.LayerGroup(id="rain-grid-layer"),
                             dl.LayerGroup(id="upstream-layer"),
                             dl.LayerGroup(id="basin1-layer"),
@@ -821,9 +936,9 @@ def layout():
                     html.Div(
                         style={"display": "flex", "margin": "0 -12px 12px -12px"},
                         children=[
-                            html.Button("Explore",  id="menu-tab-explore",   n_clicks=0, style=_MENU_TAB_ACTIVE),
-                            html.Button("Forecast", id="menu-tab-forecast",  n_clicks=0, style=_MENU_TAB_INACTIVE),
-                            html.Button("Debug",    id="menu-tab-debug",     n_clicks=0, style=_MENU_TAB_INACTIVE),
+                            html.Button("Explore", id="menu-tab-explore", n_clicks=0, style=_MENU_TAB_ACTIVE),
+                            html.Button("Forecast", id="menu-tab-forecast", n_clicks=0, style=_MENU_TAB_INACTIVE),
+                            html.Button("Debug", id="menu-tab-debug", n_clicks=0, style=_MENU_TAB_INACTIVE),
                         ],
                     ),
                     # Explore Menu
@@ -1085,10 +1200,12 @@ def register_callbacks(app):
     def render_iem_bbox(value):
         if "show" not in value:
             return []
-        return [dl.Rectangle(
-            bounds=[[38.8, -97.7], [45.3, -87.4]],
-            pathOptions={"color": colors.IEM_BBOX["stroke"], "weight": 2, "dashArray": "6 4", "fillOpacity": 0},
-        )]
+        return [
+            dl.Rectangle(
+                bounds=[[38.8, -97.7], [45.3, -87.4]],
+                pathOptions={"color": colors.IEM_BBOX["stroke"], "weight": 2, "dashArray": "6 4", "fillOpacity": 0},
+            )
+        ]
 
     @app.callback(
         Output("hydro-layer", "children"),
@@ -1179,7 +1296,7 @@ def register_callbacks(app):
         if "show" not in toggle:
             return []
         layers = []
-        for uid in (selected_uids or []):
+        for uid in selected_uids or []:
             try:
                 gdf = basins.get_basin(uid, type=1)
                 layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN_STYLE}))
@@ -1196,7 +1313,7 @@ def register_callbacks(app):
         if "show" not in toggle:
             return []
         layers = []
-        for uid in (selected_uids or []):
+        for uid in selected_uids or []:
             try:
                 gdf = basins.get_basin(uid, type=2)
                 layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN2_STYLE}))
@@ -1222,7 +1339,7 @@ def register_callbacks(app):
         if "show" not in toggle:
             return []
         layers = []
-        for uid in (selected_uids or []):
+        for uid in selected_uids or []:
             try:
                 gdf = basins.get_basin(uid, type=3)
                 layers.append(dl.GeoJSON(data=json.loads(gdf.to_json()), options={"style": _BASIN3_STYLE}))
@@ -1291,7 +1408,7 @@ def register_callbacks(app):
         if "show" not in toggle or not active_uid:
             return []
         try:
-            df = rain_data.get_site_rain(active_uid)
+            df = rain_data.get_rain(active_uid)
             cells = df[["lon", "lat"]].drop_duplicates()
             return [
                 dl.CircleMarker(
@@ -1310,19 +1427,43 @@ def register_callbacks(app):
             return []
 
     @app.callback(
-        Output("surplus-heatmap-layer", "children"),
+        Output("surplus-image-overlay", "url"),
+        Output("surplus-image-overlay", "bounds"),
+        Output("surplus-image-overlay", "opacity"),
         Input("surplus-heatmap-toggle", "value"),
         Input("active-graph-site", "data"),
+        Input("selected-site", "data"),
         Input("surplus-year-slider", "value"),
+        Input("surplus-opacity-slider", "value"),
     )
-    def render_surplus_heatmap(toggle, active_uid, year):
-        if "show" not in toggle or not active_uid:
-            return []
+    def render_surplus_heatmap(toggle, active_uid, selected_uids, year, opacity):
+        uid = active_uid or (selected_uids[0] if selected_uids else None)
+        if "show" not in toggle or not uid:
+            return _TRANSPARENT_PNG, _IOWA_BOUNDS, 0
         try:
-            url, bounds = surplus.get_surplus_image(active_uid, year)
-        except (FileNotFoundError, ValueError):
-            return []
-        return [dl.ImageOverlay(url=url, bounds=bounds, opacity=0.8, pane="surplus-pane")]
+            url, bounds = surplus.get_surplus_image_buffer(uid, year)
+        except Exception as e:
+            print(f"[surplus heatmap] {type(e).__name__}: {e}")
+            return _TRANSPARENT_PNG, _IOWA_BOUNDS, 0
+        return url, bounds, opacity
+
+    @app.callback(
+        Output("iowa-surplus-image-overlay", "url"),
+        Output("iowa-surplus-image-overlay", "bounds"),
+        Output("iowa-surplus-image-overlay", "opacity"),
+        Input("iowa-surplus-heatmap-toggle", "value"),
+        Input("surplus-year-slider", "value"),
+        Input("surplus-opacity-slider", "value"),
+    )
+    def render_iowa_surplus_heatmap(toggle, year, opacity):
+        if "show" not in toggle:
+            return _TRANSPARENT_PNG, _IOWA_BOUNDS, 0
+        try:
+            url, bounds = surplus.get_iowa_surplus_image_buffer(year)
+        except Exception as e:
+            print(f"[iowa surplus heatmap] {type(e).__name__}: {e}")
+            return _TRANSPARENT_PNG, _IOWA_BOUNDS, 0
+        return url, bounds, opacity
 
     @app.callback(
         Output("iwqis-layer", "children"),
@@ -1334,7 +1475,7 @@ def register_callbacks(app):
         visible_uids = None
         if "on" in (flagged_only or []) or "on" in (unreviewed_only or []):
             try:
-                meta = basins.get_preferred_basin_metadata()
+                meta = basins.get_metadata()
                 df = meta.copy()
                 flag_cols = ["flag_area", "flag_river", "flag_not_contained", "flag_basin1_over_basin2"]
                 if "on" in (flagged_only or []):

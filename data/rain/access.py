@@ -12,7 +12,7 @@ _RAIN_DIR = _THIS_DIR / "rain_data"
 _BASIN_DIR = _THIS_DIR.parent / "basins" / "basin_data"
 
 
-def get_site_rain(site_uid: str) -> pd.DataFrame:
+def get_rain(site_uid: str) -> pd.DataFrame:
     """Load the rainfall parquet for a site.
 
     Parameters
@@ -58,7 +58,7 @@ def aggregate_by_interval(
     site_uid : str, optional
         Site identifier.  Used to load data when df is not provided.
     df : DataFrame, optional
-        Pre-loaded rain DataFrame (output of get_site_rain).  Takes
+        Pre-loaded rain DataFrame (output of get_rain).  Takes
         precedence over site_uid if both are supplied.
     value_col : str
         Column to aggregate.  Defaults to 'precip_in_1d'.
@@ -81,7 +81,7 @@ def aggregate_by_interval(
     if df is None:
         if site_uid is None:
             raise ValueError("provide either df or site_uid")
-        df = get_site_rain(site_uid)
+        df = get_rain(site_uid)
 
     result = (
         df.set_index("date")
@@ -95,7 +95,7 @@ def aggregate_by_interval(
     return result
 
 
-def plot_site_rain(site_uid: str, show: bool = True) -> plt.Figure:
+def plot_rain(site_uid: str, show: bool = True) -> plt.Figure:
     """Three-panel rainfall summary figure for a single monitoring site.
 
     Panels
@@ -116,7 +116,7 @@ def plot_site_rain(site_uid: str, show: bool = True) -> plt.Figure:
     -------
     matplotlib Figure
     """
-    df = get_site_rain(site_uid)
+    df = get_rain(site_uid)
 
     n_cells = df.groupby(["lon", "lat"]).ngroups
     start = df["date"].min().date()

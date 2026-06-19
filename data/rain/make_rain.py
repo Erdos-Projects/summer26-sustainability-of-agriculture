@@ -66,7 +66,7 @@ from tqdm import tqdm
 
 # ── paths (all relative to this script's directory: data/rain/) ───────────────
 _THIS_DIR = Path(__file__).resolve().parent
-_STATS_FILE = _THIS_DIR.parent / "water" / "metadata" / "site_statistics.csv"
+_STATS_FILE = _THIS_DIR.parent / "water" / "water_meta" / "site_statistics.csv"
 _RAW_DIR = _THIS_DIR / "rain_raw"    # cached IEM daily zips, shared across sites
 _RAIN_DIR = _THIS_DIR / "rain_data"  # output: one parquet per site
 _MANIFEST_FILE = _RAIN_DIR / ".basin_manifest.csv"
@@ -281,7 +281,7 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
     _RAW_DIR.mkdir(parents=True, exist_ok=True)
     _RAIN_DIR.mkdir(parents=True, exist_ok=True)
 
-    preferred_meta = basins.get_preferred_basin_metadata()
+    preferred_meta = basins.get_metadata()
     stats = pd.read_csv(_STATS_FILE)
 
     if force:
