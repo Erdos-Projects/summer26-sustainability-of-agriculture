@@ -77,7 +77,7 @@ def register_callbacks(app):
             return html.P("Select a point or area on the map first.", style={"color": "#888"}), []
 
         forecast_region = geo_utils.normalize_for_forecast(region_geom)
-        target_uids = geo_utils.get_downstream_sites(forecast_region, water.get_site_metadata())
+        target_uids = geo_utils.get_downstream_sites(forecast_region, water.get_metadata())
 
         try:
             results = model_interface.forecast_exceedance(forecast_region, surplus, target_uids)

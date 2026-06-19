@@ -20,7 +20,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, html, dash_table, no_update
 
-from data import water, weather
+from data import water, rain as rain_data
 
 
 def _render_tables(pairs):
@@ -51,7 +51,7 @@ _BAR_THRESH = 200  # if there are more than this many bars, do a scatter for rai
 
 
 def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_seasons: bool = False) -> go.Figure:
-    """Build the site timeseries figure with nitrate and (eventually) rain traces.
+    """Build the site timeseries figure with nitrate and rain traces.
 
     Nitrate is plotted on the primary y-axis.  A secondary y-axis is reserved
     for rainfall — uncomment the rain block below once the rain parquets are
@@ -60,7 +60,7 @@ def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_s
     fig = go.Figure()
     try:
         precip_col = f"precip_{interval.lower()}"
-        rain = weather.aggregate_by_interval(site_uid, interval=interval, agg_func="sum")
+        rain = rain_data.aggregate_by_interval(site_uid, interval=interval, agg_func="sum")
         rain = rain.groupby("date")[precip_col].agg(func=agg_func).reset_index()
         if rain.shape[0] < _BAR_THRESH:
             fig.add_trace(
@@ -117,6 +117,7 @@ def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_s
                 dict(count=1, label="1M", step="month", stepmode="backward"),
                 dict(count=3, label="3M", step="month", stepmode="backward"),
                 dict(count=1, label="1Y", step="year", stepmode="backward"),
+                dict(count=3, label="3Y", step="year", stepmode="backward"),
                 dict(step="all", label="All"),
             ]
         ),

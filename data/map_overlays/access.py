@@ -9,7 +9,7 @@ import geopandas as gpd
 from pathlib import Path
 
 _THIS_DIR = Path(__file__).resolve().parent
-_OVERLAYS_DIR = _THIS_DIR / "overlays"
+_OVERLAYS_DIR = _THIS_DIR / "overlays_data"
 
 _FLOWLINES = None
 _WATERBODIES = None

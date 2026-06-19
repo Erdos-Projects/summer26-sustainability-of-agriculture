@@ -24,8 +24,8 @@ from pathlib import Path
 
 # directories ---------------------------------------------------------
 THIS_DIR = Path(__file__).resolve().parent  # the directory in which this file is located
-SITES_DIR = THIS_DIR / "sites"  # main target directory
-SOURCE_DIR = Path(__file__).resolve().parents[1] / "IWQIS_archive"
+SITES_DIR = THIS_DIR / "water_data"  # main target directory
+SOURCE_DIR = THIS_DIR / "water_raw"
 
 SITES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -33,16 +33,28 @@ SITES_DIR.mkdir(parents=True, exist_ok=True)
 MEASURES_SOURCE_FILE = SOURCE_DIR / "measures.csv"
 METADATA_SOURCE_FILE = SOURCE_DIR / "site_clean.csv"
 PARAMS_SOURCE_FILE = SOURCE_DIR / "params.csv"
-MEASURES_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_measures.csv"
-METADATA_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_site_metadata.csv"
-PARAMS_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_params.csv"
+MEASURES_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_measures.csv"
+METADATA_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_site_metadata.csv"
+PARAMS_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_params.csv"
+
+_CONFIG_FILE = THIS_DIR / "config" / "pipeline_config.toml"
+
+FULL_DATA = None
+
+
+# lazy loading for the full dataset
+def _full_data():
+    global FULL_DATA
+    if FULL_DATA is None:
+        FULL_DATA = _get_full_data()
+    return FULL_DATA
 
 
 def get_site_metadata():
     return pd.read_csv(METADATA_SOURCE_FILE, engine="python", on_bad_lines="warn")
 
 
-def get_full_data():
+def _get_full_data():
     manifest_path = SOURCE_DIR / "chunks/iwqis_alldata_manifest.json"
     with open(manifest_path) as f:
         manifest = json.load(f)
@@ -52,15 +64,16 @@ def get_full_data():
     print(f"Expected: {manifest['total_rows']:,} rows across {manifest['num_chunks']} chunks")
     chunks_info = manifest["chunks"]
     files = [chunks_dir / Path(chunk["filename"]) for chunk in chunks_info]
-    print(f"Found {len(files)} chunks to merge. Plan is to merge the files")
-    for f in files:
-        print(f"  {f}")
-    print("in that order. Proceeding:")
+    print(
+        f"Found {len(files)} chunks to merge. Plan is to merge them in the order specified in the manifest file\n  {manifest_path.parents[1].name + manifest_path.parent.name + manifest_path.name}"
+    )
+    print("Proceeding...")
 
     dfs = []
     for i, f in enumerate(files):
-        print(f"  Reading chunk {i+1}/{len(files)}: {f}")
+        print(f"  Reading chunk {i+1}/{len(files)}: {f}", end="\r")
         dfs.append(pd.read_csv(f))
+    print(" ")  # ensures the last printout above remains
 
     full_data = pd.concat(dfs, ignore_index=True)
     print(f"Dataset reassembled. Running checks...")
@@ -78,54 +91,6 @@ def get_full_data():
 
     print(f"Reassembled {len(full_data):,} rows to construct the full dataset.")
     return full_data
-
-
-def og_filter_sites(sparsity_cutoff, lifespan_cutoff, source):
-    # get the unique uids and store them
-    uids = list(source["site_uid"].unique())
-
-    # build dictionary of dataframes indexed by site ------------
-    data_by_site = {}
-    for i, uid in enumerate(uids):
-        data_by_site[uid] = source[source.site_uid == uid]
-        if i % 10 == 0:
-            print(f"processed {i+10} / {len(uids)} uids")
-
-    # two calculator methods ------------------------------------
-    def get_year_diff(uid):
-        dt = pd.to_datetime(data_by_site[uid]["datetime"], utc=True)
-        early = dt.min()
-        late = dt.max()
-        return (late - early).total_seconds() / (365.25 * 24 * 3600)
-
-    def measure_nitrate_data(uid):
-        df = data_by_site[uid]
-        num_entries = df["nitrate_con"].count()
-        return num_entries / df.shape[0]
-
-    # store the starting number of sites
-    og_length = len(source.site_uid.unique())
-
-    print(f"Calculating site quality for {og_length} sites, this may take a while...", end="", flush=True)
-    # make a list of pairs (site_uid, % nonempty nitrogen data)
-    vals = pd.DataFrame(
-        [(uid, measure_nitrate_data(uid), get_year_diff(uid)) for uid in uids],
-        columns=["site_uid", "data_count", "lifespan"],
-    )
-    print("done.")
-
-    keep = vals[(vals.data_count >= sparsity_cutoff) & (vals.lifespan >= lifespan_cutoff)]
-    remove = vals[(vals.data_count < sparsity_cutoff) | (vals.lifespan < lifespan_cutoff)]
-
-    # the combined sites
-    comb_length = keep.shape[0] + remove.shape[0]
-    print(f"{keep.shape[0]} (keep) + {remove.shape[0]} (remove) = {keep.shape[0] + remove.shape[0]}")
-    print("-----------------------------------")
-
-    # should be equal if logic worked correctly
-    assert comb_length == og_length
-
-    return keep, remove
 
 
 def filter_sites(sparsity_cutoff, lifespan_cutoff, source):
@@ -160,21 +125,36 @@ def filter_sites(sparsity_cutoff, lifespan_cutoff, source):
     return keep, remove
 
 
-def precheck():
-    """True iff the three top-level outputs exist AND the site files in
-    IWQIS-sites exactly match the uids in iwqis-site-metadata."""
-    targets = [PARAMS_TARGET_FILE, MEASURES_TARGET_FILE, METADATA_TARGET_FILE]
-    if not all(t.exists() for t in targets):
+def _precheck(extra_filter=[]) -> bool:
+    """Return True if all expected outputs already exist.
+
+    Uses the existing iwqis_site_metadata.csv as a manifest — if it lists N sites,
+    checks that all N parquets and the two ancillary metadata files are present.
+    Avoids loading _full_data() entirely when everything is already built.
+    """
+    if not METADATA_TARGET_FILE.exists():
         return False
+    keeper_uids = pd.read_csv(METADATA_TARGET_FILE)["uid"].tolist()
+    keeper_uids = [u for u in keeper_uids if u not in extra_filter]
+    all_parquets = all((SITES_DIR / f"{uid}_all_data.parquet").exists() for uid in keeper_uids)
+    all_meta = MEASURES_TARGET_FILE.exists() and PARAMS_TARGET_FILE.exists()
+    return all_parquets and all_meta
 
-    # uids listed in the metadata file
-    meta = pd.read_csv(METADATA_TARGET_FILE)
-    expected_uids = {str(u).strip() for u in meta["uid"]}
 
-    # uids present as site files
-    written_uids = {f.name[: -len("_all_data.parquet")] for f in SITES_DIR.glob("WQ*.parquet")}
+def evaluate_uids(sparsity_cutoff, lifespan_cutoff, extra_filter=[]):
+    """Return list of sites whose data needs to be created"""
+    # check metadata matches the data
+    current_uids = {f.name[: -len("_all_data.parquet")] for f in SITES_DIR.glob("WQ*.parquet")}
 
-    return expected_uids == written_uids
+    # filter the data and return any missing sites
+    print("Filtering the sites, this may take a minute...", end="", flush=True)
+    keep, _ = filter_sites(sparsity_cutoff, lifespan_cutoff, source=_full_data())
+    keep = keep[keep.site_uid.isin(extra_filter) == False]
+    keep_uids = set(keep.site_uid.unique())
+    missing_uids = list(keep_uids.difference(current_uids))
+    print("done.")
+
+    return list(keep_uids), missing_uids
 
 
 def main(api_keys=None, extra_filter=[]):
@@ -193,38 +173,34 @@ def main(api_keys=None, extra_filter=[]):
         _description_
     """
 
-    SPARSITY_CUTOFF = 0.5
-    LIFESPAN_CUTOFF = 3.92
+    if _precheck(extra_filter):
+        print("IWQIS data already complete, skipping.")
+        return
+
+    import tomllib
+
+    with open(_CONFIG_FILE, "rb") as f:
+        _cfg = tomllib.load(f)["iwqis"]
+    SPARSITY_CUTOFF = _cfg["sparsity_cutoff"]
+    LIFESPAN_CUTOFF = _cfg["lifespan_cutoff"]
 
     print("---- Building IWQIS Water Data ----")
 
-    if precheck():
-        print(
-            f"Data already exists, skipping. To rerun, delete/rename one of\n  {METADATA_TARGET_FILE}\n  {PARAMS_TARGET_FILE}\n  {MEASURES_TARGET_FILE}"
-        )
-        return None
+    keep_uids, missing_uids = evaluate_uids(SPARSITY_CUTOFF, LIFESPAN_CUTOFF, extra_filter=extra_filter)
+    if missing_uids == []:
+        print(f"No data missing. Writing metadata.")
 
-    # get the full data
-    full_data = get_full_data()
-
-    # get the filtered sites
-    print("Filtering out garbage sites (this may take a minute)")
-    keep, _ = filter_sites(SPARSITY_CUTOFF, LIFESPAN_CUTOFF, source=full_data)
-
-    # filter out extra sites, get the uids of the keepers
-    keep = keep[keep.site_uid.isin(extra_filter) == False]
-    keep_uids = keep.site_uid.unique()
-    print(f"Checked against known garbage sites, ended with {keep_uids.shape[0]} sites.")
-
-    # store the full datasets of the good sites
-    for uid in keep_uids:
-        file = SITES_DIR / f"{str(uid).strip()}_all_data.parquet"
-        print(f"  Saving {file}...", end="", flush=True)
-        site_df = full_data[full_data.site_uid == uid].copy()
-        site_df["datetime"] = pd.to_datetime(site_df["datetime"], utc=True)
-        site_df = site_df.set_index("datetime")
-        site_df.to_parquet(file)
-        print("done.")
+    else:
+        full_data = _full_data()
+        # store the full datasets of the good sites
+        for uid in missing_uids:
+            file = SITES_DIR / f"{str(uid).strip()}_all_data.parquet"
+            print(f"  Saving {file}...", end="", flush=True)
+            site_df = full_data[full_data.site_uid == uid].copy()
+            site_df["datetime"] = pd.to_datetime(site_df["datetime"], utc=True)
+            site_df = site_df.set_index("datetime")
+            site_df.to_parquet(file)
+            print("done.")
 
     # store the new relevant site metadata
     print(f"Saving site metadata to {METADATA_TARGET_FILE}...", end="", flush=True)

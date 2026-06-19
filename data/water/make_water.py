@@ -2,95 +2,18 @@ from pathlib import Path
 import pandas as pd
 
 import sys
-from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-DATA_DIR = Path(__file__).resolve().parent
-MAKE_USGS = DATA_DIR / "make_usgs_data.py"
-MAKE_IWQIS = DATA_DIR / "make_iwqis_data.py"
-MAKE_BASINS = DATA_DIR / "make_basins.py"
-
-USGS_METADATA = DATA_DIR / "metadata" / "usgs_site_metadata.csv"
-IWQIS_KEEPERS = DATA_DIR / "metadata" / "iwqis_site_metadata.csv"
-SITE_CLEAN = DATA_DIR.parent / "IWQIS_archive/site_clean.csv"
-
-SITE_LOCATION_METADATA = DATA_DIR / "metadata" / "site_location_metadata.csv"
-SENTINEL = DATA_DIR / ".pipeline_complete"
-
-
-KNOWN_BAD = [
-    "WQS0113",
-    "WQS9901",
-    "WQS9903",
-    "WQS9904",
-    "WQS9902",
-    "WQS0091",
-    "WQS0088",
-    "WQS0090",
-    "WQS0045",
-    "WQS0075",
-]  # known garbage sites that aren't picked up in filtering
-
-BIG_BASIN = [
-    "WQS0066",
-    "WQS0065",
-    "USGS-05474500",
-    "WQS0020",
-    "USGS-05420500",
-]  # these are sites with massive basins, filtering them out
-
-
-def create_site_locations():
-    # keep only filtered keeper WQ sites or USGS sites
-    usgs_metadata = pd.read_csv(USGS_METADATA)
-    site_clean = pd.read_csv(SITE_CLEAN)
-
-    # modify the usgs_metadata column names
-    usgs_metadata = usgs_metadata.rename(columns={"state_name": "state", "monitoring_location_id": "uid"})
-
-    # convert geoemetry to latitude and longitude, delete
-    coords = usgs_metadata["geometry"].str.extract(r"POINT \(([-\d.]+) ([-\d.]+)\)").astype(float)
-    usgs_metadata["longitude"] = coords[0]
-    usgs_metadata["latitude"] = coords[1]
-    usgs_metadata = usgs_metadata.drop(columns=["geometry"])
-
-    # get uids in and outside the site_clean metadata
-    uid_overlap = [uid for uid in usgs_metadata.uid.unique() if (site_clean.uid == str(uid).replace("USGS-", "")).any()]
-    uid_diff = set(usgs_metadata.uid.unique()).difference(set(uid_overlap))
-
-    # replace the uids, latitudes and longitudes in site_clean \cap usgs_metadata
-    for uid in uid_overlap:
-        site_clean.loc[site_clean.uid == str(uid).replace("USGS-", ""), "uid"] = uid
-
-        lat1 = float(usgs_metadata.loc[usgs_metadata.uid == uid, "latitude"].iloc[0])
-        lon1 = float(usgs_metadata.loc[usgs_metadata.uid == uid, "longitude"].iloc[0])
-        lat2 = float(site_clean.loc[site_clean.uid == uid, "latitude"].iloc[0])
-        lon2 = float(site_clean.loc[site_clean.uid == uid, "longitude"].iloc[0])
-
-        site_clean.loc[site_clean.uid == uid, "latitude"] = lat1
-        site_clean.loc[site_clean.uid == uid, "longitude"] = lon1
-
-    # remove the bad sites from site_clean
-    keeper_ids = pd.read_csv(IWQIS_KEEPERS).uid.unique().tolist()
-    site_clean = site_clean[site_clean.uid.isin(keeper_ids + uid_overlap)]
-
-    # get the final rows
-    new_rows = usgs_metadata[usgs_metadata.uid.isin(uid_diff)][
-        ["state", "uid", "latitude", "longitude"]
-    ].drop_duplicates()
-
-    # create the new locations file
-    new_df = pd.concat([site_clean, new_rows], ignore_index=True)
-    new_df = new_df.rename(columns={"uid": "site_uid"})
-    new_df.to_csv(SITE_LOCATION_METADATA, index=False)
+THIS_DIR = Path(__file__).resolve().parent
+_CONFIG_FILE = THIS_DIR / "config" / "pipeline_config.toml"
+_STATS_FILE = THIS_DIR / "water_meta" / "site_statistics.csv"
 
 
 def summarize_state():
-    """Basic summary of the state of the data"""
-    USGS_METADATA = DATA_DIR / "metadata" / "usgs_site_metadata.csv"
-    IWQIS_METADATA = DATA_DIR / "metadata" / "iwqis_site_metadata.csv"
-    LOC_METADATA = DATA_DIR / "metadata" / "site_location_metadata.csv"
+    USGS_METADATA = THIS_DIR / "water_meta" / "usgs_site_metadata.csv"
+    IWQIS_METADATA = THIS_DIR / "water_meta" / "iwqis_site_metadata.csv"
+    LOC_METADATA = THIS_DIR / "water_meta" / "site_location_metadata.csv"
 
     unique_usgs_m = pd.read_csv(USGS_METADATA).monitoring_location_id.unique()
     unique_iwqis_m = pd.read_csv(IWQIS_METADATA).uid.unique()
@@ -106,64 +29,68 @@ def summarize_state():
         usgs_out = set(unique_usgs_m).difference(set(unique_loc_m))
         iwqis_out = set(unique_iwqis_m).difference(set(unique_loc_m))
         print(f"!! {len(unique_iwqis_m)} (usgs) + {len(unique_usgs_m)} (iwqis) != {len(unique_loc_m)} (combined)!!")
-        print(f"""The USGS sites
-              \n   {list(usgs_out)}\nin
-              \n   {USGS_METADATA}
-              \nare not in the combined metadata""")
-        print(f"""The IWQIS sites
-              \n   {list(iwqis_out)}\nin
-              \n   {IWQIS_METADATA}
-              \nare not in the combined metadata""")
+        print(f"USGS sites not in combined: {list(usgs_out)}")
+        print(f"IWQIS sites not in combined: {list(iwqis_out)}")
 
-    USGS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("USGS-*.parquet"))
-    IWQIS_COUNT = sum(1 for _ in Path(DATA_DIR / "sites").glob("WQ*.parquet"))
+    USGS_COUNT = sum(1 for _ in Path(THIS_DIR / "water_data").glob("USGS-*.parquet"))
+    IWQIS_COUNT = sum(1 for _ in Path(THIS_DIR / "water_data").glob("WQ*.parquet"))
+    print(f"\nThere are {USGS_COUNT} USGS files in {THIS_DIR / 'water_data'}.")
+    print(f"There are {IWQIS_COUNT} IWQIS files in {THIS_DIR / 'water_data'}.")
 
-    print(f"\nThere are {USGS_COUNT} USGS files in {DATA_DIR / "sites"}.")
-    print(f"There are {IWQIS_COUNT} IWQIS files in {DATA_DIR / "sites"}.")
-
-    USGS_BASIN_COUNT = sum(1 for _ in Path(DATA_DIR / "basins").glob("USGS-*.parquet"))
-    IWQIS_BASIN_COUNT = sum(1 for _ in Path(DATA_DIR / "basins").glob("WQ*.parquet"))
-
-    print(f"\nThere are {USGS_BASIN_COUNT} USGS basin files in {DATA_DIR / "basins"}.")
-    print(f"There are {IWQIS_BASIN_COUNT} IWQIS basin files in {DATA_DIR / "basins"}.")
+    BASINS_DIR = THIS_DIR.parent / "basins" / "basin_data"
+    USGS_BASIN_COUNT = sum(1 for _ in BASINS_DIR.glob("USGS-*.parquet"))
+    IWQIS_BASIN_COUNT = sum(1 for _ in BASINS_DIR.glob("WQ*.parquet"))
+    print(f"\nThere are {USGS_BASIN_COUNT} USGS basin files in {BASINS_DIR}.")
+    print(f"There are {IWQIS_BASIN_COUNT} IWQIS basin files in {BASINS_DIR}.")
 
 
-def precheck():
-    """Basic precheck step to avoid rebuilding
+def gen_statistics():
+    from access import get_all_water
+    df = get_all_water()
+    grouped = df.groupby("site_uid", sort=False)
+    sparsity = grouped["nitrate_con"].count() / grouped.size()
+    first_date = grouped["datetime"].min()
+    last_date = grouped["datetime"].max()
+    lifespan = (last_date - first_date).dt.total_seconds() / (365.25 * 24 * 3600)
+    return pd.DataFrame({
+        "nitrate_sparsity": sparsity,
+        "start_date": first_date,
+        "last_date": last_date,
+        "lifespan": lifespan,
+    }).reset_index()
 
-    Returns
-    -------
-    bool
-        True if data already built
-    """
-    return SENTINEL.exists()
+
+def get_api_keys():
+    import tomllib
+    with open(THIS_DIR.parent / "api-keys.toml", "rb") as f:
+        return tomllib.load(f)
 
 
-def main(api_keys):
+def main(api_keys=None, force: bool = False):
+    import tomllib
     import make_iwqis_data as make_iwqis
     import make_usgs_data as make_usgs
-    import make_basins as make_basins
+    from make_site_locations import create_site_locations
 
-    from access import get_full_stats
+    if api_keys is None:
+        api_keys = get_api_keys()
 
-    if precheck():
-        print(f"Water pipeline already complete. Delete {SENTINEL} to rebuild.")
-        summarize_state()
-        return
+    with open(_CONFIG_FILE, "rb") as f:
+        cfg = tomllib.load(f)
 
-    usgs_filter = [uid for uid in KNOWN_BAD + BIG_BASIN if uid.startswith("USGS")]
-    iwqis_filter = [uid for uid in KNOWN_BAD + BIG_BASIN if uid.startswith("WQ")]
+    all_filtered = cfg["site_filters"]["known_bad"] + cfg["site_filters"]["big_basin"]
+    usgs_filter  = [uid for uid in all_filtered if uid.startswith("USGS")]
+    iwqis_filter = [uid for uid in all_filtered if uid.startswith("WQ")]
 
-    # execution order important
     make_usgs.main(api_keys, extra_filter=usgs_filter)
     make_iwqis.main(api_keys, extra_filter=iwqis_filter)
     create_site_locations()
-    make_basins.main(api_keys)
 
-    # ensure the stats_file exists, used by later data loads
-    get_full_stats()
+    stats = gen_statistics()
+    stats.to_csv(_STATS_FILE, index=False)
+    print(f"Saved site statistics to {_STATS_FILE}")
 
-    SENTINEL.touch()
+    summarize_state()
 
 
 if __name__ == "__main__":

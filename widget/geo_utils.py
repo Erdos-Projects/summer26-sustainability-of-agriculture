@@ -52,6 +52,35 @@ def delineate_basin_for_pin(lat: float, lon: float, timeout: int = 60) -> dict:
     return json.loads(gdf.to_json())
 
 
+_direction_array = None
+
+
+def delineate_basin_v3_for_pin(lat: float, lon: float) -> dict:
+    """Compute the D8 raster basin for an arbitrary (lat, lon) pin.
+
+    Uses the same 500 m IWQIS flow-direction raster and BFS flood-fill as
+    make_basins.py's basin3 method.  The direction array is loaded once and
+    cached in memory for subsequent calls.
+
+    Returns a GeoJSON FeatureCollection dict (EPSG:4326) suitable for passing
+    directly to ``dl.GeoJSON(data=...)``.
+
+    Raises ValueError if the point is outside the Iowa raster domain.
+    """
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+    from data.basins.make_basins import _load_direction_array, _compute_basin3
+
+    global _direction_array
+    if _direction_array is None:
+        _direction_array = _load_direction_array()
+
+    gdf = _compute_basin3("pin", lat, lon, _direction_array)
+    if gdf is None:
+        raise ValueError(f"Point ({lat}, {lon}) is outside the Iowa raster domain.")
+    return json.loads(gdf.to_json())
 
 
 # Rough placeholder: ~1km, used to turn a clicked point into a small area for

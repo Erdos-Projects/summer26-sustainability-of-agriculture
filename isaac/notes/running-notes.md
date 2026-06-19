@@ -2,7 +2,12 @@
 
 Big basin sites
 ["WQS0066", "WQS0065", "USGS-05474500", "WQS0020", "USGS-05420500"]
-Not good training data anyways, throwing away. Now filtered out manually in `make_water.py`.
+
+Fixed "WQS0066" and "WQS0067", these are not actually "humongous" basins. The other three truly are huge.
+
+## Basin Notes
+
+Basins are incredibly important to get correct. There are three methods for computing them, each one produces the best results in at least one scenario. I reviewed all sites and manually checked which basin was best for each site by cross referencing with USGS and the IWQIS map + IWQIS notes in `site_location_metadata`. The file `preferred_basin.csv` stores these files. The archived version `preferred_basin_archive.csv` is a copy of this file created after manually reviewing all sites.
 
 ## Widget Notes
 
