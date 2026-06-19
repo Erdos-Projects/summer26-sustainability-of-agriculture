@@ -35,9 +35,10 @@ _DATA_DIR = _THIS_DIR / "surplus_data"
 _MERGED_FILE = _RAW_DIR / "iowa_nitrogen_surplus.parquet"
 _MANIFEST_FILE = _DATA_DIR / ".basin_manifest.csv"
 
+import gen_surplus_statistics as stats
+
 sys.path.insert(0, str(_TOP_DATA.parent))
 from data import basins
-import gen_surplus_statistics as stats
 
 EQUAL_AREA_CRS = "EPSG:5070"
 
@@ -97,7 +98,9 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
     inside.to_parquet(out, index=False)
     n_pixels = len(inside) // inside["year"].nunique()
     elapsed = time.perf_counter() - t0
-    print(f"  {site_uid}: {n_pixels} pixels × {inside['year'].nunique()} years = {len(inside):,} rows   ({elapsed:.0f} sec)")
+    print(
+        f"  {site_uid}: {n_pixels} pixels × {inside['year'].nunique()} years = {len(inside):,} rows   ({elapsed:.0f} sec)"
+    )
     return True
 
 
@@ -112,7 +115,7 @@ def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None
     from data.surplus.access import _min_surplus, _max_surplus
 
     grid = pd.read_parquet(_SOURCE_DIR / "iowa_grid_lookup.parquet")
-    width  = grid["x"].nunique()
+    width = grid["x"].nunique()
     height = len(grid) // width
     if height * width != len(grid):
         raise ValueError("Grid lookup doesn't reshape into a clean rectangle.")
@@ -129,7 +132,7 @@ def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None
     years = sorted(merged["year"].unique())
     skipped = 0
     for year in years:
-        img_path   = _RAW_DIR / f"iowa_surplus_{year}.png"
+        img_path = _RAW_DIR / f"iowa_surplus_{year}.png"
         bounds_path = _RAW_DIR / f"iowa_surplus_{year}.json"
         if not force and img_path.exists() and bounds_path.exists():
             skipped += 1
@@ -143,7 +146,7 @@ def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None
 
         t = np.clip((img_arr - lo) / rng, 0.0, 1.0)
         rgba = (cmap(t) * 255).astype(np.uint8)
-        rgba[np.isnan(img_arr), 3] = 0   # transparent where no data
+        rgba[np.isnan(img_arr), 3] = 0  # transparent where no data
 
         Image.fromarray(rgba, mode="RGBA").save(img_path, format="PNG")
         with open(bounds_path, "w") as f:
