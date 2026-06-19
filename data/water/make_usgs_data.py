@@ -16,14 +16,14 @@ Features:
 from pathlib import Path
 
 DATASET_DIR = Path(__file__).resolve().parent  # the directory in which this file is located
-SITE_DIR = DATASET_DIR / "sites"  # the directory we save to
-LONG_DIR = DATASET_DIR.parent / "IWQIS_archive" / "USGS_QA_DUMP"
+SITE_DIR = DATASET_DIR / "water_data"  # the directory we save to
+LONG_DIR = DATASET_DIR / "water_raw" / "USGS_QA_DUMP"
 
 SITE_DIR.mkdir(parents=True, exist_ok=True)
 LONG_DIR.mkdir(parents=True, exist_ok=True)
 
-UNITS_FILE = DATASET_DIR / "metadata" / "usgs_units.csv"
-METADATA_FILE = DATASET_DIR / "metadata" / "usgs_site_metadata.csv"
+UNITS_FILE = DATASET_DIR / "water_meta" / "usgs_units.csv"
+METADATA_FILE = DATASET_DIR / "water_meta" / "usgs_site_metadata.csv"
 
 import logging
 import time as _time

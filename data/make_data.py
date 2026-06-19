@@ -1,6 +1,7 @@
 """Orchestrates the creation/initialization of the data."""
 
 import os
+import sys
 import argparse
 import importlib.util
 from pathlib import Path
@@ -31,9 +32,10 @@ def load_and_run(script, force: bool = False):
     spec = importlib.util.spec_from_file_location(f"dataset_{script.parent.name}", script)
     module = importlib.util.module_from_spec(spec)
 
-    # change directory to presrve relative-path assumptions in the script --------------------
+    # change directory and add script's dir to sys.path so sibling imports work -------------
     cwd = os.getcwd()
     os.chdir(script.parent)
+    sys.path.insert(0, str(script.parent))
 
     # run the script -------------------------------------------------------------------------
     try:
@@ -41,6 +43,7 @@ def load_and_run(script, force: bool = False):
         module.main(get_api_keys(), force=force)  # execute the method main()
     finally:
         os.chdir(cwd)
+        sys.path.remove(str(script.parent))
 
 
 def main(force: bool = False):

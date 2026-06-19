@@ -8,10 +8,10 @@ from pathlib import Path
 import pandas as pd
 
 THIS_DIR = Path(__file__).resolve().parent
-USGS_METADATA = THIS_DIR / "metadata" / "usgs_site_metadata.csv"
-IWQIS_KEEPERS = THIS_DIR / "metadata" / "iwqis_site_metadata.csv"
-SITE_CLEAN = THIS_DIR.parent / "archive" / "IWQIS_archive" / "site_clean.csv"
-SITE_LOCATION_METADATA = THIS_DIR / "metadata" / "site_location_metadata.csv"
+USGS_METADATA = THIS_DIR / "water_meta" / "usgs_site_metadata.csv"
+IWQIS_KEEPERS = THIS_DIR / "water_meta" / "iwqis_site_metadata.csv"
+SITE_CLEAN = THIS_DIR / "water_raw" / "site_clean.csv"
+SITE_LOCATION_METADATA = THIS_DIR / "water_meta" / "site_location_metadata.csv"
 
 
 def create_site_locations():

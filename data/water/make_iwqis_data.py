@@ -24,8 +24,8 @@ from pathlib import Path
 
 # directories ---------------------------------------------------------
 THIS_DIR = Path(__file__).resolve().parent  # the directory in which this file is located
-SITES_DIR = THIS_DIR / "sites"  # main target directory
-SOURCE_DIR = Path(__file__).resolve().parents[1] / "archive" / "IWQIS_archive"
+SITES_DIR = THIS_DIR / "water_data"  # main target directory
+SOURCE_DIR = THIS_DIR / "water_raw"
 
 SITES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -33,9 +33,9 @@ SITES_DIR.mkdir(parents=True, exist_ok=True)
 MEASURES_SOURCE_FILE = SOURCE_DIR / "measures.csv"
 METADATA_SOURCE_FILE = SOURCE_DIR / "site_clean.csv"
 PARAMS_SOURCE_FILE = SOURCE_DIR / "params.csv"
-MEASURES_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_measures.csv"
-METADATA_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_site_metadata.csv"
-PARAMS_TARGET_FILE = THIS_DIR / "metadata" / "iwqis_params.csv"
+MEASURES_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_measures.csv"
+METADATA_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_site_metadata.csv"
+PARAMS_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_params.csv"
 
 _CONFIG_FILE = THIS_DIR / "config" / "pipeline_config.toml"
 

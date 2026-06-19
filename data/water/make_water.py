@@ -7,13 +7,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 THIS_DIR = Path(__file__).resolve().parent
 _CONFIG_FILE = THIS_DIR / "config" / "pipeline_config.toml"
-_STATS_FILE = THIS_DIR / "metadata" / "site_statistics.csv"
+_STATS_FILE = THIS_DIR / "water_meta" / "site_statistics.csv"
 
 
 def summarize_state():
-    USGS_METADATA = THIS_DIR / "metadata" / "usgs_site_metadata.csv"
-    IWQIS_METADATA = THIS_DIR / "metadata" / "iwqis_site_metadata.csv"
-    LOC_METADATA = THIS_DIR / "metadata" / "site_location_metadata.csv"
+    USGS_METADATA = THIS_DIR / "water_meta" / "usgs_site_metadata.csv"
+    IWQIS_METADATA = THIS_DIR / "water_meta" / "iwqis_site_metadata.csv"
+    LOC_METADATA = THIS_DIR / "water_meta" / "site_location_metadata.csv"
 
     unique_usgs_m = pd.read_csv(USGS_METADATA).monitoring_location_id.unique()
     unique_iwqis_m = pd.read_csv(IWQIS_METADATA).uid.unique()
@@ -32,12 +32,12 @@ def summarize_state():
         print(f"USGS sites not in combined: {list(usgs_out)}")
         print(f"IWQIS sites not in combined: {list(iwqis_out)}")
 
-    USGS_COUNT = sum(1 for _ in Path(THIS_DIR / "sites").glob("USGS-*.parquet"))
-    IWQIS_COUNT = sum(1 for _ in Path(THIS_DIR / "sites").glob("WQ*.parquet"))
-    print(f"\nThere are {USGS_COUNT} USGS files in {THIS_DIR / 'sites'}.")
-    print(f"There are {IWQIS_COUNT} IWQIS files in {THIS_DIR / 'sites'}.")
+    USGS_COUNT = sum(1 for _ in Path(THIS_DIR / "water_data").glob("USGS-*.parquet"))
+    IWQIS_COUNT = sum(1 for _ in Path(THIS_DIR / "water_data").glob("WQ*.parquet"))
+    print(f"\nThere are {USGS_COUNT} USGS files in {THIS_DIR / 'water_data'}.")
+    print(f"There are {IWQIS_COUNT} IWQIS files in {THIS_DIR / 'water_data'}.")
 
-    BASINS_DIR = THIS_DIR.parent / "basins" / "basins1"
+    BASINS_DIR = THIS_DIR.parent / "basins" / "basin_data"
     USGS_BASIN_COUNT = sum(1 for _ in BASINS_DIR.glob("USGS-*.parquet"))
     IWQIS_BASIN_COUNT = sum(1 for _ in BASINS_DIR.glob("WQ*.parquet"))
     print(f"\nThere are {USGS_BASIN_COUNT} USGS basin files in {BASINS_DIR}.")
@@ -45,8 +45,8 @@ def summarize_state():
 
 
 def gen_statistics():
-    from access import get_full_data
-    df = get_full_data()
+    from access import get_all_water
+    df = get_all_water()
     grouped = df.groupby("site_uid", sort=False)
     sparsity = grouped["nitrate_con"].count() / grouped.size()
     first_date = grouped["datetime"].min()

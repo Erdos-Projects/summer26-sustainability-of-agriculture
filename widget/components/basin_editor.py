@@ -202,7 +202,7 @@ def register_callbacks(app):
     )
     def update_basin_review_dropdown(flagged_only, unreviewed_only, _version, selected_sites, active_menu):
         try:
-            meta = basins.get_preferred_basin_metadata()
+            meta = basins.get_metadata()
         except FileNotFoundError:
             return [], no_update
 
@@ -222,6 +222,16 @@ def register_callbacks(app):
         return opts, no_update
 
     @app.callback(
+        Output("selected-site", "data", allow_duplicate=True),
+        Input("basin-review-site-dropdown", "value"),
+        prevent_initial_call=True,
+    )
+    def sync_selected_site_from_dropdown(site_uid):
+        if ctx.triggered_id != "basin-review-site-dropdown":
+            return no_update
+        return [site_uid] if site_uid else []
+
+    @app.callback(
         Output("basin-review-flags", "children"),
         Output("basin-review-type", "options"),
         Output("basin-review-type", "value"),
@@ -239,7 +249,7 @@ def register_callbacks(app):
             return "", default_opts, None
 
         try:
-            meta = basins.get_preferred_basin_metadata()
+            meta = basins.get_metadata()
         except FileNotFoundError:
             return "", default_opts, None
 
