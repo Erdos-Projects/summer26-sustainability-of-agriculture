@@ -2,9 +2,10 @@ import numpy as np
 import pandas as pd
 import geopandas as gpd
 from rasterio.features import geometry_mask
-from make_surplus_2 import _RAW_DIR, _MERGED_FILE, EQUAL_AREA_CRS, _get_grid_index
+from data.surplus.make_surplus import _RAW_DIR, _MERGED_FILE, EQUAL_AREA_CRS, _get_grid_index
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path.cwd().parent.parent))
 from data import basins
 
@@ -19,7 +20,8 @@ candidates = merged[(merged["x"] >= minx) & (merged["x"] <= maxx) & (merged["y"]
 unique_pixels = candidates.drop_duplicates("pixel_id")
 pts = gpd.GeoSeries(
     gpd.points_from_xy(unique_pixels["x"], unique_pixels["y"]),
-    index=unique_pixels.index, crs=EQUAL_AREA_CRS,
+    index=unique_pixels.index,
+    crs=EQUAL_AREA_CRS,
 )
 old_ids = set(unique_pixels.loc[pts.within(poly), "pixel_id"])
 

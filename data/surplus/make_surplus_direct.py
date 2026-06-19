@@ -26,9 +26,6 @@ import geopandas as gpd
 from matplotlib import colormaps
 from pathlib import Path
 from PIL import Image
-import shapely
-from rasterio.features import geometry_mask
-from rasterio.transform import from_origin
 
 _THIS_DIR = Path(__file__).resolve().parent
 _TOP_DATA = _THIS_DIR.parent
@@ -37,36 +34,6 @@ _RAW_DIR = _THIS_DIR / "surplus_raw"
 _DATA_DIR = _THIS_DIR / "surplus_data"
 _MERGED_FILE = _RAW_DIR / "iowa_nitrogen_surplus.parquet"
 _MANIFEST_FILE = _DATA_DIR / ".basin_manifest.csv"
-_GRID_INDEX = None  # cached (transform, height, width) for the Iowa raster
-
-
-def _get_grid_index():
-    """Build (and cache) the affine transform + shape used to rasterize basin polygons.
-
-    Assumes grid_lookup's pixel_id is a row-major flatten index over (height, width) —
-    the same convention write_iowa_surplus_images() relies on.
-    """
-    global _GRID_INDEX
-    if _GRID_INDEX is not None:
-        return _GRID_INDEX
-
-    grid = pd.read_parquet(_SOURCE_DIR / "iowa_grid_lookup.parquet").sort_values("pixel_id")
-    width = grid["x"].nunique()
-    height = len(grid) // width
-    if height * width != len(grid):
-        raise ValueError("Grid lookup doesn't reshape into a clean rectangle.")
-
-    xs = grid["x"].to_numpy().reshape(height, width)
-    ys = grid["y"].to_numpy().reshape(height, width)
-    res_x = xs[0, 1] - xs[0, 0]
-    res_y = ys[0, 0] - ys[1, 0]  # row 0 assumed north (max y)
-
-    assert np.allclose(np.diff(xs[0]), res_x), "x spacing not uniform — pixel_id ordering assumption is wrong"
-    assert np.allclose(np.diff(ys[:, 0]), -res_y), "y spacing not uniform — pixel_id ordering assumption is wrong"
-
-    transform = from_origin(xs[0, 0] - res_x / 2, ys[0, 0] + res_y / 2, res_x, res_y)
-    _GRID_INDEX = (transform, height, width)
-    return _GRID_INDEX
 
 import gen_surplus_statistics as stats
 
@@ -88,11 +55,41 @@ def build_merged() -> pd.DataFrame:
     return merged
 
 
+def _build_site_surplus(site_uid, merged, basin):
+    t0 = time.perf_counter()
+
+    poly = basin.to_crs(EQUAL_AREA_CRS).geometry.union_all()
+
+    # Bounding-box pre-filter on Cartesian x, y (fast column comparison)
+    minx, miny, maxx, maxy = poly.bounds
+    candidates = merged[(merged["x"] >= minx) & (merged["x"] <= maxx) & (merged["y"] >= miny) & (merged["y"] <= maxy)]
+
+    if candidates.empty:
+        print(f"  {site_uid}: no grid points in bounding box")
+        return False
+
+    # Spatial check on unique pixels only (pixel_id deduplicates across years)
+    unique_pixels = candidates.drop_duplicates("pixel_id")
+    pts = gpd.GeoSeries(
+        gpd.points_from_xy(unique_pixels["x"], unique_pixels["y"]),
+        index=unique_pixels.index,
+        crs=EQUAL_AREA_CRS,
+    )
+    inside_ids = unique_pixels.loc[pts.within(poly), "pixel_id"]
+    inside = candidates[candidates["pixel_id"].isin(inside_ids)]
+
+    elapsed = time.perf_counter() - t0
+    return inside, elapsed
+
+
 def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:
+    """Intersect merged grid with site_uid's preferred basin; save result.
+
+    Returns True if a file was written, False if skipped or empty.
+    """
     out = _DATA_DIR / f"{site_uid}_surplus.parquet"
     if out.exists() and not force:
         return False
-    t0 = time.perf_counter()
 
     try:
         basin = basins.get_basin(site_uid)
@@ -100,13 +97,7 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
         print(f"  {site_uid}: no basin — {e}")
         return False
 
-    poly = basin.to_crs(EQUAL_AREA_CRS).geometry.union_all()
-
-    transform, height, width = _get_grid_index()
-    mask = geometry_mask([poly], out_shape=(height, width), transform=transform, invert=True)
-    inside_pixel_ids = np.flatnonzero(mask.ravel())
-
-    inside = merged[merged["pixel_id"].isin(inside_pixel_ids)]
+    inside, elapsed = _build_site_surplus(site_uid=site_uid, merged=merged, basin=basin)
 
     if inside.empty:
         print(f"  {site_uid}: no grid points inside basin polygon")
@@ -114,11 +105,11 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
 
     inside.to_parquet(out, index=False)
     n_pixels = len(inside) // inside["year"].nunique()
-    elapsed = time.perf_counter() - t0
     print(
         f"  {site_uid}: {n_pixels} pixels × {inside['year'].nunique()} years = {len(inside):,} rows   ({elapsed:.0f} sec)"
     )
     return True
+
 
 def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None:
     """Generate and save Iowa-wide surplus PNG + JSON bounds for each year.
@@ -247,8 +238,6 @@ def main(api_keys=None, force: bool = False) -> None:
 
     print("\nGenerating Iowa surplus images...")
     write_iowa_surplus_images(merged, force=force)
-
-
 
 
 if __name__ == "__main__":
