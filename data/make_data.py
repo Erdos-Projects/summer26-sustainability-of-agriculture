@@ -1,3 +1,5 @@
+"""Orchestrates the creation/initialization of the data."""
+
 import os
 import sys
 import argparse
