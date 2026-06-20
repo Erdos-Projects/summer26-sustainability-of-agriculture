@@ -6,3 +6,4 @@ plotly
 pandas
 pyarrow
 Pillow
+dash_extensions>=2.0

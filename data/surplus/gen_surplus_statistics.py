@@ -35,6 +35,7 @@ def gen_surplus_statistics():
         min_total_kg_N=("total_kg_N", "max"),
         max_total_kg_N=("total_kg_N", "max"),
     )
+    _META_DIR.mkdir(parents=True, exist_ok=True)
     stats.to_csv(_STATS_FILE)
     print("done.")
     return stats

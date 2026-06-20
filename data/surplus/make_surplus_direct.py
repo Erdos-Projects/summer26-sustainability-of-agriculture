@@ -6,6 +6,7 @@ Inputs  (surplus_source/)
 
 Intermediate (surplus_raw/  — gitignored)
     iowa_nitrogen_surplus.parquet   full 53M-row merged table
+    images/iowa_surplus_{year}.png  Iowa-wide heatmaps + .json bounds sidecars
 
 Outputs (surplus_data/)
     {site_uid}_surplus.parquet  rows whose (x, y) fall inside site_uid's preferred basin
@@ -31,6 +32,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 _TOP_DATA = _THIS_DIR.parent
 _SOURCE_DIR = _THIS_DIR / "surplus_source"
 _RAW_DIR = _THIS_DIR / "surplus_raw"
+_IMAGES_DIR = _RAW_DIR / "images"  # Iowa surplus PNGs + JSON bounds sidecars
 _DATA_DIR = _THIS_DIR / "surplus_data"
 _MERGED_FILE = _RAW_DIR / "iowa_nitrogen_surplus.parquet"
 _MANIFEST_FILE = _DATA_DIR / ".basin_manifest.csv"
@@ -39,8 +41,9 @@ import gen_surplus_statistics as stats
 
 sys.path.insert(0, str(_TOP_DATA.parent))
 from data import basins
+from data.settings import get_equal_area_crs
 
-EQUAL_AREA_CRS = "EPSG:5070"
+EQUAL_AREA_CRS = get_equal_area_crs()
 
 
 def build_merged() -> pd.DataFrame:
@@ -136,11 +139,12 @@ def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None
         [float(grid["lat"].max()), float(grid["lon"].max())],
     ]
 
+    _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     years = sorted(merged["year"].unique())
     skipped = 0
     for year in years:
-        img_path = _RAW_DIR / f"iowa_surplus_{year}.png"
-        bounds_path = _RAW_DIR / f"iowa_surplus_{year}.json"
+        img_path = _IMAGES_DIR / f"iowa_surplus_{year}.png"
+        bounds_path = _IMAGES_DIR / f"iowa_surplus_{year}.json"
         if not force and img_path.exists() and bounds_path.exists():
             skipped += 1
             continue
@@ -207,7 +211,7 @@ def main(api_keys=None, force: bool = False) -> None:
     iowa_years_missing = [
         y
         for y in range(2000, 2018)
-        if not (_RAW_DIR / f"iowa_surplus_{y}.png").exists() or not (_RAW_DIR / f"iowa_surplus_{y}.json").exists()
+        if not (_IMAGES_DIR / f"iowa_surplus_{y}.png").exists() or not (_IMAGES_DIR / f"iowa_surplus_{y}.json").exists()
     ]
     needs_merged = bool(to_process) or bool(iowa_years_missing) or force
 

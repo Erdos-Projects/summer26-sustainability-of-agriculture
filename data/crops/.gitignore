@@ -1,0 +1,7 @@
+# Manually-downloaded national CDL rasters (~2 GB each) and cached regional
+# clips — large and regenerable, never commit.
+crops_raw/
+
+# Per-site crop tallies (matches the surplus_data convention). Remove this line
+# if you decide to track the small parquets in git.
+crops_data/

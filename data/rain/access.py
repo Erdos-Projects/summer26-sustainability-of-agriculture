@@ -9,7 +9,23 @@ from pathlib import Path
 
 _THIS_DIR = Path(__file__).resolve().parent
 _RAIN_DIR = _THIS_DIR / "rain_data"
+_GRID_DIR = _THIS_DIR / "rain_grid"
 _BASIN_DIR = _THIS_DIR.parent / "basins" / "basin_data"
+
+
+def get_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
+    """Load the rain grid (Voronoi target cells) for a site.
+
+    Returns a GeoDataFrame with columns node_id, x, y (EPSG:5070), lat, lon,
+    cell_area, geometry. This is the shared spatial grid the surplus and crop
+    aggregates are built on; node_id is the common join key.
+
+    Raises FileNotFoundError if it has not been generated yet (run make_rain.py).
+    """
+    path = _GRID_DIR / f"{site_uid}_rain_grid.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"No rain grid for {site_uid}. Run make_rain.py to generate {path.name}.")
+    return gpd.read_parquet(path)
 
 
 def get_rain(site_uid: str) -> pd.DataFrame:

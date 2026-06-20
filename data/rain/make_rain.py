@@ -58,10 +58,13 @@ negligible given the 4 km spatial resolution of the rainfall data.
 import sys
 import warnings
 import requests
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 from datetime import date, timedelta
 from pathlib import Path
+from shapely.geometry import Polygon
+from scipy.spatial import Voronoi, cKDTree
 from tqdm import tqdm
 
 # ── paths (all relative to this script's directory: data/rain/) ───────────────
@@ -69,10 +72,18 @@ _THIS_DIR = Path(__file__).resolve().parent
 _STATS_FILE = _THIS_DIR.parent / "water" / "water_meta" / "site_statistics.csv"
 _RAW_DIR = _THIS_DIR / "rain_raw"    # cached IEM daily zips, shared across sites
 _RAIN_DIR = _THIS_DIR / "rain_data"  # output: one parquet per site
+_GRID_DIR = _THIS_DIR / "rain_grid"  # output: one Voronoi-cell geoparquet per site
 _MANIFEST_FILE = _RAIN_DIR / ".basin_manifest.csv"
+_GRID_MANIFEST_FILE = _GRID_DIR / ".basin_manifest.csv"
+
+# Geometry of the rain grid only — a single IEM day supplies the cell polygons.
+IEM_GRID_DATE = date(2018, 6, 15)
 
 sys.path.insert(0, str(_THIS_DIR.parents[1]))
 from data import basins
+from data.settings import get_config, get_equal_area_crs
+
+_ALBERS = get_equal_area_crs()  # equal-area CRS for the Voronoi/area math (EPSG:5070)
 
 # ── IEM API ───────────────────────────────────────────────────────────────────
 # polygon geometry gives actual grid-cell extents so we can spatially filter
@@ -106,7 +117,7 @@ _IEM_FOOTPRINT = gpd.GeoDataFrame.from_features(
 
 # Sites whose basin overlaps the IEM footprint by less than this fraction are
 # skipped.  Tune upward to be more aggressive about excluding out-of-region sites.
-COVERAGE_THRESHOLD = 0.75
+COVERAGE_THRESHOLD = get_config()["rain"]["coverage_threshold"]
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
@@ -267,6 +278,138 @@ def _write_manifest(preferred_meta: pd.DataFrame) -> None:
     pd.DataFrame(rows).to_csv(_MANIFEST_FILE, index=False)
 
 
+# ── Rain grid: padded-halo Voronoi target cells ──────────────────────────────
+def _finite_voronoi(points: np.ndarray) -> dict[int, Polygon]:
+    """Map point index -> its Voronoi cell polygon, skipping infinite/empty cells."""
+    vor = Voronoi(points)
+    polys = {}
+    for pidx, ridx in enumerate(vor.point_region):
+        verts = vor.regions[ridx]
+        if not verts or -1 in verts:
+            continue  # hull (infinite) or degenerate cell
+        pts = vor.vertices[verts]
+        c = pts.mean(axis=0)  # order vertices CCW so the polygon is valid
+        pts = pts[np.argsort(np.arctan2(pts[:, 1] - c[1], pts[:, 0] - c[0]))]
+        polys[pidx] = Polygon(pts)
+    return polys
+
+
+def build_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
+    """Build the rain grid (Voronoi target cells) for one basin.
+
+    Returns a GeoDataFrame with columns node_id, x, y (EPSG:5070), lat, lon,
+    cell_area, geometry. Cells are the IEM nodes whose cell intersects the basin;
+    each is bounded by real neighbours via a padded halo so edge cells stay
+    finite (infinite hull cells are dropped). The same node_id keys the surplus
+    and crop aggregates downstream.
+    """
+    basin = basins.get_basin(site_uid).to_crs(_ALBERS)
+    basin_poly = basin.geometry.union_all()
+    minx, miny, maxx, maxy = basin.total_bounds
+
+    # A single IEM day supplies the cell polygons; centroids give the node coords.
+    day = _parse_day_gdf(_download_shapefile(IEM_GRID_DATE), IEM_GRID_DATE).to_crs(_ALBERS)
+    centroids = day.geometry.centroid  # projected CRS -> accurate centroids
+    lonlat = centroids.to_crs("EPSG:4326")
+    grid = gpd.GeoDataFrame(
+        {
+            "x": centroids.x.to_numpy(),
+            "y": centroids.y.to_numpy(),
+            "lon": lonlat.x.to_numpy(),
+            "lat": lonlat.y.to_numpy(),
+        },
+        geometry=day.geometry.values,
+        crs=_ALBERS,
+    )
+
+    # Nodes whose cell touches the basin are the targets; max spacing sets the pad.
+    grid["is_target"] = grid.geometry.intersects(basin_poly)
+    tgt_xy = grid.loc[grid["is_target"], ["x", "y"]].to_numpy()
+    if len(tgt_xy) < 2:
+        # With 0/1 target node the k=2 query has no neighbour (returns inf -> pad
+        # inf). Fall back to the grid-wide median spacing so a tiny basin works.
+        all_xy = grid[["x", "y"]].to_numpy()
+        pad = 2 * float(np.median(cKDTree(all_xy).query(all_xy, k=2)[0][:, 1]))
+    else:
+        pad = 2 * float(cKDTree(tgt_xy).query(tgt_xy, k=2)[0][:, 1].max())
+
+    # Halo = every node within the padded bbox (a superset of the targets).
+    px0, py0, px1, py1 = minx - pad, miny - pad, maxx + pad, maxy + pad
+    halo = grid[grid["x"].between(px0, px1) & grid["y"].between(py0, py1)].reset_index(drop=True)
+    polys = _finite_voronoi(halo[["x", "y"]].to_numpy())
+
+    rows = []
+    for i in halo.index[halo["is_target"]]:
+        if i not in polys:
+            print(f"  [warn] {site_uid}: a target node has an infinite cell (pad too small) — skipped")
+            continue
+        rows.append(
+            {
+                "node_id": len(rows),
+                "x": halo.at[i, "x"],
+                "y": halo.at[i, "y"],
+                "lat": halo.at[i, "lat"],
+                "lon": halo.at[i, "lon"],
+                "cell_area": polys[i].area,
+                "geometry": polys[i],
+            }
+        )
+    return gpd.GeoDataFrame(rows, crs=_ALBERS)
+
+
+def _grid_stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
+    """UIDs whose rain grid is missing or whose basin changed since last build."""
+    manifest = {}
+    if _GRID_MANIFEST_FILE.exists():
+        mdf = pd.read_csv(_GRID_MANIFEST_FILE)
+        manifest = dict(zip(mdf["site_uid"], mdf["basin_name"]))
+    return [
+        row["site_uid"]
+        for _, row in preferred_meta.iterrows()
+        if not (_GRID_DIR / f"{row['site_uid']}_rain_grid.parquet").exists()
+        or manifest.get(row["site_uid"]) != row["basin_name"]
+    ]
+
+
+def _write_grid_manifest(preferred_meta: pd.DataFrame) -> None:
+    rows = [
+        {"site_uid": row["site_uid"], "basin_name": row["basin_name"]}
+        for _, row in preferred_meta.iterrows()
+        if (_GRID_DIR / f"{row['site_uid']}_rain_grid.parquet").exists()
+    ]
+    pd.DataFrame(rows).to_csv(_GRID_MANIFEST_FILE, index=False)
+
+
+def build_grids(site_uids: list[str] | None = None, force: bool = False) -> None:
+    """Build/refresh the per-site rain grids. Depends only on basin geometry and
+    the IEM grid (independent of the rain time series)."""
+    _GRID_DIR.mkdir(parents=True, exist_ok=True)
+    preferred_meta = basins.get_metadata()
+
+    to_process = preferred_meta["site_uid"].tolist() if force else _grid_stale_sites(preferred_meta)
+    if site_uids is not None:
+        to_process = [u for u in to_process if u in set(site_uids)]
+
+    if not to_process:
+        print("Rain grids up to date.")
+        return
+
+    print(f"Building rain grids for {len(to_process)} site(s)...")
+    for uid in to_process:
+        try:
+            grid = build_rain_grid(uid)
+        except (KeyError, FileNotFoundError) as e:
+            print(f"  [SKIP] {uid}: {e}")
+            continue
+        if grid.empty:
+            print(f"  [SKIP] {uid}: no rain cells intersect basin")
+            continue
+        out = _GRID_DIR / f"{uid}_rain_grid.parquet"
+        grid.to_parquet(out)
+        print(f"  {uid}: {len(grid)} cells -> {out.name}")
+    _write_grid_manifest(preferred_meta)
+
+
 def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False):
     """Build per-site rainfall parquets.
 
@@ -280,6 +423,10 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
     """
     _RAW_DIR.mkdir(parents=True, exist_ok=True)
     _RAIN_DIR.mkdir(parents=True, exist_ok=True)
+
+    # The rain grid (Voronoi cells) is independent of the time series and feeds
+    # the surplus/crop aggregates; build it first on its own staleness check.
+    build_grids(site_uids=site_uids, force=force)
 
     preferred_meta = basins.get_metadata()
     stats = pd.read_csv(_STATS_FILE)

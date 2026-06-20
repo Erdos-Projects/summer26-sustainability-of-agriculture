@@ -1,0 +1,70 @@
+# Shared configuration for the data pipeline submodules (water, crops, surplus,
+# rain). Read it through data.settings.get_config() (and the get_region_bbox /
+# get_equal_area_crs helpers) rather than opening this file directly.
+
+# ── region of interest ───────────────────────────────────────────────────────
+# Shared by crops, surplus, and rain. WGS84 lon/lat, [min_lon, min_lat, max_lon,
+# max_lat]. Generous box around Iowa + the basins that reach into neighbouring
+# states, with margin so small basin edits don't fall outside it.
+# Iowa proper spans roughly lon -96.65..-90.01, lat 40.33..43.59.
+[region]
+bbox_wgs84 = [-97.6, 39.8, -89.5, 44.5]
+
+# ── projections ──────────────────────────────────────────────────────────────
+[crs]
+# Equal-area CRS used everywhere area and point-in-polygon math is done
+# (basins, surplus, crops). CONUS Albers.
+equal_area = "EPSG:5070"
+
+# ── crops pipeline ───────────────────────────────────────────────────────────
+[crops]
+# Inclusive year span to attempt (CropScape covers 2000-2025 for Iowa).
+year_start = 2000
+year_end = 2025
+# Crops kept as their own column when aggregating CDL pixels onto the rain grid.
+# Every CDL class not listed here is bucketed into an "other" column. Names must
+# match data/crops/cdl_legend.py exactly.
+agg_crops = ["Corn", "Soybeans"]
+
+# ── surplus pipeline ─────────────────────────────────────────────────────────
+[surplus]
+# Inclusive year span of the Iowa nitrogen-surplus grid dataset.
+year_start = 2000
+year_end = 2017
+
+# ── rain pipeline ────────────────────────────────────────────────────────────
+[rain]
+# Sites whose basin overlaps the IEM data footprint by less than this fraction
+# are skipped (basins extending too far outside Iowa).
+coverage_threshold = 0.75
+
+# ── map_overlays pipeline ────────────────────────────────────────────────────
+[map_overlays]
+# Keep NHD flowlines at or above this Strahler stream order.
+min_stream_order = 3
+
+# ── water pipeline ───────────────────────────────────────────────────────────
+# The curated USGS site list lives in water/make_usgs_data.py (USGS_SITE_LIST),
+# not here — tuning it requires understanding that script's logic.
+[iwqis]
+sparsity_cutoff = 0.5
+lifespan_cutoff = 3.92
+
+[site_filters]
+known_bad = [
+    "WQS0113",
+    "WQS9901",
+    "WQS9903",
+    "WQS9904",
+    "WQS9902",
+    "WQS0091",
+    "WQS0088",
+    "WQS0090",
+    "WQS0045",
+    "WQS0075",
+]
+big_basin = [
+    "USGS-05474500",
+    "WQS0020",
+    "USGS-05420500",
+]

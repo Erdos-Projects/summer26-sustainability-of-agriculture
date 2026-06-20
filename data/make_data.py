@@ -11,8 +11,9 @@ SCRIPTS = [
     "water/make_water.py",
     "map_overlays/make_map_overlays.py",
     "basins/make_basins.py",
-    "rain/make_rain.py",
+    "rain/make_rain.py",          # builds the shared rain grid that surplus + crops aggregate onto
     "surplus/make_surplus.py",
+    "crops/make_crops.py",        # depends on the rain grid; independent of surplus
 ]
 
 

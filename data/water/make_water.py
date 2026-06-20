@@ -6,8 +6,10 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 THIS_DIR = Path(__file__).resolve().parent
-_CONFIG_FILE = THIS_DIR / "config" / "pipeline_config.toml"
 _STATS_FILE = THIS_DIR / "water_meta" / "site_statistics.csv"
+
+sys.path.insert(0, str(THIS_DIR.parents[1]))
+from data.settings import get_config
 
 
 def summarize_state():
@@ -75,8 +77,7 @@ def main(api_keys=None, force: bool = False):
     if api_keys is None:
         api_keys = get_api_keys()
 
-    with open(_CONFIG_FILE, "rb") as f:
-        cfg = tomllib.load(f)
+    cfg = get_config()
 
     all_filtered = cfg["site_filters"]["known_bad"] + cfg["site_filters"]["big_basin"]
     usgs_filter  = [uid for uid in all_filtered if uid.startswith("USGS")]

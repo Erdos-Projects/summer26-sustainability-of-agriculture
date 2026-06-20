@@ -8,12 +8,15 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from matplotlib import colormaps
+from matplotlib import colormaps, colors as mcolors
 from PIL import Image
 
 _THIS_DIR = Path(__file__).resolve().parent
 _DATA_DIR = _THIS_DIR / "surplus_data"
+_PIXEL_DIR = _DATA_DIR / "pixel"  # per-site pixel-level surplus parquets
+_GRID_AGG_DIR = _DATA_DIR / "grid"  # per-site surplus aggregated onto the rain grid
 _RAW_DIR = _THIS_DIR / "surplus_raw"
+_IMAGES_DIR = _RAW_DIR / "images"  # Iowa surplus PNGs + JSON bounds sidecars
 _META_DIR = _THIS_DIR / "surplus_meta"
 
 _CMAP = colormaps["YlOrRd"]
@@ -36,7 +39,30 @@ def _max_surplus():
     return _MAX_SURPLUS
 
 
-def get_surplus(site_uid: str) -> pd.DataFrame:
+def _get_surplus_colorscheme():
+    """Return (cmap, vmin, vmax): the colour scheme the surplus heatmap PNGs use.
+
+    cmap is the matplotlib colormap; vmin/vmax are the global surplus_kgha range
+    (from surplus_stats.csv) the PNGs normalise against. Shared so the widget can
+    colour Voronoi cells identically to the rendered heatmaps. See
+    make_surplus.write_iowa_surplus_images / get_surplus_image for the same trio.
+    """
+    return _CMAP, _min_surplus(), _max_surplus()
+
+
+def surplus_to_hex(value: float) -> str:
+    """Hex colour for a surplus_kgha value, matching the heatmap PNGs.
+
+    Convenience wrapper over _get_surplus_colorscheme() so callers (e.g. the
+    widget) need not depend on matplotlib for the normalise+colormap step.
+    """
+    cmap, lo, hi = _get_surplus_colorscheme()
+    rng = hi - lo if hi != lo else 1.0
+    t = float(np.clip((value - lo) / rng, 0.0, 1.0))
+    return mcolors.to_hex(cmap(t))
+
+
+def get_surplus(site_uid: str, kind="grid") -> pd.DataFrame:
     """Return the surplus DataFrame for a single site.
 
     Columns: year, surplus_kgha, total_kg_N, x, y, lon, lat
@@ -44,9 +70,39 @@ def get_surplus(site_uid: str) -> pd.DataFrame:
     Raises FileNotFoundError if the parquet hasn't been generated yet.
     Run make_surplus.py to build it.
     """
-    path = _DATA_DIR / f"{site_uid}_surplus.parquet"
+    if kind == "grid":
+        return get_surplus_grid(site_uid=site_uid)
+    elif kind == "pixel":
+        return get_surplus_pixel(site_uid=site_uid)
+    else:
+        raise ValueError(f"Invalid argument: got {kind}, expected 'pixel' or 'grid'.")
+
+
+def get_surplus_pixel(site_uid: str) -> pd.DataFrame:
+    """Return the surplus DataFrame for a single site.
+
+    Columns: year, surplus_kgha, total_kg_N, x, y, lon, lat
+
+    Raises FileNotFoundError if the parquet hasn't been generated yet.
+    Run make_surplus.py to build it.
+    """
+    path = _PIXEL_DIR / f"{site_uid}_surplus.parquet"
     if not path.exists():
         raise FileNotFoundError(f"No surplus data for {site_uid}. Run make_surplus.py to generate it.")
+    return pd.read_parquet(path)
+
+
+def get_surplus_grid(site_uid: str) -> pd.DataFrame:
+    """Return a site's surplus aggregated onto the rain grid.
+
+    Columns: node_id, year, surplus_kgha, total_kg_N, coverage_frac.
+    Join to the rain grid (data.get_rain_grid) on node_id for coordinates.
+
+    Raises FileNotFoundError if not generated yet (run make_surplus.py).
+    """
+    path = _GRID_AGG_DIR / f"{site_uid}_surplus_grid.parquet"
+    if not path.exists():
+        raise FileNotFoundError(f"No surplus_grid for {site_uid}. Run make_surplus.py to generate it.")
     return pd.read_parquet(path)
 
 
@@ -91,7 +147,9 @@ def get_surplus_image(year: int, df: pd.DataFrame = None, site_uid: str = "", us
         if site_uid == "":
             raise ValueError(f"Must provide either df or site_uid")
         else:
-            df = get_surplus(site_uid=site_uid)
+            # The heatmap is a per-pixel render — needs x/y/lon/lat, which only
+            # the pixel-level parquet has (the grid aggregate is keyed by node_id).
+            df = get_surplus_pixel(site_uid=site_uid)
 
     pixels = df[df["year"] == year]
     if pixels.empty:
@@ -140,8 +198,8 @@ def get_iowa_surplus_image(year: int) -> tuple[Image.Image, list]:
     Raises FileNotFoundError if the PNG has not been generated yet.
     Run make_surplus.py to generate it.
     """
-    iowa_img_path = _RAW_DIR / f"iowa_surplus_{year}.png"
-    iowa_bounds_path = _RAW_DIR / f"iowa_surplus_{year}.json"
+    iowa_img_path = _IMAGES_DIR / f"iowa_surplus_{year}.png"
+    iowa_bounds_path = _IMAGES_DIR / f"iowa_surplus_{year}.json"
 
     if not iowa_img_path.exists() or not iowa_bounds_path.exists():
         raise FileNotFoundError(f"Iowa surplus image for {year} not found. Run make_surplus.py to generate it.")

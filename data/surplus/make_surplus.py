@@ -6,6 +6,7 @@ Inputs  (surplus_source/)
 
 Intermediate (surplus_raw/  — gitignored)
     iowa_nitrogen_surplus.parquet   full 53M-row merged table
+    images/iowa_surplus_{year}.png  Iowa-wide heatmaps + .json bounds sidecars
 
 Outputs (surplus_data/)
     {site_uid}_surplus.parquet  rows whose (x, y) fall inside site_uid's preferred basin
@@ -31,13 +32,16 @@ from rasterio.features import geometry_mask
 from rasterio.transform import from_origin
 
 _THIS_DIR = Path(__file__).resolve().parent
-_TOP_DATA = _THIS_DIR.parent
 _SOURCE_DIR = _THIS_DIR / "surplus_source"
 _RAW_DIR = _THIS_DIR / "surplus_raw"
+_IMAGES_DIR = _RAW_DIR / "images"  # Iowa surplus PNGs + JSON bounds sidecars
 _DATA_DIR = _THIS_DIR / "surplus_data"
+_PIXEL_DIR = _DATA_DIR / "pixel"  # per-site pixel-level surplus parquets
+_GRID_AGG_DIR = _DATA_DIR / "grid"  # per-site surplus aggregated onto the rain grid
 _MERGED_FILE = _RAW_DIR / "iowa_nitrogen_surplus.parquet"
 _MANIFEST_FILE = _DATA_DIR / ".basin_manifest.csv"
 _GRID_INDEX = None  # cached (transform, height, width) for the Iowa raster
+_SURPLUS_M = 250  # surplus pixel size (EPSG:5070 metres)
 
 
 def _get_grid_index():
@@ -77,22 +81,43 @@ def _get_grid_index():
 
 import gen_surplus_statistics as stats
 
-sys.path.insert(0, str(_TOP_DATA.parent))
+sys.path.insert(0, str(_THIS_DIR.parents[1]))
 from data import basins
+from data.access import get_rain_grid  # top-level access; no dependency on the rain module
+from data.settings import get_config, get_equal_area_crs
 
-EQUAL_AREA_CRS = "EPSG:5070"
+EQUAL_AREA_CRS = get_equal_area_crs()
+_surplus_cfg = get_config()["surplus"]
+_YEAR_START, _YEAR_END = _surplus_cfg["year_start"], _surplus_cfg["year_end"]
 
 
 def build_merged() -> pd.DataFrame:
-    """Concatenate the three surplus chunks, join the grid lookup, write to surplus_raw/."""
-    chunks = [pd.read_parquet(_SOURCE_DIR / f"surplus{i}.parquet") for i in range(1, 4)]
-    surplus = pd.concat(chunks, ignore_index=True)
-    lookup = pd.read_parquet(_SOURCE_DIR / "iowa_grid_lookup.parquet")
+    """Concatenate the surplus chunks (surplus*.parquet), join the grid lookup,
+    write the full merged table to surplus_raw/. The chunk count is whatever
+    build_source.py wrote (globbed, not hardcoded)."""
+    chunk_files = sorted(_SOURCE_DIR.glob("surplus[0-9]*.parquet"))
+    if not chunk_files:
+        raise FileNotFoundError(f"No surplus chunks (surplus*.parquet) in {_SOURCE_DIR}. Run build_source.py.")
+    surplus = pd.concat([pd.read_parquet(f) for f in chunk_files], ignore_index=True)
+
+    lookup_file = _SOURCE_DIR / "iowa_grid_lookup.parquet"  # written by build_source.py
+    lookup = pd.read_parquet(lookup_file)
+
     merged = surplus.merge(lookup, on="pixel_id")
     _RAW_DIR.mkdir(parents=True, exist_ok=True)
     merged.to_parquet(_MERGED_FILE, index=False)
-    print(f"Wrote {len(merged):,} rows → {_MERGED_FILE}")
+    print(f"Wrote {len(merged):,} rows from {len(chunk_files)} chunks + {lookup_file.name} → {_MERGED_FILE}")
     return merged
+
+
+def _merged_stale() -> bool:
+    """True if the merged cache is missing or older than any source file."""
+    if not _MERGED_FILE.exists():
+        return True
+    m_mtime = _MERGED_FILE.stat().st_mtime
+    sources = list(_SOURCE_DIR.glob("surplus[0-9]*.parquet"))
+    sources.append(_SOURCE_DIR / "iowa_grid_lookup.parquet")
+    return any(s.exists() and s.stat().st_mtime > m_mtime for s in sources)
 
 
 def _build_site_surplus(site_uid, merged: pd.DataFrame, basin):
@@ -110,8 +135,56 @@ def _build_site_surplus(site_uid, merged: pd.DataFrame, basin):
     return inside, elapsed
 
 
-def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:
-    out = _DATA_DIR / f"{site_uid}_surplus.parquet"
+def _aggregate_surplus_grid(merged: pd.DataFrame, grid) -> pd.DataFrame | None:
+    """Area-weighted surplus per (node_id, year) on a site's rain grid.
+
+    Each 250 m surplus cell is a square; its overlap area with each rain Voronoi
+    cell weights its contribution. surplus_kgha is the area-weighted mean over
+    the covered area (intensive); total_kg_N = mean × full cell area (extensive,
+    and equal to the conservative area sum where fully covered, filling any
+    uncovered border with the in-cell mean); coverage_frac flags border cells.
+    Returns None if no surplus pixels overlap the grid.
+    """
+    minx, miny, maxx, maxy = grid.total_bounds
+    h = _SURPLUS_M / 2
+    m = merged[merged["x"].between(minx - h, maxx + h) & merged["y"].between(miny - h, maxy + h)]
+    if m.empty:
+        return None
+
+    # 250 m square per unique surplus pixel (geometry is static across years).
+    upx = m.drop_duplicates("pixel_id")[["pixel_id", "x", "y"]].reset_index(drop=True)
+    squares = gpd.GeoDataFrame(
+        {"pixel_id": upx["pixel_id"]},
+        geometry=[shapely.box(x - h, y - h, x + h, y + h) for x, y in zip(upx["x"], upx["y"])],
+        crs=grid.crs,
+    )
+
+    inter = gpd.overlay(squares, grid[["node_id", "geometry"]], how="intersection")
+    if inter.empty:
+        return None
+    inter["area_DR"] = inter.geometry.area
+
+    j = inter.merge(m[["pixel_id", "year", "surplus_kgha"]], on="pixel_id")
+    j["w_density"] = j["area_DR"] * j["surplus_kgha"]
+    g = (
+        j.groupby(["node_id", "year"])
+        .agg(covered_area=("area_DR", "sum"), w_density=("w_density", "sum"))
+        .reset_index()
+        .merge(grid[["node_id", "cell_area"]], on="node_id")
+    )
+    g["surplus_kgha"] = g["w_density"] / g["covered_area"]  # intensive: area-weighted mean
+    g["coverage_frac"] = g["covered_area"] / g["cell_area"]
+    g["total_kg_N"] = g["surplus_kgha"] * (g["cell_area"] / 1e4)  # mean × full area
+    return g[["node_id", "year", "surplus_kgha", "total_kg_N", "coverage_frac"]]
+
+
+def write_site_surplus_pixel(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:
+    """Write a site's pixel-level surplus to surplus_data/pixel/.
+
+    These are the surplus cells whose centre falls inside the basin polygon
+    (intensive surplus_kgha + extensive total_kg_N per pixel per year). No rain
+    grid involved. Returns True if the parquet was written."""
+    out = _PIXEL_DIR / f"{site_uid}_surplus.parquet"
     if out.exists() and not force:
         return False
 
@@ -119,25 +192,54 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
         basin = basins.get_basin(site_uid)
     except (KeyError, FileNotFoundError) as e:
         print(f"  {site_uid}: no basin — {e}")
-        return None
+        return False
 
-    # get the surplus data and the elapsed time
     inside, elapsed = _build_site_surplus(site_uid=site_uid, merged=merged, basin=basin)
-
     if inside.empty:
         print(f"  {site_uid}: no grid points inside basin polygon")
         return False
 
+    _PIXEL_DIR.mkdir(parents=True, exist_ok=True)
     inside.to_parquet(out, index=False)
     n_pixels = len(inside) // inside["year"].nunique()
     print(
-        f"  {site_uid}: {n_pixels} pixels × {inside['year'].nunique()} years = {len(inside):,} rows   ({elapsed:.0f} sec)"
+        f"  {site_uid}: pixel {n_pixels} px × {inside['year'].nunique()} years = {len(inside):,} rows   ({elapsed:.0f} sec)"
     )
+    return True
+
+
+def write_site_surplus_grid(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:
+    """Write a site's surplus aggregated onto the rain grid to surplus_data/grid/.
+
+    Area-weights each 250 m surplus cell onto the rain Voronoi cells (see
+    _aggregate_surplus_grid). Needs the rain grid from make_rain. Independent of
+    the pixel-level output. Returns True if the parquet was written."""
+    out = _GRID_AGG_DIR / f"{site_uid}_surplus_grid.parquet"
+    if out.exists() and not force:
+        return False
+
+    try:
+        grid = get_rain_grid(site_uid)
+    except FileNotFoundError:
+        print(f"  {site_uid}: no rain grid — run make_rain.py first; skipping surplus_grid")
+        return False
+
+    agg = _aggregate_surplus_grid(merged, grid)
+    if agg is None:
+        print(f"  {site_uid}: no surplus overlaps the rain grid")
+        return False
+
+    _GRID_AGG_DIR.mkdir(parents=True, exist_ok=True)
+    agg.to_parquet(out, index=False)
+    full = (agg["coverage_frac"] >= 0.999).sum()
+    print(f"  {site_uid}: grid {len(agg):,} rows, {agg['node_id'].nunique()} nodes ({full} fully covered)")
     return True
 
 
 def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None:
     """Generate and save Iowa-wide surplus PNG + JSON bounds for each year.
+
+    Used for displaying full surplus data overlay in the widget.
 
     Uses pixel_id as a flat row-major index into the (height, width) grid array
     so no unique() call is needed — fully vectorized, no OOM risk.
@@ -161,11 +263,12 @@ def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None
         [float(grid["lat"].max()), float(grid["lon"].max())],
     ]
 
+    _IMAGES_DIR.mkdir(parents=True, exist_ok=True)
     years = sorted(merged["year"].unique())
     skipped = 0
     for year in years:
-        img_path = _RAW_DIR / f"iowa_surplus_{year}.png"
-        bounds_path = _RAW_DIR / f"iowa_surplus_{year}.json"
+        img_path = _IMAGES_DIR / f"iowa_surplus_{year}.png"
+        bounds_path = _IMAGES_DIR / f"iowa_surplus_{year}.json"
         if not force and img_path.exists() and bounds_path.exists():
             skipped += 1
             continue
@@ -203,7 +306,8 @@ def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     return [
         row["site_uid"]
         for _, row in preferred_meta.iterrows()
-        if not (_DATA_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        if not (_PIXEL_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        or not (_GRID_AGG_DIR / f"{row['site_uid']}_surplus_grid.parquet").exists()
         or manifest.get(row["site_uid"]) != row["basin_name"]
     ]
 
@@ -213,7 +317,7 @@ def _write_manifest(preferred_meta: pd.DataFrame) -> None:
     rows = [
         {"site_uid": row["site_uid"], "basin_name": row["basin_name"]}
         for _, row in preferred_meta.iterrows()
-        if (_DATA_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        if (_PIXEL_DIR / f"{row['site_uid']}_surplus.parquet").exists()
     ]
     pd.DataFrame(rows).to_csv(_MANIFEST_FILE, index=False)
 
@@ -223,7 +327,13 @@ def main(api_keys=None, force: bool = False) -> None:
 
     preferred_meta = basins.get_metadata()
 
-    to_process = preferred_meta["site_uid"].tolist() if force else _stale_sites(preferred_meta)
+    # If build_source.py regenerated the source after the last merge, the cached
+    # merge AND every per-site output built from it are stale — treat like --force.
+    rebuild_all = force or _merged_stale()
+    if rebuild_all and not force:
+        print("Source newer than merged cache — rebuilding merge and all sites.")
+
+    to_process = preferred_meta["site_uid"].tolist() if rebuild_all else _stale_sites(preferred_meta)
 
     n_total = len(preferred_meta)
     n_skip = n_total - len(to_process)
@@ -231,16 +341,16 @@ def main(api_keys=None, force: bool = False) -> None:
 
     iowa_years_missing = [
         y
-        for y in range(2000, 2018)
-        if not (_RAW_DIR / f"iowa_surplus_{y}.png").exists() or not (_RAW_DIR / f"iowa_surplus_{y}.json").exists()
+        for y in range(_YEAR_START, _YEAR_END + 1)
+        if not (_IMAGES_DIR / f"iowa_surplus_{y}.png").exists() or not (_IMAGES_DIR / f"iowa_surplus_{y}.json").exists()
     ]
-    needs_merged = bool(to_process) or bool(iowa_years_missing) or force
+    needs_merged = bool(to_process) or bool(iowa_years_missing) or rebuild_all
 
     if not needs_merged:
         print("Nothing to do.")
         return
 
-    if _MERGED_FILE.exists() and not force:
+    if _MERGED_FILE.exists() and not rebuild_all:
         print(f"Loading merged dataset from {_MERGED_FILE.name}...")
         merged = pd.read_parquet(_MERGED_FILE)
     else:
@@ -249,20 +359,21 @@ def main(api_keys=None, force: bool = False) -> None:
     print(f"{len(merged):,} rows loaded.\n")
 
     if to_process:
-        written = failed = 0
+        written = 0
         print(f"Processing {len(to_process)} sites...")
         for uid in to_process:
-            ok = write_site_surplus(uid, merged, force=True)
-            if ok:
+            # Two independent outputs; each method's own guard decides what to
+            # (re)build, so a present pixel parquet doesn't block a missing grid.
+            wrote_pixel = write_site_surplus_pixel(uid, merged, force=rebuild_all)
+            wrote_grid = write_site_surplus_grid(uid, merged, force=rebuild_all)
+            if wrote_pixel or wrote_grid:
                 written += 1
-            else:
-                failed += 1
-        print(f"\nSites done: {written} written, {failed} failed/empty.")
+        print(f"\nSites done: {written} updated.")
         _write_manifest(preferred_meta)
         stats.gen_surplus_statistics()
 
     print("\nGenerating Iowa surplus images...")
-    write_iowa_surplus_images(merged, force=force)
+    write_iowa_surplus_images(merged, force=rebuild_all)
 
 
 if __name__ == "__main__":

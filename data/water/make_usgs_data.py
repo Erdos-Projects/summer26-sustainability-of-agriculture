@@ -46,13 +46,42 @@ CORE_PCODES = {
     "00065": "stage",
 }
 
-_CONFIG_FILE = DATASET_DIR / "config" / "pipeline_config.toml"
+# Curated list of USGS monitoring sites to pull. This is a deliberate selection
+# tied to the logic in this file (parameter codes, QA handling, basin coverage);
+# tuning it requires understanding make_usgs_data.py, so it lives here rather
+# than in the shared pipeline config.
+USGS_SITE_LIST = [
+    "USGS-05418400",
+    "USGS-05474500",
+    "USGS-06604440",
+    "USGS-05455100",
+    "USGS-05418110",
+    "USGS-415959091441301",
+    "USGS-05484000",
+    "USGS-05480986",
+    "USGS-05412500",
+    "USGS-05480603",
+    "USGS-06817000",
+    "USGS-05420500",
+    "USGS-05418720",
+    "USGS-05464500",
+    "USGS-05464420",
+    "USGS-06808500",
+    "USGS-05451210",
+    "USGS-06603750",
+    "USGS-05484500",
+    "USGS-05482500",
+    "USGS-05482300",
+    "USGS-05481000",
+    "USGS-05465500",
+    "USGS-05482000",
+    "USGS-05483600",
+    "USGS-05464475",
+]
 
 
 def _load_usgs_site_list() -> list:
-    import tomllib
-    with open(_CONFIG_FILE, "rb") as f:
-        return tomllib.load(f)["usgs"]["site_list"]
+    return USGS_SITE_LIST
 
 # ---------------------------------------------------------------------------
 # Chunking

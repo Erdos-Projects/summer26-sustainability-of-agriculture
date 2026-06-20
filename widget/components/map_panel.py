@@ -2,10 +2,12 @@
 
 Selection modes
 ---------------
-Point  : click anywhere on the map to pin a coordinate. Result is written to
-         the `region-geom` store as a GeoJSON Point.
-Area   : draw a rectangle or free-form polygon to bulk-select monitoring sites.
-         Result is written to `region-geom` as a GeoJSON Polygon.
+Pin Drop : click anywhere on the map to pin a coordinate. Result is written to
+           the `region-geom` store as a GeoJSON Point.
+Point    : (default) select a monitoring site by clicking its marker. Map clicks
+           do not drop a pin in this mode.
+Area     : draw a rectangle or free-form polygon to bulk-select monitoring sites.
+           Result is written to `region-geom` as a GeoJSON Polygon.
 
 Shared state written by this module
 ------------------------------------
@@ -27,13 +29,15 @@ import base64
 import json
 from pathlib import Path
 
+import pandas as pd
 import geopandas as gpd
 import plotly.graph_objects as go
 import dash_leaflet as dl
 from dash import Input, Output, State, html, dcc, no_update, ALL, ctx
+from dash_extensions.javascript import assign
 from shapely.geometry import shape, Point
 
-from data import water, map_overlays, rain as rain_data, basins, surplus
+from data import water, map_overlays, rain as rain_data, basins, surplus, crops
 from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
 from components import basin_editor
 import colors
@@ -386,6 +390,7 @@ def _build_selection_section():
                     dcc.RadioItems(
                         id="selection-mode",
                         options=[
+                            {"label": " Pin Drop", "value": "pin"},
                             {"label": " Point", "value": "point"},
                             {"label": " Area", "value": "area"},
                         ],
@@ -427,7 +432,8 @@ def _build_selection_section():
         heading="Selection",
         body=[
             html.Strong("Tool Select", style={"fontSize": "11px"}),
-            html.P("Point -- click on map to pin coordinate or select site.", style=_HP),
+            html.P("Pin Drop -- click on the map to drop a coordinate pin.", style=_HP),
+            html.P("Point -- (default) select a monitoring site by clicking its marker.", style=_HP),
             html.P("Area -- draw a rectangle or polygon to bulk select monitoring sites inside it.", style=_HP),
             html.Strong("Sites Selected", style={"fontSize": "11px"}),
             html.P("List of selected sites. Click the site name to display its timeseries.", style=_HP),
@@ -483,16 +489,39 @@ def _build_graph_display_section():
                     html.Div(
                         [
                             html.Label(
-                                "Aggregation Method", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}
+                                "Agg Method (Water)",
+                                style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"},
                             ),
                             dcc.Dropdown(
-                                id="agg-func",
+                                id="agg-func-water",
                                 options=[
+                                    {"label": "sum", "value": "sum"},
                                     {"label": "mean", "value": "mean"},
-                                    {"label": "min", "value": "min"},
                                     {"label": "max", "value": "max"},
+                                    {"label": "min", "value": "min"},
                                 ],
                                 value="mean",
+                                clearable=False,
+                                style={"fontSize": "13px"},
+                            ),
+                        ],
+                        style={"flex": "1", "minWidth": "0", "display": "flex", "flexDirection": "column"},
+                    ),
+                    html.Div(
+                        [
+                            html.Label(
+                                "Agg Method (Rain)",
+                                style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"},
+                            ),
+                            dcc.Dropdown(
+                                id="agg-func-rain",
+                                options=[
+                                    {"label": "sum", "value": "sum"},
+                                    {"label": "mean", "value": "mean"},
+                                    {"label": "max", "value": "max"},
+                                    {"label": "min", "value": "min"},
+                                ],
+                                value="sum",
                                 clearable=False,
                                 style={"fontSize": "13px"},
                             ),
@@ -535,9 +564,10 @@ def _build_graph_display_section():
                 ],
                 style=_HP,
             ),
-            html.Strong("Aggregation Method", style={"fontSize": "11px"}),
+            html.Strong("Agg Method (Water / Rain)", style={"fontSize": "11px"}),
             html.P(
-                "How values within each interval are combined: mean (average), min (lowest reading), or max (highest reading).",
+                "How values within each interval are combined — chosen separately for water (nitrate) and rain "
+                "(precipitation): sum, mean, max, or min.",
                 style={**_HP, "margin": "2px 0 0 0"},
             ),
         ],
@@ -848,7 +878,10 @@ def layout():
                             dl.ZoomControl(position="bottomleft"),
                             dl.GeoJSON(
                                 data=iowa_geojson,
-                                options={"style": {"color": "#555", "weight": 2, "fillOpacity": 0}},
+                                # interactive:False so this statewide outline's transparent fill
+                                # doesn't capture mouse events over all of Iowa (it would block
+                                # hover on the rain-grid cells beneath it).
+                                options={"style": {"color": "#555", "weight": 2, "fillOpacity": 0, "interactive": False}},
                             ),
                             dl.LayerGroup(id="iem-bbox-layer"),
                             dl.Pane(name="hydro-pane", style={"zIndex": 410}),
@@ -979,6 +1012,106 @@ def layout():
             ),
         ],
     )
+
+
+# ── Rain-grid Voronoi cells (rendered as one interactive GeoJSON layer) ────────
+# Cells are coloured by surplus (matching the surplus heatmap PNGs), highlight on
+# hover, and bind a tooltip with surplus / total-N / crop stats. The style,
+# hover-style and tooltip-binding run client-side as JS (one layer scales far
+# better than thousands of per-cell components).
+_GRID_NODATA_COLOR = "#cccccc"  # cells with no surplus value for the year (e.g. outside Iowa)
+
+_GRID_STYLE_JS = assign(
+    """function(feature, context){
+        return {color: '#0284c7', weight: 1, fillColor: feature.properties.color, fillOpacity: 0.55};
+    }"""
+)
+_GRID_HOVER_JS = assign(
+    """function(feature, context){
+        return {weight: 3, color: '#0c4a6e', fillOpacity: 0.8};
+    }"""
+)
+_GRID_ONEACH_JS = assign(
+    """function(feature, layer, context){
+        if(feature.properties && feature.properties.tooltip){
+            // Click opens a popup — reliable even when Leaflet's vector hover
+            // hit-testing goes stale after a map pan/zoom (clicks are hit-tested
+            // by coordinate, so they always reach the cell).
+            layer.bindPopup(feature.properties.tooltip);
+            // Hover tooltip too, for the (intermittent) cases where mouseover fires.
+            layer.bindTooltip(feature.properties.tooltip, {sticky: true});
+            layer.on('mouseover', function(e){ layer.openTooltip(e.latlng); });
+            layer.on('mousemove', function(e){ layer.openTooltip(e.latlng); });
+            layer.on('mouseout', function(){ layer.closeTooltip(); });
+        }
+    }"""
+)
+
+
+def _cell_tooltip(row, crop_cols):
+    """HTML tooltip string for one Voronoi cell: surplus + total N + crop list."""
+    lines = [f"<b>Cell {int(row['node_id'])}</b>"]
+    if pd.notna(row.get("surplus_kgha")):
+        lines.append(f"Surplus: {row['surplus_kgha']:.0f} kg/ha")
+        lines.append(f"Total N: {row['total_kg_N']:,.0f} kg")
+    else:
+        lines.append("Surplus: n/a (outside data)")
+    counts = {c: row[c] for c in crop_cols if pd.notna(row.get(c)) and row[c] > 0}
+    total = sum(counts.values())
+    if total:
+        lines.append("Crops:")
+        for k, v in sorted(counts.items(), key=lambda kv: kv[1], reverse=True):
+            lines.append(f"&nbsp;&nbsp;{k}: {v / total:.0%}")
+    return "<br>".join(lines)
+
+
+def _rain_grid_features(uid, year):
+    """GeoJSON (lon/lat) of a site's rain cells, each with a surplus colour and a
+    tooltip joining surplus + crop stats for `year`. Raises FileNotFoundError if
+    the rain grid hasn't been built."""
+    cells = rain_data.get_rain_grid(uid).to_crs("EPSG:4326")[["node_id", "geometry"]]
+
+    try:
+        s = surplus.get_surplus_grid(uid)
+        s = s[s["year"] == year][["node_id", "surplus_kgha", "total_kg_N", "coverage_frac"]]
+    except FileNotFoundError:
+        s = pd.DataFrame(columns=["node_id", "surplus_kgha", "total_kg_N", "coverage_frac"])
+
+    try:
+        c = crops.get_crops(uid)
+        c = c[c["year"] == year].drop(columns=["year"])
+    except FileNotFoundError:
+        c = pd.DataFrame(columns=["node_id"])
+    crop_cols = [col for col in c.columns if col != "node_id"]
+
+    cells = cells.merge(s, on="node_id", how="left").merge(c, on="node_id", how="left")
+    cells["color"] = cells["surplus_kgha"].map(
+        lambda v: surplus.surplus_to_hex(v) if pd.notna(v) else _GRID_NODATA_COLOR
+    )
+    cells["tooltip"] = cells.apply(lambda r: _cell_tooltip(r, crop_cols), axis=1)
+    return json.loads(cells[["node_id", "color", "tooltip", "geometry"]].to_json())
+
+
+def _rain_grid_dots(uid):
+    """Fallback: rain-cell centroids as dots, for sites without a rain grid yet."""
+    try:
+        df = rain_data.get_rain(uid)
+    except FileNotFoundError:
+        return []
+    cells = df[["lon", "lat"]].drop_duplicates()
+    return [
+        dl.CircleMarker(
+            center=[row.lat, row.lon],
+            radius=4,
+            color=colors.RAIN_GRID["stroke"],
+            fillColor=colors.RAIN_GRID["fill"],
+            fillOpacity=0.5,
+            weight=1,
+            pane="rain-grid-pane",
+            bubblingMouseEvents=False,
+        )
+        for row in cells.itertuples()
+    ]
 
 
 def register_callbacks(app):
@@ -1403,28 +1536,25 @@ def register_callbacks(app):
         Output("rain-grid-layer", "children"),
         Input("rain-grid-toggle", "value"),
         Input("active-graph-site", "data"),
+        Input("surplus-year-slider", "value"),
     )
-    def render_rain_grid(toggle, active_uid):
+    def render_rain_grid(toggle, active_uid, year):
         if "show" not in toggle or not active_uid:
             return []
         try:
-            df = rain_data.get_rain(active_uid)
-            cells = df[["lon", "lat"]].drop_duplicates()
-            return [
-                dl.CircleMarker(
-                    center=[row.lat, row.lon],
-                    radius=4,
-                    color=colors.RAIN_GRID["stroke"],
-                    fillColor=colors.RAIN_GRID["fill"],
-                    fillOpacity=0.5,
-                    weight=1,
-                    pane="rain-grid-pane",
-                    bubblingMouseEvents=False,
-                )
-                for row in cells.itertuples()
-            ]
+            features = _rain_grid_features(active_uid, year)
         except FileNotFoundError:
-            return []
+            return _rain_grid_dots(active_uid)  # no rain grid built yet → centroid dots
+        return [
+            dl.GeoJSON(
+                data=features,
+                style=_GRID_STYLE_JS,
+                hoverStyle=_GRID_HOVER_JS,
+                onEachFeature=_GRID_ONEACH_JS,
+                zoomToBounds=False,
+                pane="rain-grid-pane",
+            )
+        ]
 
     @app.callback(
         Output("surplus-image-overlay", "url"),
@@ -1529,7 +1659,7 @@ def register_callbacks(app):
         triggered = ctx.triggered_id
 
         if triggered == "map":
-            if mode != "point" or not click_data:
+            if mode != "pin" or not click_data:
                 return no_update, no_update
             latlng = click_data["latlng"]
             lat, lng = latlng["lat"], latlng["lng"]

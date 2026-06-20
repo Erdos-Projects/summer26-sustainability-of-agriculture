@@ -10,6 +10,7 @@ time. Re-run this script only if you want to refresh the data.
 Dependencies (already in the conda env): pynhd, geopandas
 """
 
+import sys
 from pathlib import Path
 
 import geopandas as gpd
@@ -19,13 +20,16 @@ THIS_DIR = Path(__file__).resolve().parent
 SAVE_DIR = THIS_DIR / "overlays_data"
 SAVE_DIR.mkdir(parents=True, exist_ok=True)
 
+sys.path.insert(0, str(THIS_DIR.parents[1]))
+from data.settings import get_config
+
 # ──────────────────────────────────────────────────────────────────────────────
 
-# Minimum Strahler stream order to include in the flowlines layer.
+# Minimum Strahler stream order to include in the flowlines layer (from config).
 # 1–2 = tiny headwater streams (very large file, not very visible)
 # 3   = a good balance: visible streams without overwhelming detail
 # 4+  = only major rivers (small file, sparser coverage)
-MIN_STREAM_ORDER = 3
+MIN_STREAM_ORDER = get_config()["map_overlays"]["min_stream_order"]
 
 
 def iowa_geometry():

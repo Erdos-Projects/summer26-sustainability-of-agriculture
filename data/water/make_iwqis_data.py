@@ -17,6 +17,7 @@ This script assumes the data is in the state following the modifications. It use
 - `iwqis-params.csv`: just params.csv renamed
 """
 
+import sys
 import pandas as pd
 import numpy as np
 import json
@@ -37,7 +38,8 @@ MEASURES_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_measures.csv"
 METADATA_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_site_metadata.csv"
 PARAMS_TARGET_FILE = THIS_DIR / "water_meta" / "iwqis_params.csv"
 
-_CONFIG_FILE = THIS_DIR / "config" / "pipeline_config.toml"
+sys.path.insert(0, str(THIS_DIR.parents[1]))
+from data.settings import get_config
 
 FULL_DATA = None
 
@@ -177,10 +179,7 @@ def main(api_keys=None, extra_filter=[]):
         print("IWQIS data already complete, skipping.")
         return
 
-    import tomllib
-
-    with open(_CONFIG_FILE, "rb") as f:
-        _cfg = tomllib.load(f)["iwqis"]
+    _cfg = get_config()["iwqis"]
     SPARSITY_CUTOFF = _cfg["sparsity_cutoff"]
     LIFESPAN_CUTOFF = _cfg["lifespan_cutoff"]
 

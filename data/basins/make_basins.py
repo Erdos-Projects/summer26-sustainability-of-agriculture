@@ -41,6 +41,7 @@ Usage
 
 import io
 import re
+import sys
 import math
 import zipfile
 import argparse
@@ -63,11 +64,14 @@ _CACHE_DIR      = _THIS_DIR / "cache"
 _PREFERRED_CSV  = _THIS_DIR / "basin_meta" / "preferred_basin.csv"
 _ARCHIVE_CSV    = _THIS_DIR / "basin_meta" / ".preferred_basin_archive.csv"
 
+sys.path.insert(0, str(_THIS_DIR.parents[1]))
+from data.settings import get_equal_area_crs
+
 # Columns that indicate a meaningful change in the archive vs. working CSV.
 # Float columns (areas, distances) are excluded — they may drift on recompute.
 _KEY_COLS = ["basin_name", "basin_type", "selection_mode", "reviewed"]
 
-EQUAL_AREA_CRS = "EPSG:5070"
+EQUAL_AREA_CRS = get_equal_area_crs()
 
 
 # ── Basin 1: NLDI position snap ───────────────────────────────────────────────

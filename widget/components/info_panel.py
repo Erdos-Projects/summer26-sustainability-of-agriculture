@@ -50,7 +50,9 @@ _SEASON_MONTHS_DAYS = [(3, 21), (6, 21), (9, 21), (12, 21)]
 _BAR_THRESH = 200  # if there are more than this many bars, do a scatter for rain
 
 
-def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_seasons: bool = False) -> go.Figure:
+def _build_timeseries_figure(
+    site_uid: str, interval: str, agg_func_water: str, agg_func_rain: str, show_seasons: bool = False
+) -> go.Figure:
     """Build the site timeseries figure with nitrate and rain traces.
 
     Nitrate is plotted on the primary y-axis.  A secondary y-axis is reserved
@@ -60,8 +62,10 @@ def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_s
     fig = go.Figure()
     try:
         precip_col = f"precip_{interval.lower()}"
-        rain = rain_data.aggregate_by_interval(site_uid, interval=interval, agg_func="sum")
-        rain = rain.groupby("date")[precip_col].agg(func=agg_func).reset_index()
+        # Rain agg method controls the temporal combine (per cell, within each
+        # interval); cells are then combined spatially to one basin value by mean.
+        rain = rain_data.aggregate_by_interval(site_uid, interval=interval, agg_func=agg_func_rain)
+        rain = rain.groupby("date")[precip_col].agg(func="mean").reset_index()
         if rain.shape[0] < _BAR_THRESH:
             fig.add_trace(
                 go.Bar(
@@ -96,7 +100,7 @@ def _build_timeseries_figure(site_uid: str, interval: str, agg_func: str, show_s
         pass  # no rain data yet for this site — silently omit the trace
 
     # ── nitrate trace ─────────────────────────────────────────────────────────
-    nitrate = water.aggregate_by_interval(site_uid, interval=interval, agg_func=agg_func)
+    nitrate = water.aggregate_by_interval(site_uid, interval=interval, agg_func=agg_func_water)
     fig.add_trace(
         go.Scatter(
             x=nitrate.index,
@@ -159,17 +163,19 @@ def register_callbacks(app):
         Output("timeseries-graph", "figure"),
         Input("active-graph-site", "data"),
         Input("aggregate-interval", "value"),
-        Input("agg-func", "value"),
+        Input("agg-func-water", "value"),
+        Input("agg-func-rain", "value"),
         Input("graph-toggle", "value"),
         prevent_initial_call=True,
     )
-    def update_timeseries(active_uid, interval, agg_func, graph_toggle):
+    def update_timeseries(active_uid, interval, agg_func_water, agg_func_rain, graph_toggle):
         if not active_uid:
             return go.Figure()
         return _build_timeseries_figure(
             active_uid,
             interval=interval or "1D",
-            agg_func=agg_func or "mean",
+            agg_func_water=agg_func_water or "mean",
+            agg_func_rain=agg_func_rain or "sum",
             show_seasons="seasons" in (graph_toggle or []),
         )
 

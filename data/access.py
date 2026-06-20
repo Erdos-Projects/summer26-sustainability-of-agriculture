@@ -3,11 +3,20 @@ import pandas as pd
 import geopandas as gpd
 from .basins import get_basin
 from .crops import get_crops
-from .rain import get_rain, aggregate_by_interval as agg_rain
+from .rain import get_rain, get_rain_grid as _get_rain_grid, aggregate_by_interval as agg_rain
 from .surplus import get_surplus
 from .water import get_water, get_site_ids as get_ids, aggregate_by_interval as agg_water
 
-_ALL_FIELDS = ("basin", "crops", "rain", "surplus", "water")
+_ALL_FIELDS = ("basin", "crops", "grid", "rain", "surplus", "water")
+
+
+def get_rain_grid(site_uid: str):
+    """Top-level access to a site's rain grid (the shared aggregation grid).
+
+    Thin pass-through to data.rain.get_rain_grid so surplus/crop builders can
+    depend on the public access layer rather than importing the rain module.
+    """
+    return _get_rain_grid(site_uid)
 
 
 @dataclass
@@ -15,6 +24,7 @@ class SiteData:
     site_uid: str
     basin: gpd.GeoDataFrame | None = None
     crops: pd.DataFrame | None = None
+    grid: pd.DataFrame | None = None
     rain: pd.DataFrame | None = None
     surplus: pd.DataFrame | None = None
     water: pd.DataFrame | None = None
@@ -35,6 +45,7 @@ class SiteData:
             site_uid=self.site_uid,
             basin=self.basin,
             crops=self.crops,
+            grid=self.grid,
             rain=new_rain,
             surplus=self.surplus,
             water=new_water,
@@ -63,6 +74,7 @@ def get_data(site_uid: str, include: list[str] | None = None) -> SiteData:
         site_uid=site_uid,
         basin=_try(get_basin, site_uid) if "basin" in load else None,
         crops=_try(get_crops, site_uid) if "crops" in load else None,
+        grid=_try(get_rain_grid, site_uid) if "grid" in load else None,
         rain=_try(get_rain, site_uid) if "rain" in load else None,
         surplus=_try(get_surplus, site_uid) if "surplus" in load else None,
         water=_try(get_water, site_uid) if "water" in load else None,
