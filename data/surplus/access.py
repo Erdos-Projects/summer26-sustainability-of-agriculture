@@ -95,7 +95,7 @@ def get_surplus_pixel(site_uid: str) -> pd.DataFrame:
 def get_surplus_grid(site_uid: str) -> pd.DataFrame:
     """Return a site's surplus aggregated onto the rain grid.
 
-    Columns: node_id, year, surplus_kgha, total_kg_N, coverage_frac.
+    Columns: node_id, year, surplus_kgha, total_kg_N.
     Join to the rain grid (data.get_rain_grid) on node_id for coordinates.
 
     Raises FileNotFoundError if not generated yet (run make_surplus.py).

@@ -139,10 +139,11 @@ def _aggregate_surplus_grid(merged: pd.DataFrame, grid) -> pd.DataFrame | None:
     """Area-weighted surplus per (node_id, year) on a site's rain grid.
 
     Each 250 m surplus cell is a square; its overlap area with each rain Voronoi
-    cell weights its contribution. surplus_kgha is the area-weighted mean over
-    the covered area (intensive); total_kg_N = mean × full cell area (extensive,
-    and equal to the conservative area sum where fully covered, filling any
-    uncovered border with the in-cell mean); coverage_frac flags border cells.
+    cell weights its contribution. Assumes every rain cell is fully covered by
+    surplus pixels (true once the source tifs span the whole region), so values
+    are normalised by the full cell area — no partial-coverage bookkeeping:
+        total_kg_N   = Σ area(D∩R)·surplus_kgha(D) / 1e4   (kg, the cell's N sum)
+        surplus_kgha = total_kg_N / cell_area_ha           (intensive mean)
     Returns None if no surplus pixels overlap the grid.
     """
     minx, miny, maxx, maxy = grid.total_bounds
@@ -165,17 +166,16 @@ def _aggregate_surplus_grid(merged: pd.DataFrame, grid) -> pd.DataFrame | None:
     inter["area_DR"] = inter.geometry.area
 
     j = inter.merge(m[["pixel_id", "year", "surplus_kgha"]], on="pixel_id")
-    j["w_density"] = j["area_DR"] * j["surplus_kgha"]
+    j["w_density"] = j["area_DR"] * j["surplus_kgha"]  # area-weighted surplus per overlap
     g = (
         j.groupby(["node_id", "year"])
-        .agg(covered_area=("area_DR", "sum"), w_density=("w_density", "sum"))
+        .agg(w_density=("w_density", "sum"))
         .reset_index()
         .merge(grid[["node_id", "cell_area"]], on="node_id")
     )
-    g["surplus_kgha"] = g["w_density"] / g["covered_area"]  # intensive: area-weighted mean
-    g["coverage_frac"] = g["covered_area"] / g["cell_area"]
-    g["total_kg_N"] = g["surplus_kgha"] * (g["cell_area"] / 1e4)  # mean × full area
-    return g[["node_id", "year", "surplus_kgha", "total_kg_N", "coverage_frac"]]
+    g["total_kg_N"] = g["w_density"] / 1e4  # Σ area·density (m²·kg/ha) → kg
+    g["surplus_kgha"] = g["w_density"] / g["cell_area"]  # mean over the (full) cell
+    return g[["node_id", "year", "surplus_kgha", "total_kg_N"]]
 
 
 def write_site_surplus_pixel(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:
@@ -224,6 +224,7 @@ def write_site_surplus_grid(site_uid: str, merged: pd.DataFrame, force: bool = F
         print(f"  {site_uid}: no rain grid — run make_rain.py first; skipping surplus_grid")
         return False
 
+    t0 = time.perf_counter()
     agg = _aggregate_surplus_grid(merged, grid)
     if agg is None:
         print(f"  {site_uid}: no surplus overlaps the rain grid")
@@ -231,8 +232,8 @@ def write_site_surplus_grid(site_uid: str, merged: pd.DataFrame, force: bool = F
 
     _GRID_AGG_DIR.mkdir(parents=True, exist_ok=True)
     agg.to_parquet(out, index=False)
-    full = (agg["coverage_frac"] >= 0.999).sum()
-    print(f"  {site_uid}: grid {len(agg):,} rows, {agg['node_id'].nunique()} nodes ({full} fully covered)")
+    elapsed = time.perf_counter() - t0
+    print(f"  {site_uid}: grid {len(agg):,} rows, {agg['node_id'].nunique()} nodes   ({elapsed:.1f}s)")
     return True
 
 

@@ -4,4 +4,4 @@ crops_raw/
 
 # Per-site crop tallies (matches the surplus_data convention). Remove this line
 # if you decide to track the small parquets in git.
-crops_data/
+# crops_data/
