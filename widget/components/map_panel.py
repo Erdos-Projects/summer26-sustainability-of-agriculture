@@ -1075,7 +1075,7 @@ def _rain_grid_features(uid, year):
         s = surplus.get_surplus_grid(uid)
         s = s[s["year"] == year][["node_id", "surplus_kgha", "total_kg_N"]]
     except FileNotFoundError:
-        s = pd.DataFrame(columns=["node_id", "surplus_kgha", "total_kg_N", "coverage_frac"])
+        s = pd.DataFrame(columns=["node_id", "surplus_kgha", "total_kg_N"])
 
     try:
         c = crops.get_crops(uid)

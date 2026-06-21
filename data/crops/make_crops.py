@@ -190,10 +190,21 @@ def main(api_keys=None, force: bool = False, sites: list = None, remap=cdl_to_cl
     tally_years = list(YEARS)
 
     preferred_meta = basins.get_metadata()
+    all_sites = preferred_meta["site_uid"].tolist()
+    n_sites = len(all_sites)
+
+    # ── status report ───────────────────────────────────────────────────────
+    clips_found = sum(_clip_path(y).exists() for y in YEARS)
+    sites_with_data = sum(_grid_path(u).exists() for u in all_sites)
+    print(f"{clips_found}/{len(YEARS)} clipped source files found")
+    print(f"{sites_with_data}/{n_sites} sites have data in crops_data/grid")
+    if clips_found != len(YEARS):
+        print("To rebuild source, run clip_crops.py --download")
+
     if sites:
         to_process = sites
     elif force:
-        to_process = preferred_meta["site_uid"].tolist()
+        to_process = all_sites
     else:
         to_process = _stale_sites(preferred_meta)
 
@@ -202,7 +213,7 @@ def main(api_keys=None, force: bool = False, sites: list = None, remap=cdl_to_cl
     for uid in to_process:
         if write_site_crops(uid, tally_years, classes, code_to_classidx, force=True):
             written += 1
-    print(f"\nSites done: {written} written.")
+    print(f"\nbuilt {written}/{n_sites} site crop files")
     _write_manifest(preferred_meta)
 
 
