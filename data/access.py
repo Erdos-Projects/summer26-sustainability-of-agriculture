@@ -89,7 +89,7 @@ def get_basin_area(site_uid):
     grid = get_rain_grid(site_uid=site_uid)
     cell_areas = np.array(grid.cell_area.values)
     overlaps = np.array(grid.frac_cell_in_basin.values)
-    return np.dot(cell_areas * overlaps)
+    return np.dot(cell_areas, overlaps)
 
 
 def get_site_ids() -> list[str]:

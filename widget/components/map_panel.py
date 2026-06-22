@@ -37,7 +37,7 @@ from dash import Input, Output, State, html, dcc, no_update, ALL, ctx
 from dash_extensions.javascript import assign
 from shapely.geometry import shape, Point
 
-from data import water, map_overlays, rain as rain_data, basins, surplus, crops
+from data import water, map_overlays, rain as rain_data, basins, surplus, crops, get_basin_area
 from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
 from components import basin_editor
 import colors
@@ -1185,6 +1185,7 @@ def register_callbacks(app):
                     html.Th("Start", style={**_TH, "textAlign": "center"}),
                     html.Th("End", style={**_TH, "textAlign": "center"}),
                     html.Th("Lifespan", style={**_TH, "textAlign": "center"}),
+                    html.Th("Basin Area (km²)", style={**_TH, "textAlign": "center"}),
                     html.Th("", style={**_TH, "borderBottom": "1px solid #ddd"}),
                 ]
             )
@@ -1205,6 +1206,11 @@ def register_callbacks(app):
                 lifespan = f"{r['lifespan']:.2f}"
             except Exception:
                 sparsity = start = end = lifespan = "—"
+
+            try:
+                basin_area = f"{get_basin_area(uid) / 1e6:,.0f}"  # get_basin_area is m²
+            except Exception:
+                basin_area = "—"
 
             rows.append(
                 html.Tr(
@@ -1230,6 +1236,7 @@ def register_callbacks(app):
                         html.Td(start, style={**_TD, "textAlign": "center"}),
                         html.Td(end, style={**_TD, "textAlign": "center"}),
                         html.Td(lifespan, style={**_TD, "textAlign": "center"}),
+                        html.Td(basin_area, style={**_TD, "textAlign": "center"}),
                         html.Td(
                             html.Span(
                                 "×",
