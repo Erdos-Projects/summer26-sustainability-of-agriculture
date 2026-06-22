@@ -17,8 +17,11 @@ def get_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
     """Load the rain grid (Voronoi target cells) for a site.
 
     Returns a GeoDataFrame with columns node_id, x, y (EPSG:5070), lat, lon,
-    cell_area, geometry. This is the shared spatial grid the surplus and crop
-    aggregates are built on; node_id is the common join key.
+    cell_area, dist_to_sensor, frac_cell_in_basin, geometry. This is the shared
+    spatial grid the surplus and crop aggregates are built on; node_id is the
+    common join key. dist_to_sensor is the metres-of-flow from the node centre to
+    the monitoring sensor; frac_cell_in_basin is the fraction of the cell's area
+    inside the basin, in [0, 1].
 
     Raises FileNotFoundError if it has not been generated yet (run make_rain.py).
     """
@@ -38,8 +41,9 @@ def get_rain(site_uid: str) -> pd.DataFrame:
 
     Returns
     -------
-    DataFrame with columns: date, lon, lat, precip_in_1d,
+    DataFrame with columns: date, node_id, lon, lat, precip_in_1d,
     year, month, day_of_year, week.
+    node_id joins each row to its cell in the rain grid (get_rain_grid).
 
     Raises FileNotFoundError if the parquet has not been generated yet
     (run make_rain.py to produce it).

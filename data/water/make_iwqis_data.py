@@ -11,7 +11,7 @@ Two modifications were made to this data.
 2. a line (row 63) in `site.csv` had bad quote escaping that messed up parsing, this was fixed by hand to produce `site_clean.csv`.
 
 This script assumes the data is in the state following the modifications. It uses `reassemble.py` to reassemble the full dataset and then filters out the garbage sites to produce a final list of iwqis sites. The output of this process should be
-- `IWQIS-sites/<site_uid>_all_data.csv`: one file per site of interest
+- `water_data/<site_uid>_water.parquet`: one file per site of interest
 - `iwqis-site-metadata.csv`: `site.csv` with garbage sites thrown out
 - `iwqis-measures.csv`: just measures.csv renamed
 - `iwqis-params.csv`: just params.csv renamed
@@ -138,7 +138,7 @@ def _precheck(extra_filter=[]) -> bool:
         return False
     keeper_uids = pd.read_csv(METADATA_TARGET_FILE)["uid"].tolist()
     keeper_uids = [u for u in keeper_uids if u not in extra_filter]
-    all_parquets = all((SITES_DIR / f"{uid}_all_data.parquet").exists() for uid in keeper_uids)
+    all_parquets = all((SITES_DIR / f"{uid}_water.parquet").exists() for uid in keeper_uids)
     all_meta = MEASURES_TARGET_FILE.exists() and PARAMS_TARGET_FILE.exists()
     return all_parquets and all_meta
 
@@ -146,7 +146,7 @@ def _precheck(extra_filter=[]) -> bool:
 def evaluate_uids(sparsity_cutoff, lifespan_cutoff, extra_filter=[]):
     """Return list of sites whose data needs to be created"""
     # check metadata matches the data
-    current_uids = {f.name[: -len("_all_data.parquet")] for f in SITES_DIR.glob("WQ*.parquet")}
+    current_uids = {f.name[: -len("_water.parquet")] for f in SITES_DIR.glob("WQ*.parquet")}
 
     # filter the data and return any missing sites
     print("Filtering the sites, this may take a minute...", end="", flush=True)
@@ -193,7 +193,7 @@ def main(api_keys=None, extra_filter=[]):
         full_data = _full_data()
         # store the full datasets of the good sites
         for uid in missing_uids:
-            file = SITES_DIR / f"{str(uid).strip()}_all_data.parquet"
+            file = SITES_DIR / f"{str(uid).strip()}_water.parquet"
             print(f"  Saving {file}...", end="", flush=True)
             site_df = full_data[full_data.site_uid == uid].copy()
             site_df["datetime"] = pd.to_datetime(site_df["datetime"], utc=True)

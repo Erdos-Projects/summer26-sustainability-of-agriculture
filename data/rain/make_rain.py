@@ -13,6 +13,7 @@ file at data/rain/rain/<uid>_rain.parquet.
 Output schema
 -------------
 date            datetime64[ms]   calendar date of the observation
+node_id         int64            rain-grid node this cell maps to (join key)
 lon             float64          centroid longitude of the IEM grid cell (WGS84)
 lat             float64          centroid latitude  of the IEM grid cell (WGS84)
 precip_1d_in    float64          daily precipitation in inches for that cell
@@ -26,10 +27,18 @@ The _1d suffix on precip_in_1d leaves room for rolling-window columns
 
 Loop structure — date-first
 ---------------------------
-All basins are loaded upfront and a date -> [uid] index is built.  For each
-unique calendar day, the IEM zip is downloaded and parsed exactly once, then
-gpd.sjoin filters the grid to each site's basin.  This avoids re-parsing the
-same zip N_sites times when date ranges overlap heavily.
+A date -> [uid] index is built upfront.  For each unique calendar day the IEM
+zip is downloaded and parsed exactly once, then each active site's cells are
+selected by plain array indexing.  This avoids re-parsing the same zip N_sites
+times when date ranges overlap heavily.
+
+The per-day basin filter is *not* a spatial join.  The IEM grid is static — the
+daily shapefile holds the same cells in the same record order every day — so a
+day's RAINFALL array is positionally aligned to a reference day.  _build_cell_index
+matches each site's rain-grid nodes to their reference-cell row once (a single
+KDTree query per site); per day the filter is then `values[rows]`, which also
+hands each row its node_id for free.  Because the grid nodes are exactly the IEM
+cells intersecting the basin, this yields the same cells the old gpd.sjoin did.
 
 Memory management: each site's accumulated rows are written to disk and freed
 as soon as its last required date has been processed.  At most one site's full
@@ -61,8 +70,10 @@ import requests
 import numpy as np
 import pandas as pd
 import geopandas as gpd
+from collections import deque
 from datetime import date, timedelta
 from pathlib import Path
+from pyproj import Geod
 from shapely.geometry import Polygon
 from scipy.spatial import Voronoi, cKDTree
 from tqdm import tqdm
@@ -233,6 +244,33 @@ def _basin_filter(day_gdf: gpd.GeoDataFrame, basin: gpd.GeoDataFrame) -> pd.Data
     return inside[["date", "lon", "lat", "precip_in_1d"]].reset_index(drop=True)
 
 
+def _parse_day_values(zip_path: Path, expected_n: int) -> np.ndarray | None:
+    """Read just the RAINFALL column (inches) from an IEM daily zip, in record order.
+
+    The IEM grid is static — every daily shapefile holds the same cells in the
+    same record order — so the returned array is positionally aligned to the
+    reference grid used by _build_cell_index, and geometry can be skipped
+    entirely (~5x faster than parsing polygons).  Returns None on a parse error,
+    a missing-data day, or if the cell count does not match the reference (which
+    would break the positional alignment).
+    """
+    try:
+        df = gpd.read_file(f"/vsizip/{zip_path}", ignore_geometry=True)
+    except Exception as e:
+        print(f"  [WARN] parse {zip_path.name}: {e}")
+        return None
+    if df is None or len(df) == 0:
+        return None
+    df.columns = [c.lower() for c in df.columns]
+    if "rainfall" not in df.columns:
+        print(f"  [WARN] unexpected columns in {zip_path.name}: {list(df.columns)}")
+        return None
+    if len(df) != expected_n:
+        print(f"  [WARN] {zip_path.name}: {len(df)} cells != reference {expected_n}; skipping day")
+        return None
+    return df["rainfall"].to_numpy()
+
+
 def _add_time_features(df: pd.DataFrame) -> pd.DataFrame:
     """Append calendar columns used as ML features."""
     dt = pd.to_datetime(df["date"])
@@ -298,10 +336,14 @@ def build_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
     """Build the rain grid (Voronoi target cells) for one basin.
 
     Returns a GeoDataFrame with columns node_id, x, y (EPSG:5070), lat, lon,
-    cell_area, geometry. Cells are the IEM nodes whose cell intersects the basin;
-    each is bounded by real neighbours via a padded halo so edge cells stay
-    finite (infinite hull cells are dropped). The same node_id keys the surplus
-    and crop aggregates downstream.
+    cell_area, dist_to_sensor, frac_cell_in_basin, geometry. Cells are the IEM
+    nodes whose cell intersects the basin; each is bounded by real neighbours via
+    a padded halo so edge cells stay finite (infinite hull cells are dropped).
+    The same node_id keys the surplus and crop aggregates downstream.
+    dist_to_sensor is the metres-of-flow from the node centre to the monitoring
+    sensor (see dist_to_sensor / _grid_node_distances); frac_cell_in_basin is the
+    fraction of the cell's area inside the basin, in [0, 1] (see
+    _grid_basin_fractions).
     """
     basin = basins.get_basin(site_uid).to_crs(_ALBERS)
     basin_poly = basin.geometry.union_all()
@@ -354,7 +396,19 @@ def build_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
                 "geometry": polys[i],
             }
         )
-    return gpd.GeoDataFrame(rows, crs=_ALBERS)
+    grid = gpd.GeoDataFrame(rows, crs=_ALBERS)
+
+    # Per-node columns computed here from the in-memory grid, since the parquet
+    # does not exist yet: flow distance (metres) to the monitoring sensor, and
+    # the fraction of each cell's area falling inside the basin.
+    if len(grid):
+        try:
+            grid["dist_to_sensor"] = _grid_node_distances(site_uid, grid)
+        except Exception as e:
+            print(f"  [warn] {site_uid}: dist_to_sensor unavailable ({e}); column set to NaN")
+            grid["dist_to_sensor"] = np.nan
+        grid["frac_cell_in_basin"] = _grid_basin_fractions(site_uid, grid)
+    return grid
 
 
 def _grid_stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
@@ -410,6 +464,311 @@ def build_grids(site_uids: list[str] | None = None, force: bool = False) -> None
     _write_grid_manifest(preferred_meta)
 
 
+# ── Flow distance: rain-grid node → sensor, along the D8 drainage network ──────
+# "As water flows" distance, reusing the 500 m IWQIS D8 flow-direction raster
+# that make_basins uses for basin3.  Each raster cell stores its downslope
+# neighbour as a numeric-keypad direction (7 8 9 / 4 5 6 / 1 2 3; 5 = sink,
+# 0 = nodata), so every cell drains to exactly one neighbour and the cells that
+# flow to a given outlet form a tree rooted there.  Walking *up* that tree once
+# (following inflow edges, exactly as basins._bfs does) yields the flow distance
+# from every upstream cell to the outlet in a single pass; we cache the field
+# per site and sample it at each node centre.
+#
+# Outlet placement is the subtle part.  A registered sensor (lat, lon) routinely
+# sits a cell or two off the digitised main stem — on a minor tributary or a
+# nodata cell — which would root the tree on a tiny sub-catchment.  basins'
+# inflow-count snap is too weak (it picks any locally well-connected cell).  We
+# instead snap to the nearest cell carrying main-stem *flow accumulation*
+# (upstream drainage area), which reliably lands on the channel within ~1 km of
+# the sensor.  Distance is then measured to that outlet; the residual sensor↔
+# outlet offset (typically < 1.5 km) is negligible against basin-scale paths.
+
+_GEOD = Geod(ellps="WGS84")
+_FLOW_FIELD_CACHE: dict[str, np.ndarray] = {}  # site_uid -> (_H, _W) metres-to-outlet
+_NODE_DIST_CACHE: dict[str, pd.Series] = {}     # site_uid -> node_id -> metres-to-sensor
+_GRID_CACHE: dict[str, gpd.GeoDataFrame] = {}   # site_uid -> rain grid (node_id-indexed)
+_ACCUM: np.ndarray | None = None                # (_H, _W) upstream-cell count (grid-wide)
+
+# Keypad direction code -> downstream (dcol, drow). The inverse of the inflow
+# offsets in basins._NEIGHBOR_CHECKS: a cell with code c flows to this neighbour.
+_D8_STEP = {7: (-1, -1), 8: (0, -1), 9: (1, -1),
+            4: (-1, 0),               6: (1, 0),
+            1: (-1, 1),  2: (0, 1),   3: (1, 1)}
+
+_OUTLET_SNAP_RADIUS = 10   # cells (~5 km) searched for the main-stem outlet cell
+_OUTLET_ACC_FRAC = 0.5     # min fraction of the window-max accumulation to count as main stem
+_NODE_SNAP_RADIUS = 4      # cells (~2 km) to recover a node straddling the basin divide
+
+
+def _sensor_lonlat(site_uid: str) -> tuple[float, float]:
+    """(lon, lat) of the monitoring sensor for site_uid, from water metadata.
+
+    Reads site_location_metadata.csv (via the water access layer); the row's
+    latitude/longitude is the sensor position for that site.
+    """
+    from data import water
+
+    row = water.get_metadata().query("site_uid == @site_uid")
+    if row.empty:
+        raise KeyError(f"No location metadata for {site_uid}.")
+    return float(row.iloc[0]["longitude"]), float(row.iloc[0]["latitude"])
+
+
+def _get_grid(site_uid: str) -> gpd.GeoDataFrame:
+    """Rain grid for site_uid, indexed by node_id (cached)."""
+    grid = _GRID_CACHE.get(site_uid)
+    if grid is None:
+        path = _GRID_DIR / f"{site_uid}_rain_grid.parquet"
+        if not path.exists():
+            raise FileNotFoundError(f"No rain grid for {site_uid}. Run build_grids to generate {path.name}.")
+        grid = gpd.read_parquet(path).set_index("node_id")
+        _GRID_CACHE[site_uid] = grid
+    return grid
+
+
+def _flow_accumulation(direction: np.ndarray, mb) -> np.ndarray:
+    """Upstream-cell count for every D8 cell (computed once, cached grid-wide).
+
+    Kahn topological sweep: each cell flows to exactly one downstream neighbour,
+    so the raster is a forest. Starting from sources (no inflow) and pushing
+    counts downstream gives each cell's total upstream area in O(N).
+    """
+    global _ACCUM
+    if _ACCUM is not None:
+        return _ACCUM
+
+    H, W = mb._H, mb._W
+    down = np.full((H, W, 2), -1, np.int32)
+    indeg = np.zeros((H, W), np.int32)
+    for code, (dc, dr) in _D8_STEP.items():
+        rs, cs = np.where(direction == code)
+        nc, nr = cs + dc, rs + dr
+        ok = (nc >= 0) & (nc < W) & (nr >= 0) & (nr < H)
+        down[rs[ok], cs[ok], 0] = nc[ok]
+        down[rs[ok], cs[ok], 1] = nr[ok]
+        np.add.at(indeg, (nr[ok], nc[ok]), 1)
+
+    acc = np.ones((H, W), np.int64)
+    q = deque(zip(*np.where(indeg == 0)))
+    while q:
+        r, c = q.popleft()
+        dc, dr = down[r, c]
+        if dc < 0:
+            continue
+        acc[dr, dc] += acc[r, c]
+        indeg[dr, dc] -= 1
+        if indeg[dr, dc] == 0:
+            q.append((dr, dc))
+
+    _ACCUM = acc
+    return acc
+
+
+def _snap_outlet(direction: np.ndarray, col: int, row: int, mb) -> tuple[int, int]:
+    """Snap a sensor pixel to the nearest main-stem cell (pour-point snapping).
+
+    Within a small window, take the cells whose flow accumulation is at least
+    _OUTLET_ACC_FRAC of the window maximum (i.e. on the main channel) and return
+    the one closest to the sensor — landing on the channel without overshooting
+    downstream onto extra drainage area below the sensor.
+    """
+    H, W = mb._H, mb._W
+    acc = _flow_accumulation(direction, mb)
+    R = _OUTLET_SNAP_RADIUS
+    c0, c1 = max(0, col - R), min(W, col + R + 1)
+    r0, r1 = max(0, row - R), min(H, row + R + 1)
+    sub = acc[r0:r1, c0:c1]
+    rs, cs = np.where(sub >= _OUTLET_ACC_FRAC * sub.max())
+    cc, rr = cs + c0, rs + r0
+    j = int(np.argmin((cc - col) ** 2 + (rr - row) ** 2))
+    return int(cc[j]), int(rr[j])
+
+
+def _build_flow_field(direction: np.ndarray, col: int, row: int, mb) -> np.ndarray:
+    """Metres-to-outlet for every cell draining to (col, row) on the D8 grid.
+
+    Breadth-first walk up the inflow tree from the outlet, accumulating the
+    geodesic distance between successive cell centres.  Cells that do not drain
+    to the outlet stay NaN.  Diagonal vs. cardinal steps are handled implicitly
+    by measuring the true centre-to-centre distance of each move.
+    """
+    H, W, transform = mb._H, mb._W, mb._TRANSFORM
+    dist = np.full((H, W), np.nan)
+    dist[row, col] = 0.0
+    q = deque([(col, row)])
+    while q:
+        cx, cy = q.popleft()
+        clon, clat = transform * (cx + 0.5, cy + 0.5)  # current cell centre
+        base = dist[cy, cx]
+        for dx, dy, expected in mb._NEIGHBOR_CHECKS:
+            nx, ny = cx + dx, cy + dy
+            if 0 <= nx < W and 0 <= ny < H and np.isnan(dist[ny, nx]) and direction[ny, nx] == expected:
+                nlon, nlat = transform * (nx + 0.5, ny + 0.5)
+                _, _, seg = _GEOD.inv(clon, clat, nlon, nlat)
+                dist[ny, nx] = base + seg
+                q.append((nx, ny))
+    return dist
+
+
+def _flow_distance_field(site_uid: str) -> np.ndarray:
+    """Per-cell flow distance (metres) to the sensor's outlet (cached per site)."""
+    if site_uid in _FLOW_FIELD_CACHE:
+        return _FLOW_FIELD_CACHE[site_uid]
+
+    from data.basins import make_basins as mb
+
+    direction = mb._load_direction_array()
+    lon, lat = _sensor_lonlat(site_uid)
+    col, row = mb._ll_to_image_pixel(lat, lon)
+    if not (0 <= col < mb._W and 0 <= row < mb._H):
+        raise ValueError(f"{site_uid}: sensor falls outside the D8 raster extent.")
+
+    ocol, orow = _snap_outlet(direction, col, row, mb)
+    field = _build_flow_field(direction, ocol, orow, mb)
+    _FLOW_FIELD_CACHE[site_uid] = field
+    return field
+
+
+def _sample_field(field: np.ndarray, col: int, row: int, mb) -> float:
+    """Flow distance at a node pixel, recovering basin-divide straddlers.
+
+    If the node centre falls outside the D8 catchment (coarse 500 m basin vs.
+    finer NLDI basin), snap to the nearest in-catchment cell within a small
+    radius — the node's ~4 km cell still overlaps the catchment.  Returns NaN
+    only when the node sits well outside any drained cell.
+    """
+    H, W = mb._H, mb._W
+    if 0 <= col < W and 0 <= row < H and np.isfinite(field[row, col]):
+        return float(field[row, col])
+
+    R = _NODE_SNAP_RADIUS
+    c0, c1 = max(0, col - R), min(W, col + R + 1)
+    r0, r1 = max(0, row - R), min(H, row + R + 1)
+    sub = field[r0:r1, c0:c1]
+    fin = np.isfinite(sub)
+    if not fin.any():
+        return float("nan")
+    rs, cs = np.where(fin)
+    j = int(np.argmin((cs + c0 - col) ** 2 + (rs + r0 - row) ** 2))
+    return float(sub[rs[j], cs[j]])
+
+
+def _grid_node_distances(site_uid: str, grid: gpd.GeoDataFrame) -> np.ndarray:
+    """Flow distance (metres) to the sensor for each row of an in-memory grid.
+
+    `grid` must carry the build_rain_grid columns lat, lon, x, y; the result is
+    an array aligned to its row order.  Two passes:
+      1. Route each node through the D8 distance field (with the per-cell
+         straddler recovery in _sample_field).
+      2. Any node still NaN — its 500 m cell drains to a neighbouring outlet on
+         the coarse raster — is filled from the nearest resolved node B:
+             dist(A) = dist(B) + |centre(A) - centre(B)|
+         where the second term is the straight-line node-centre distance in
+         EPSG:5070 metres.  This guarantees a finite, monotone-ish estimate for
+         divide-straddling edge nodes the raster cannot route directly.
+    """
+    from data.basins import make_basins as mb
+
+    field = _flow_distance_field(site_uid)
+    dist = np.array([
+        _sample_field(field, *mb._ll_to_image_pixel(lat, lon), mb)
+        for lat, lon in zip(grid["lat"].to_numpy(), grid["lon"].to_numpy())
+    ])
+
+    nan = np.isnan(dist)
+    if nan.any() and (~nan).any():
+        xy = grid[["x", "y"]].to_numpy()  # EPSG:5070 metres
+        gap, idx = cKDTree(xy[~nan]).query(xy[nan])
+        dist[nan] = dist[~nan][idx] + gap
+
+    return dist
+
+
+def _grid_basin_fractions(site_uid: str, grid: gpd.GeoDataFrame) -> np.ndarray:
+    """Fraction of each cell's area that lies inside the basin, in [0, 1].
+
+    `grid` must carry Voronoi cell geometry in the equal-area CRS (_ALBERS), as
+    build_rain_grid produces — so the ratio of intersection area to cell area is
+    an unbiased areal fraction.  Interior cells return ~1.0; cells straddling the
+    basin divide return a partial fraction.  Result is aligned to grid row order.
+    """
+    cells = grid.geometry
+    if cells.crs is not None and cells.crs != _ALBERS:
+        cells = cells.to_crs(_ALBERS)
+    basin_poly = basins.get_basin(site_uid).to_crs(_ALBERS).geometry.union_all()
+    inside = cells.intersection(basin_poly).area
+    return np.clip((inside / cells.area).to_numpy(), 0.0, 1.0)
+
+
+def _node_distances(site_uid: str) -> pd.Series:
+    """Per-node flow distance to the sensor, node_id-indexed (cached per site).
+
+    Reads the saved rain grid; for building it from an in-memory grid use
+    _grid_node_distances directly.
+    """
+    if site_uid in _NODE_DIST_CACHE:
+        return _NODE_DIST_CACHE[site_uid]
+
+    grid = _get_grid(site_uid)
+    series = pd.Series(_grid_node_distances(site_uid, grid), index=grid.index, name="dist_to_sensor")
+    _NODE_DIST_CACHE[site_uid] = series
+    return series
+
+
+def dist_to_sensor(site_uid: str, node_id: int) -> float:
+    """Flow distance in metres from a rain-grid node centre to the sensor.
+
+    Distance is measured "as water flows": down the 500 m D8 drainage network
+    from the cell containing the node centre to the sensor's outlet.  Every node
+    in a site's basin is upstream of the sensor by construction, so the routed
+    distance is always >= the straight-line distance.  Nodes the coarse raster
+    cannot route are filled from the nearest resolved node (see _node_distances),
+    so a value is returned for every node unless the whole site fails to route.
+
+    Parameters
+    ----------
+    site_uid : str
+        Monitoring site identifier (must have a rain grid; run build_grids).
+    node_id : int
+        Node identifier from the site's rain grid (data/rain/rain_grid/).
+    """
+    series = _node_distances(site_uid)
+    if node_id not in series.index:
+        raise KeyError(f"{site_uid}: no node_id {node_id} in rain grid.")
+    return float(series.loc[node_id])
+
+
+def _build_cell_index(site_uids: list[str]) -> tuple[dict, int]:
+    """Map each site's rain-grid nodes to IEM reference-cell row indices.
+
+    The IEM daily shapefile is identical in cell count and record order every
+    day, so a day's RAINFALL array (from _parse_day_values) is positionally
+    aligned to a reference day's cells.  For each site we match its grid-node
+    centroids to the nearest reference cell once; per day the basin filter then
+    reduces to `values[rows]` rather than a geometric sjoin, and node_id comes
+    along for free.
+
+    Returns (index, n_ref) where index[uid] = {rows, node_id, lon, lat} (arrays
+    aligned to node order) and n_ref is the reference cell count used to validate
+    each day's parse.
+    """
+    ref = _parse_day_gdf(_download_shapefile(IEM_GRID_DATE), IEM_GRID_DATE)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        ref_xy = np.column_stack([ref.geometry.centroid.x.to_numpy(), ref.geometry.centroid.y.to_numpy()])
+    tree = cKDTree(ref_xy)
+
+    index = {}
+    for uid in site_uids:
+        grid = _get_grid(uid)
+        lon, lat = grid["lon"].to_numpy(), grid["lat"].to_numpy()
+        dist, rows = tree.query(np.column_stack([lon, lat]))
+        if dist.size and dist.max() > 0.005:  # ~500 m: a node should land on its own IEM cell
+            print(f"  [WARN] {uid}: max node→cell match {dist.max():.4f}° — grid/IEM mismatch?")
+        index[uid] = {"rows": rows, "node_id": grid.index.to_numpy(), "lon": lon, "lat": lat}
+    return index, len(ref)
+
+
 def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False):
     """Build per-site rainfall parquets.
 
@@ -452,11 +811,10 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
         print("Nothing to do.")
         return
 
-    # ── Phase 1: load basins and build date → [uid] index ─────────────────────
+    # ── Phase 1: coverage check + date → [uid] index ──────────────────────────
 
-    basin_map  = {}  # uid -> GeoDataFrame
-    frames     = {}  # uid -> list of per-day DataFrames (freed after write)
-    end_dates  = {}  # uid -> last date needed (triggers write + free)
+    kept         = []  # uids that passed the coverage check
+    end_dates    = {}  # uid -> last date needed (triggers write + free)
     date_to_uids = {}  # date -> [uid, ...]
 
     for uid in to_process:
@@ -482,54 +840,71 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
         start = pd.to_datetime(row.iloc[0]["start_date"]).date()
         end   = pd.to_datetime(row.iloc[0]["last_date"]).date()
 
-        basin_map[uid]  = basin
-        frames[uid]     = []
-        end_dates[uid]  = end
-
+        kept.append(uid)
+        end_dates[uid] = end
         for d in _date_range(start, end):
             date_to_uids.setdefault(d, []).append(uid)
 
-    # ── Phase 2: date-first download → parse → filter loop ────────────────────
+    if not kept:
+        print("No sites passed the coverage check.")
+        return
+
+    # Precompute the per-site IEM-cell mapping — replaces the per-(day, site)
+    # spatial join with array indexing.
+    cell_index, n_ref = _build_cell_index(kept)
+    vals_accum = {uid: [] for uid in kept}  # uid -> list of per-day precip arrays
+    date_accum = {uid: [] for uid in kept}  # uid -> list of dates (parallel)
+
+    def _flush(uid: str) -> None:
+        """Assemble a site's accumulated days into a parquet and free its memory."""
+        n_days = len(date_accum[uid])
+        if not n_days:
+            return
+        ci = cell_index[uid]
+        n_nodes = len(ci["node_id"])
+        df = pd.DataFrame(
+            {
+                "date": np.repeat(pd.to_datetime(date_accum[uid]).values, n_nodes),
+                "lon": np.tile(ci["lon"], n_days),
+                "lat": np.tile(ci["lat"], n_days),
+                "precip_in_1d": np.concatenate(vals_accum[uid]),
+                "node_id": np.tile(ci["node_id"], n_days),
+            }
+        )
+        df = _add_time_features(df)
+        df["date"] = df["date"].astype("datetime64[ms]")
+        df = df[["date", "node_id", "lon", "lat", "precip_in_1d", "year", "month", "day_of_year", "week"]]
+        out = _RAIN_DIR / f"{uid}_rain.parquet"
+        df.to_parquet(out, index=False)
+        print(f"\n  {uid}: {len(df):,} rows -> {out.name}")
+        vals_accum[uid] = []
+        date_accum[uid] = []
+
+    # ── Phase 2: date-first download → parse → index loop ─────────────────────
 
     all_dates = sorted(date_to_uids)
-    print(f"{len(all_dates)} unique dates across {len(basin_map)} sites.")
+    print(f"{len(all_dates)} unique dates across {len(kept)} sites.")
 
     for d in tqdm(all_dates, desc="days", unit="day"):
         zip_path = _download_shapefile(d)
         if zip_path is None:
             continue
 
-        day_gdf = _parse_day_gdf(zip_path, d)
-        if day_gdf is None:
+        vals = _parse_day_values(zip_path, n_ref)
+        if vals is None:
             continue
 
         for uid in date_to_uids[d]:
-            chunk = _basin_filter(day_gdf, basin_map[uid])
-            if chunk is not None:
-                frames[uid].append(chunk)
-
+            vals_accum[uid].append(vals[cell_index[uid]["rows"]])
+            date_accum[uid].append(d)
             # Write and free memory as soon as a site's last date is reached.
-            if d == end_dates[uid] and frames[uid]:
-                df = pd.concat(frames[uid], ignore_index=True)
-                df["date"] = pd.to_datetime(df["date"])
-                df = _add_time_features(df)
-                out = _RAIN_DIR / f"{uid}_rain.parquet"
-                df.to_parquet(out, index=False)
-                print(f"\n  {uid}: {len(df):,} rows -> {out.name}")
-                del frames[uid]
-                del basin_map[uid]
+            if d == end_dates[uid]:
+                _flush(uid)
 
-    # ── Phase 3: write any sites not yet flushed ──────────────────────────────
+    # ── Phase 3: write any sites not yet flushed (e.g. last date had no data) ──
 
-    for uid, frame_list in frames.items():
-        if not frame_list:
-            continue
-        df = pd.concat(frame_list, ignore_index=True)
-        df["date"] = pd.to_datetime(df["date"])
-        df = _add_time_features(df)
-        out = _RAIN_DIR / f"{uid}_rain.parquet"
-        df.to_parquet(out, index=False)
-        print(f"  {uid}: {len(df):,} rows -> {out.name}")
+    for uid in kept:
+        _flush(uid)
 
     # ── Phase 4: update manifest ───────────────────────────────────────────────
     _write_manifest(preferred_meta)

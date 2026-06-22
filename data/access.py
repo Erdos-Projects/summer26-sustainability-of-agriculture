@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 import pandas as pd
+import numpy as np
 import geopandas as gpd
 from .basins import get_basin
 from .crops import get_crops
@@ -28,6 +29,7 @@ class SiteData:
     rain: pd.DataFrame | None = None
     surplus: pd.DataFrame | None = None
     water: pd.DataFrame | None = None
+    basin_area: float | None = None
 
     def has(self, key: str) -> bool:
         """Return True if the named field was successfully loaded."""
@@ -49,6 +51,7 @@ class SiteData:
             rain=new_rain,
             surplus=self.surplus,
             water=new_water,
+            basin_area=self.basin_area,
         )
 
         if inplace:
@@ -78,7 +81,15 @@ def get_data(site_uid: str, include: list[str] | None = None) -> SiteData:
         rain=_try(get_rain, site_uid) if "rain" in load else None,
         surplus=_try(get_surplus, site_uid) if "surplus" in load else None,
         water=_try(get_water, site_uid) if "water" in load else None,
+        basin_area=get_basin_area(site_uid) if "grid" in load else None,
     )
+
+
+def get_basin_area(site_uid):
+    grid = get_rain_grid(site_uid=site_uid)
+    cell_areas = np.array(grid.cell_area.values)
+    overlaps = np.array(grid.frac_cell_in_basin.values)
+    return np.dot(cell_areas * overlaps)
 
 
 def get_site_ids() -> list[str]:

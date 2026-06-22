@@ -9,7 +9,7 @@ Intermediate (surplus_raw/  — gitignored)
     images/iowa_surplus_{year}.png  Iowa-wide heatmaps + .json bounds sidecars
 
 Outputs (surplus_data/)
-    {site_uid}_surplus.parquet  rows whose (x, y) fall inside site_uid's preferred basin
+    {site_uid}_surplus_pixel.parquet  rows whose (x, y) fall inside site_uid's preferred basin
 
 Usage
 -----
@@ -184,7 +184,7 @@ def write_site_surplus_pixel(site_uid: str, merged: pd.DataFrame, force: bool = 
     These are the surplus cells whose centre falls inside the basin polygon
     (intensive surplus_kgha + extensive total_kg_N per pixel per year). No rain
     grid involved. Returns True if the parquet was written."""
-    out = _PIXEL_DIR / f"{site_uid}_surplus.parquet"
+    out = _PIXEL_DIR / f"{site_uid}_surplus_pixel.parquet"
     if out.exists() and not force:
         return False
 
@@ -307,7 +307,7 @@ def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     return [
         row["site_uid"]
         for _, row in preferred_meta.iterrows()
-        if not (_PIXEL_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        if not (_PIXEL_DIR / f"{row['site_uid']}_surplus_pixel.parquet").exists()
         or not (_GRID_AGG_DIR / f"{row['site_uid']}_surplus_grid.parquet").exists()
         or manifest.get(row["site_uid"]) != row["basin_name"]
     ]
@@ -318,7 +318,7 @@ def _write_manifest(preferred_meta: pd.DataFrame) -> None:
     rows = [
         {"site_uid": row["site_uid"], "basin_name": row["basin_name"]}
         for _, row in preferred_meta.iterrows()
-        if (_PIXEL_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        if (_PIXEL_DIR / f"{row['site_uid']}_surplus_pixel.parquet").exists()
     ]
     pd.DataFrame(rows).to_csv(_MANIFEST_FILE, index=False)
 

@@ -86,7 +86,7 @@ def get_surplus_pixel(site_uid: str) -> pd.DataFrame:
     Raises FileNotFoundError if the parquet hasn't been generated yet.
     Run make_surplus.py to build it.
     """
-    path = _PIXEL_DIR / f"{site_uid}_surplus.parquet"
+    path = _PIXEL_DIR / f"{site_uid}_surplus_pixel.parquet"
     if not path.exists():
         raise FileNotFoundError(f"No surplus data for {site_uid}. Run make_surplus.py to generate it.")
     return pd.read_parquet(path)

@@ -9,7 +9,7 @@ Intermediate (surplus_raw/  — gitignored)
     images/iowa_surplus_{year}.png  Iowa-wide heatmaps + .json bounds sidecars
 
 Outputs (surplus_data/)
-    {site_uid}_surplus.parquet  rows whose (x, y) fall inside site_uid's preferred basin
+    {site_uid}_surplus_pixel.parquet  rows whose (x, y) fall inside site_uid's preferred basin
 
 Usage
 -----
@@ -90,7 +90,7 @@ def write_site_surplus(site_uid: str, merged: pd.DataFrame, force: bool = False)
 
     Returns True if a file was written, False if skipped or empty.
     """
-    out = _DATA_DIR / f"{site_uid}_surplus.parquet"
+    out = _DATA_DIR / f"{site_uid}_surplus_pixel.parquet"
     if out.exists() and not force:
         return False
 
@@ -182,7 +182,7 @@ def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     return [
         row["site_uid"]
         for _, row in preferred_meta.iterrows()
-        if not (_DATA_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        if not (_DATA_DIR / f"{row['site_uid']}_surplus_pixel.parquet").exists()
         or manifest.get(row["site_uid"]) != row["basin_name"]
     ]
 
@@ -192,7 +192,7 @@ def _write_manifest(preferred_meta: pd.DataFrame) -> None:
     rows = [
         {"site_uid": row["site_uid"], "basin_name": row["basin_name"]}
         for _, row in preferred_meta.iterrows()
-        if (_DATA_DIR / f"{row['site_uid']}_surplus.parquet").exists()
+        if (_DATA_DIR / f"{row['site_uid']}_surplus_pixel.parquet").exists()
     ]
     pd.DataFrame(rows).to_csv(_MANIFEST_FILE, index=False)
 

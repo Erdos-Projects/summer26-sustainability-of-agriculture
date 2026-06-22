@@ -62,7 +62,7 @@ def get_water(site_uid: str):
     DataFrame
         the full data of the site
     """
-    return pd.read_parquet(_SITE_DATA_DIR / f"{site_uid}_all_data.parquet")
+    return pd.read_parquet(_SITE_DATA_DIR / f"{site_uid}_water.parquet")
 
 
 def get_all_water():

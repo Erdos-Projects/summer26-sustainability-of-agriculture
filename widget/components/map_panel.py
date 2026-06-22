@@ -1049,8 +1049,15 @@ _GRID_ONEACH_JS = assign(
 
 
 def _cell_tooltip(row, crop_cols):
-    """HTML tooltip string for one Voronoi cell: surplus + total N + crop list."""
+    """HTML tooltip string for one Voronoi cell: area + surplus + total N + crop list."""
     lines = [f"<b>Cell {int(row['node_id'])}</b>"]
+    if pd.notna(row.get("cell_area")):
+        area_km2 = row["cell_area"] / 1e6  # cell_area is m² (EPSG:5070)
+        lines.append(f"Cell area: {area_km2:.2f} km²")
+        if pd.notna(row.get("frac_cell_in_basin")):
+            lines.append(f"Cell area in basin: {area_km2 * row['frac_cell_in_basin']:.2f} km²")
+    if pd.notna(row.get("dist_to_sensor")):
+        lines.append(f"Dist to sensor: {row['dist_to_sensor'] / 1e3:.1f} km")  # dist_to_sensor is m
     if pd.notna(row.get("surplus_kgha")):
         lines.append(f"Surplus: {row['surplus_kgha']:.0f} kg/ha")
         lines.append(f"Total N: {row['total_kg_N']:,.0f} kg")
@@ -1069,7 +1076,8 @@ def _rain_grid_features(uid, year):
     """GeoJSON (lon/lat) of a site's rain cells, each with a surplus colour and a
     tooltip joining surplus + crop stats for `year`. Raises FileNotFoundError if
     the rain grid hasn't been built."""
-    cells = rain_data.get_rain_grid(uid).to_crs("EPSG:4326")[["node_id", "geometry"]]
+    grid = rain_data.get_rain_grid(uid).to_crs("EPSG:4326")
+    cells = grid[["node_id", "geometry"] + [c for c in ("cell_area", "frac_cell_in_basin", "dist_to_sensor") if c in grid.columns]]
 
     try:
         s = surplus.get_surplus_grid(uid)

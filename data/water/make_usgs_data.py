@@ -281,7 +281,7 @@ def update_measures(long_keep, pcodes=CORE_PCODES, path=UNITS_FILE):
 # Per-site helpers — module-level so they are importable and testable
 # ---------------------------------------------------------------------------
 def filename(site_id: str) -> Path:
-    return SITE_DIR / f"{site_id}_all_data.parquet"
+    return SITE_DIR / f"{site_id}_water.parquet"
 
 
 def get_lifespan(site_id: str, meta: "pd.DataFrame"):
@@ -342,7 +342,7 @@ def params_from_meta(site_id: str, meta: "pd.DataFrame") -> int:
 def main(api_keys, extra_filter=None):
     """Builds the USGS data site by site. Creates the files
     - `usgs-site-metadata.csv`: metadata for all relevant sites
-    - `<site-id>_all_data.csv`: full timeseries data for every relevant site
+    - `<site-id>_water.parquet`: full timeseries data for every relevant site
 
     Parameters
     ----------
