@@ -39,6 +39,7 @@ import argparse
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import rasterio
@@ -147,6 +148,72 @@ def clip_to_bbox(src_path: Path, out_path: Path) -> tuple[int, int]:
     return int(window.width), int(window.height)
 
 
+def _stream_with_resume(url: str, tmp_path: Path, max_retries: int = 6, chunk_size: int = 1 << 20) -> None:
+    """Stream a download to tmp_path, retrying with backoff and resuming from
+    wherever a dropped connection left off (NASS's GetCDLFile cache files
+    support Range requests since they're served as plain static files).
+
+    If the server ever ignores our Range header and sends a fresh 200 instead
+    of a 206, we detect that and restart tmp_path from scratch rather than
+    silently corrupting it by appending mismatched bytes.
+    """
+    for attempt in range(1, max_retries + 1):
+        existing = tmp_path.stat().st_size if tmp_path.exists() else 0
+        headers = {"Range": f"bytes={existing}-"} if existing else {}
+        mode = "ab" if existing else "wb"
+
+        try:
+            with requests.get(url, headers=headers, timeout=60, stream=True) as resp:
+                resp.raise_for_status()
+
+                # Server ignored our Range request and is sending the whole file
+                # again — discard what we had so we don't append onto it.
+                if existing and resp.status_code != 206:
+                    print(f"  server did not honor resume (status {resp.status_code}); restarting download")
+                    existing = 0
+                    mode = "wb"
+
+                total = int(resp.headers.get("content-length", 0)) + existing
+                with open(tmp_path, mode) as f:
+                    downloaded = existing
+                    for chunk in resp.iter_content(chunk_size=chunk_size):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            pct = downloaded / total * 100 if total else 0
+                            print(f"\r  {downloaded / 1e6:,.1f} MB / {total / 1e6:,.1f} MB ({pct:.1f}%)", end="")
+            print()
+            return  # success
+
+        except (requests.exceptions.ChunkedEncodingError, requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            print(f"\n  attempt {attempt}/{max_retries} failed: {e}")
+            if attempt == max_retries:
+                raise
+            wait = min(2**attempt, 60)
+            print(f"  retrying in {wait}s (resuming from {tmp_path.stat().st_size if tmp_path.exists() else 0} bytes)...")
+            time.sleep(wait)
+
+
+def _get_with_retry(url: str, max_retries: int = 5, timeout: int = 300, **kwargs) -> requests.Response:
+    """GET with retries/backoff and a generous timeout.
+
+    Used for the GetCDLFile metadata request, which makes NASS generate the
+    clip server-side before it can respond — for larger regions that can take
+    well over a minute, so this needs both a longer timeout than a normal
+    request and the ability to just try again if it times out anyway.
+    """
+    for attempt in range(1, max_retries + 1):
+        try:
+            return requests.get(url, timeout=timeout, **kwargs)
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
+            print(f"  attempt {attempt}/{max_retries} failed: {e}")
+            if attempt == max_retries:
+                raise
+            wait = min(2**attempt, 60)
+            print(f"  retrying in {wait}s...")
+            time.sleep(wait)
+
+
 def download_source(year):
     raw_path = _download_path(year)
 
@@ -157,8 +224,10 @@ def download_source(year):
         albers_bbox = f"{minx:.0f},{miny:.0f},{maxx:.0f},{maxy:.0f}"
         url = "https://nassgeodata.gmu.edu/axis2/services/CDLService/GetCDLFile" f"?year={year}&bbox={albers_bbox}"
 
-        # Step 1: request XML response containing GeoTIFF download URL
-        resp = requests.get(url, timeout=60)
+        # Step 1: request XML response containing GeoTIFF download URL. NASS
+        # builds the clip on-demand here, which can be slow for larger regions —
+        # give it a long timeout and a few retries rather than failing at 60s.
+        resp = _get_with_retry(url)
 
         if resp.status_code == 500:
             print("500 Server Error — common causes:")
@@ -167,7 +236,19 @@ def download_source(year):
             print(f"Raw response: {resp.text[:300]}")
             return None
 
-        root = ET.fromstring(resp.content)
+        if resp.status_code != 200:
+            print(f"ERROR: unexpected status {resp.status_code} from CDL service.")
+            print(f"Raw response: {resp.text[:400]}")
+            return None
+
+        try:
+            root = ET.fromstring(resp.content)
+        except ET.ParseError as e:
+            print(f"ERROR: CDL response was not valid XML ({e}).")
+            print(f"Status code: {resp.status_code}")
+            print(f"Content-Type: {resp.headers.get('content-type')}")
+            print(f"Raw response (first 500 chars): {resp.text[:500]!r}")
+            return None
 
         # The download URL is in a <returnURL> element. {*} matches the element in
         # any namespace or none, so no fallback query is needed (and `or` on an
@@ -186,11 +267,7 @@ def download_source(year):
         # download never leaves a truncated file that looks complete.
         tmp_path = raw_path.with_suffix(".tif.part")
         raw_path.parent.mkdir(parents=True, exist_ok=True)
-        with requests.get(tiff_url, timeout=60, stream=True) as tiff_resp:
-            tiff_resp.raise_for_status()
-            with open(tmp_path, "wb") as f:
-                for chunk in tiff_resp.iter_content(chunk_size=1 << 20):  # 1 MiB chunks
-                    f.write(chunk)
+        _stream_with_resume(tiff_url, tmp_path)
         os.replace(tmp_path, raw_path)  # atomic; the final file only appears once complete
     else:
         print(f"  {year}: using existing download {raw_path.name}")
