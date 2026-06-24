@@ -4,7 +4,12 @@ import numpy as np
 import geopandas as gpd
 from .basins import get_basin
 from .crops import get_crops
-from .rain import get_rain, get_rain_grid as _get_rain_grid, aggregate_by_interval as agg_rain
+from .rain import (
+    get_rain,
+    get_rain_grid as _get_rain_grid,
+    aggregate_by_interval as agg_rain,
+    get_global_rain_grid as _get_global_rain_grid,
+)
 from .surplus import get_surplus
 from .water import get_water, get_site_ids as get_ids, aggregate_by_interval as agg_water
 
@@ -106,6 +111,28 @@ def get_site_ids() -> list[str]:
         _description_
     """
     return get_ids()
+
+
+def get_global_grid():
+    """Load the global rain grid: the inverse map from each rain-grid cell to the
+    sites whose basin contains it.
+
+    Every cell that falls in at least one site's (preferred-basin) rain grid
+    appears once, keyed by global_node_id — the canonical IEM grid-cell index,
+    which is shared across basins (so overlapping basins reference the same cell).
+
+    Returns
+    -------
+    pandas.DataFrame with columns:
+        global_node_id      int64        canonical IEM cell index
+        contained_in_sites  list[str]    site_uids whose rain grid includes the cell
+        n_sites             int64        len(contained_in_sites)
+        lat, lon            float64      cell centroid (WGS84), as in the rain grid
+
+    Built by make_rain.build_global_grid (refreshed with the per-site rain grids);
+    raises FileNotFoundError if it has not been generated yet.
+    """
+    return _get_global_rain_grid()
 
 
 def aggregate_by_interval(site_uid: str, interval="1D", agg_func_water="mean", agg_func_rain="sum", inplace=False):

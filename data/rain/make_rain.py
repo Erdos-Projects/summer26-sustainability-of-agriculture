@@ -4,16 +4,17 @@ Per-site drainage-basin rainfall time series builder.
 Source : IEM (Iowa Environmental Mesonet) daily precipitation grid polygons
          https://mesonet.agron.iastate.edu/rainfall/
 
-For each monitoring site that has a basin file in data/basins/basins1/, this
-script downloads IEM daily precipitation polygons covering the site's active
-date range, spatially filters the Iowa-region grid to cells that intersect the
-site's drainage basin, and writes one row per (grid cell, day) to a parquet
-file at data/rain/rain/<uid>_rain.parquet.
+For each monitoring site that has a preferred basin (data/basins/basin_data/),
+this script downloads IEM daily precipitation polygons covering the site's
+active date range, selects the grid cells that fall in the site's drainage
+basin, and writes one row per (grid cell, day) to a parquet file at
+data/rain/rain_data/<uid>_rain.parquet.
 
 Output schema
 -------------
 date            datetime64[ms]   calendar date of the observation
-node_id         int64            rain-grid node this cell maps to (join key)
+node_id         int64            rain-grid node this cell maps to (basin-local join key)
+global_node_id  int64            canonical IEM cell index (shared across basins)
 lon             float64          centroid longitude of the IEM grid cell (WGS84)
 lat             float64          centroid latitude  of the IEM grid cell (WGS84)
 precip_1d_in    float64          daily precipitation in inches for that cell
@@ -45,13 +46,6 @@ as soon as its last required date has been processed.  At most one site's full
 date range resides in memory at once (in the worst case where all sites share
 the same last date).
 
-Coverage check
---------------
-Before a site is queued, the fraction of its basin area that falls within the
-IEM data footprint is computed.  Sites below COVERAGE_THRESHOLD are skipped:
-their basins are mostly outside the IEM region and would produce misleadingly
-sparse data (e.g. sites whose basins extend into Montana).
-
 CRS notes
 ---------
 IEM shapefiles are served as EPSG:4269 (NAD83) despite the URL requesting
@@ -81,11 +75,12 @@ from tqdm import tqdm
 # ── paths (all relative to this script's directory: data/rain/) ───────────────
 _THIS_DIR = Path(__file__).resolve().parent
 _STATS_FILE = _THIS_DIR.parent / "water" / "water_meta" / "site_statistics.csv"
-_RAW_DIR = _THIS_DIR / "rain_raw"    # cached IEM daily zips, shared across sites
+_RAW_DIR = _THIS_DIR / "rain_raw"  # cached IEM daily zips, shared across sites
 _RAIN_DIR = _THIS_DIR / "rain_data"  # output: one parquet per site
 _GRID_DIR = _THIS_DIR / "rain_grid"  # output: one Voronoi-cell geoparquet per site
 _MANIFEST_FILE = _RAIN_DIR / ".basin_manifest.csv"
 _GRID_MANIFEST_FILE = _GRID_DIR / ".basin_manifest.csv"
+_GLOBAL_GRID_FILE = _GRID_DIR / "global_rain_grid.parquet"  # cell -> sites containing it
 
 # Geometry of the rain grid only — a single IEM day supplies the cell polygons.
 IEM_GRID_DATE = date(2018, 6, 15)
@@ -97,8 +92,8 @@ from data.settings import get_config, get_equal_area_crs
 _ALBERS = get_equal_area_crs()  # equal-area CRS for the Voronoi/area math (EPSG:5070)
 
 # ── IEM API ───────────────────────────────────────────────────────────────────
-# polygon geometry gives actual grid-cell extents so we can spatially filter
-# to the basin and recover centroid lon/lat for each kept cell
+# polygon geometry gives actual grid-cell extents, used once to build the
+# Voronoi rain grid (build_rain_grid); per-day rainfall is read geometry-free
 _SHP_URL = (
     "https://mesonet.agron.iastate.edu/rainfall/dshape.php?"
     "month={month}&day={day}&year={year}"
@@ -212,38 +207,6 @@ def _parse_day_gdf(zip_path: Path, d: date) -> gpd.GeoDataFrame | None:
     return gdf[["date", "precip_in_1d", "geometry"]].copy()
 
 
-def _basin_filter(day_gdf: gpd.GeoDataFrame, basin: gpd.GeoDataFrame) -> pd.DataFrame | None:
-    """
-    Return one row per IEM grid cell that intersects the basin polygon.
-
-    Uses gpd.sjoin with predicate='intersects' (faster than gpd.overlay since
-    we only need membership, not clipped geometries).  Centroid lon/lat are
-    extracted from the original grid-cell polygon geometry.
-
-    The centroid warning for geographic CRS is suppressed: at ~4 km grid
-    spacing the error vs. a metric-CRS centroid is ~10 m, negligible here.
-
-    Returns a plain DataFrame with columns: date, lon, lat, precip_in_1d.
-    Returns None if no cells intersect the basin.
-    """
-    inside = gpd.sjoin(
-        day_gdf,
-        basin[["geometry"]].to_crs(day_gdf.crs),
-        how="inner",
-        predicate="intersects",
-    )
-
-    if inside.empty:
-        return None
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        inside["lon"] = inside.geometry.centroid.x
-        inside["lat"] = inside.geometry.centroid.y
-
-    return inside[["date", "lon", "lat", "precip_in_1d"]].reset_index(drop=True)
-
-
 def _parse_day_values(zip_path: Path, expected_n: int) -> np.ndarray | None:
     """Read just the RAINFALL column (inches) from an IEM daily zip, in record order.
 
@@ -300,7 +263,7 @@ def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     for _, row in preferred_meta.iterrows():
         uid = row["site_uid"]
         parquet_missing = not (_RAIN_DIR / f"{uid}_rain.parquet").exists()
-        basin_changed   = manifest.get(uid) != row["basin_name"]
+        basin_changed = manifest.get(uid) != row["basin_name"]
         if parquet_missing or basin_changed:
             stale.append(uid)
     return stale
@@ -335,15 +298,17 @@ def _finite_voronoi(points: np.ndarray) -> dict[int, Polygon]:
 def build_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
     """Build the rain grid (Voronoi target cells) for one basin.
 
-    Returns a GeoDataFrame with columns node_id, x, y (EPSG:5070), lat, lon,
-    cell_area, dist_to_sensor, frac_cell_in_basin, geometry. Cells are the IEM
-    nodes whose cell intersects the basin; each is bounded by real neighbours via
-    a padded halo so edge cells stay finite (infinite hull cells are dropped).
-    The same node_id keys the surplus and crop aggregates downstream.
-    dist_to_sensor is the metres-of-flow from the node centre to the monitoring
-    sensor (see dist_to_sensor / _grid_node_distances); frac_cell_in_basin is the
-    fraction of the cell's area inside the basin, in [0, 1] (see
-    _grid_basin_fractions).
+    Returns a GeoDataFrame with columns node_id, global_node_id, x, y (EPSG:5070),
+    lat, lon, cell_area, dist_to_sensor, frac_cell_in_basin, geometry. Cells are
+    the IEM nodes whose cell intersects the basin; each is bounded by real
+    neighbours via a padded halo so edge cells stay finite (infinite hull cells
+    are dropped). node_id is the basin-local index (0..N-1) that keys the surplus
+    and crop aggregates downstream; global_node_id is the cell's row index in the
+    canonical IEM grid — identical across basins, so overlapping basins share it
+    for shared cells. dist_to_sensor is the metres-of-flow from the node centre to
+    the monitoring sensor (see dist_to_sensor / _grid_node_distances);
+    frac_cell_in_basin is the fraction of the cell's area inside the basin, in
+    [0, 1] (see _grid_basin_fractions).
     """
     basin = basins.get_basin(site_uid).to_crs(_ALBERS)
     basin_poly = basin.geometry.union_all()
@@ -376,8 +341,9 @@ def build_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
         pad = 2 * float(cKDTree(tgt_xy).query(tgt_xy, k=2)[0][:, 1].max())
 
     # Halo = every node within the padded bbox (a superset of the targets).
+    # Keep the original IEM-grid row index — a global, basin-independent cell id.
     px0, py0, px1, py1 = minx - pad, miny - pad, maxx + pad, maxy + pad
-    halo = grid[grid["x"].between(px0, px1) & grid["y"].between(py0, py1)].reset_index(drop=True)
+    halo = grid[grid["x"].between(px0, px1) & grid["y"].between(py0, py1)].reset_index(names="global_node_id")
     polys = _finite_voronoi(halo[["x", "y"]].to_numpy())
 
     rows = []
@@ -388,6 +354,7 @@ def build_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
         rows.append(
             {
                 "node_id": len(rows),
+                "global_node_id": int(halo.at[i, "global_node_id"]),
                 "x": halo.at[i, "x"],
                 "y": halo.at[i, "y"],
                 "lat": halo.at[i, "lat"],
@@ -434,6 +401,70 @@ def _write_grid_manifest(preferred_meta: pd.DataFrame) -> None:
     pd.DataFrame(rows).to_csv(_GRID_MANIFEST_FILE, index=False)
 
 
+def build_global_grid() -> pd.DataFrame | None:
+    """Build the global rain grid: every cell that falls in at least one
+    preferred-basin rain grid, with the sites whose grid contains it.
+
+    Inverts the per-site rain grids (which key on global_node_id, the canonical
+    IEM cell index shared across basins). Written to global_rain_grid.parquet.
+
+    Columns
+    -------
+    global_node_id      int64        canonical IEM cell index
+    contained_in_sites  list[str]    sites whose rain grid includes this cell
+    n_sites             int64        len(contained_in_sites)
+    lat, lon            float64      cell centroid (WGS84), as in rain_grid
+
+    Only cells contained in some basin appear. Requires rain grids built with a
+    global_node_id column; raises KeyError if a grid predates it.
+    """
+    preferred_meta = basins.get_metadata()
+    site_list = preferred_meta["site_uid"].tolist()
+
+    frames = []
+    for uid in site_list:
+        path = _GRID_DIR / f"{uid}_rain_grid.parquet"
+        if not path.exists():
+            continue
+        g = gpd.read_parquet(path)
+        if "global_node_id" not in g.columns:
+            raise KeyError(
+                f"{path.name} has no global_node_id column — rebuild the rain grids "
+                "(build_grids(force=True)) before building the global grid."
+            )
+        frames.append(
+            pd.DataFrame(
+                {
+                    "global_node_id": g["global_node_id"].to_numpy(),
+                    "site_uid": uid,
+                    "lat": g["lat"].to_numpy(),
+                    "lon": g["lon"].to_numpy(),
+                }
+            )
+        )
+
+    if not frames:
+        print("No rain grids found — run build_grids first; skipping global grid.")
+        return None
+
+    cells = pd.concat(frames, ignore_index=True)
+    # lat/lon are identical across basins for a given cell, so "first" is exact.
+    out = (
+        cells.groupby("global_node_id")
+        .agg(
+            contained_in_sites=("site_uid", lambda s: sorted(s.unique())),
+            n_sites=("site_uid", "nunique"),
+            lat=("lat", "first"),
+            lon=("lon", "first"),
+        )
+        .reset_index()
+        .sort_values("global_node_id", ignore_index=True)
+    )
+    out.to_parquet(_GLOBAL_GRID_FILE, index=False)
+    print(f"  global rain grid: {len(out):,} cells across {len(frames)} sites -> {_GLOBAL_GRID_FILE.name}")
+    return out
+
+
 def build_grids(site_uids: list[str] | None = None, force: bool = False) -> None:
     """Build/refresh the per-site rain grids. Depends only on basin geometry and
     the IEM grid (independent of the rain time series)."""
@@ -446,6 +477,8 @@ def build_grids(site_uids: list[str] | None = None, force: bool = False) -> None
 
     if not to_process:
         print("Rain grids up to date.")
+        if not _GLOBAL_GRID_FILE.exists():
+            build_global_grid()
         return
 
     print(f"Building rain grids for {len(to_process)} site(s)...")
@@ -462,6 +495,7 @@ def build_grids(site_uids: list[str] | None = None, force: bool = False) -> None
         grid.to_parquet(out)
         print(f"  {uid}: {len(grid)} cells -> {out.name}")
     _write_grid_manifest(preferred_meta)
+    build_global_grid()  # refresh the cell -> sites inverse map
 
 
 # ── Flow distance: rain-grid node → sensor, along the D8 drainage network ──────
@@ -485,19 +519,17 @@ def build_grids(site_uids: list[str] | None = None, force: bool = False) -> None
 
 _GEOD = Geod(ellps="WGS84")
 _FLOW_FIELD_CACHE: dict[str, np.ndarray] = {}  # site_uid -> (_H, _W) metres-to-outlet
-_NODE_DIST_CACHE: dict[str, pd.Series] = {}     # site_uid -> node_id -> metres-to-sensor
-_GRID_CACHE: dict[str, gpd.GeoDataFrame] = {}   # site_uid -> rain grid (node_id-indexed)
-_ACCUM: np.ndarray | None = None                # (_H, _W) upstream-cell count (grid-wide)
+_NODE_DIST_CACHE: dict[str, pd.Series] = {}  # site_uid -> node_id -> metres-to-sensor
+_GRID_CACHE: dict[str, gpd.GeoDataFrame] = {}  # site_uid -> rain grid (node_id-indexed)
+_ACCUM: np.ndarray | None = None  # (_H, _W) upstream-cell count (grid-wide)
 
 # Keypad direction code -> downstream (dcol, drow). The inverse of the inflow
 # offsets in basins._NEIGHBOR_CHECKS: a cell with code c flows to this neighbour.
-_D8_STEP = {7: (-1, -1), 8: (0, -1), 9: (1, -1),
-            4: (-1, 0),               6: (1, 0),
-            1: (-1, 1),  2: (0, 1),   3: (1, 1)}
+_D8_STEP = {7: (-1, -1), 8: (0, -1), 9: (1, -1), 4: (-1, 0), 6: (1, 0), 1: (-1, 1), 2: (0, 1), 3: (1, 1)}
 
-_OUTLET_SNAP_RADIUS = 10   # cells (~5 km) searched for the main-stem outlet cell
-_OUTLET_ACC_FRAC = 0.5     # min fraction of the window-max accumulation to count as main stem
-_NODE_SNAP_RADIUS = 4      # cells (~2 km) to recover a node straddling the basin divide
+_OUTLET_SNAP_RADIUS = 10  # cells (~5 km) searched for the main-stem outlet cell
+_OUTLET_ACC_FRAC = 0.5  # min fraction of the window-max accumulation to count as main stem
+_NODE_SNAP_RADIUS = 4  # cells (~2 km) to recover a node straddling the basin divide
 
 
 def _sensor_lonlat(site_uid: str) -> tuple[float, float]:
@@ -670,10 +702,12 @@ def _grid_node_distances(site_uid: str, grid: gpd.GeoDataFrame) -> np.ndarray:
     from data.basins import make_basins as mb
 
     field = _flow_distance_field(site_uid)
-    dist = np.array([
-        _sample_field(field, *mb._ll_to_image_pixel(lat, lon), mb)
-        for lat, lon in zip(grid["lat"].to_numpy(), grid["lon"].to_numpy())
-    ])
+    dist = np.array(
+        [
+            _sample_field(field, *mb._ll_to_image_pixel(lat, lon), mb)
+            for lat, lon in zip(grid["lat"].to_numpy(), grid["lon"].to_numpy())
+        ]
+    )
 
     nan = np.isnan(dist)
     if nan.any() and (~nan).any():
@@ -765,7 +799,10 @@ def _build_cell_index(site_uids: list[str]) -> tuple[dict, int]:
         dist, rows = tree.query(np.column_stack([lon, lat]))
         if dist.size and dist.max() > 0.005:  # ~500 m: a node should land on its own IEM cell
             print(f"  [WARN] {uid}: max node→cell match {dist.max():.4f}° — grid/IEM mismatch?")
-        index[uid] = {"rows": rows, "node_id": grid.index.to_numpy(), "lon": lon, "lat": lat}
+        # global_node_id = the canonical IEM row index; equals `rows` by construction,
+        # but read it from the grid when present so the timeseries matches the grid file.
+        gid = grid["global_node_id"].to_numpy() if "global_node_id" in grid.columns else rows
+        index[uid] = {"rows": rows, "node_id": grid.index.to_numpy(), "global_node_id": gid, "lon": lon, "lat": lat}
     return index, len(ref)
 
 
@@ -796,15 +833,15 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
         to_process = _stale_sites(preferred_meta)
 
     if site_uids is not None:
-        uid_set    = set(site_uids)
-        known      = set(preferred_meta["site_uid"])
+        uid_set = set(site_uids)
+        known = set(preferred_meta["site_uid"])
         for uid in sorted(uid_set - known):
             print(f"  [WARN] {uid}: not in preferred_basin.csv, skipping")
         to_process = [u for u in to_process if u in uid_set]
         print(f"Processing {len(to_process)} of {len(site_uids)} requested sites.")
     else:
         n_total = len(preferred_meta)
-        n_skip  = n_total - len(to_process)
+        n_skip = n_total - len(to_process)
         print(f"Precheck: {n_skip}/{n_total} sites up to date, {len(to_process)} to build.")
 
     if not to_process:
@@ -813,8 +850,8 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
 
     # ── Phase 1: coverage check + date → [uid] index ──────────────────────────
 
-    kept         = []  # uids that passed the coverage check
-    end_dates    = {}  # uid -> last date needed (triggers write + free)
+    kept = []  # uids that passed the coverage check
+    end_dates = {}  # uid -> last date needed (triggers write + free)
     date_to_uids = {}  # date -> [uid, ...]
 
     for uid in to_process:
@@ -831,14 +868,13 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
 
         frac = _iowa_coverage(basin)
         if frac < COVERAGE_THRESHOLD:
-            print(f"  [SKIP] {uid}: {frac:.0%} of basin within IEM footprint "
-                  f"(threshold {COVERAGE_THRESHOLD:.0%})")
+            print(f"  [SKIP] {uid}: {frac:.0%} of basin within IEM footprint " f"(threshold {COVERAGE_THRESHOLD:.0%})")
             continue
 
         # start_date / last_date are full ISO strings with timezone offset,
         # e.g. "2012-05-30 21:40:00+00:00" — pd.to_datetime handles the tz
         start = pd.to_datetime(row.iloc[0]["start_date"]).date()
-        end   = pd.to_datetime(row.iloc[0]["last_date"]).date()
+        end = pd.to_datetime(row.iloc[0]["last_date"]).date()
 
         kept.append(uid)
         end_dates[uid] = end
@@ -869,11 +905,14 @@ def main(_api_keys=None, site_uids: list[str] | None = None, force: bool = False
                 "lat": np.tile(ci["lat"], n_days),
                 "precip_in_1d": np.concatenate(vals_accum[uid]),
                 "node_id": np.tile(ci["node_id"], n_days),
+                "global_node_id": np.tile(ci["global_node_id"], n_days),
             }
         )
         df = _add_time_features(df)
         df["date"] = df["date"].astype("datetime64[ms]")
-        df = df[["date", "node_id", "lon", "lat", "precip_in_1d", "year", "month", "day_of_year", "week"]]
+        df = df[
+            ["date", "node_id", "global_node_id", "lon", "lat", "precip_in_1d", "year", "month", "day_of_year", "week"]
+        ]
         out = _RAIN_DIR / f"{uid}_rain.parquet"
         df.to_parquet(out, index=False)
         print(f"\n  {uid}: {len(df):,} rows -> {out.name}")

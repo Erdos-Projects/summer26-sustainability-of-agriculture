@@ -24,7 +24,8 @@ The table below lists every column that can appear, with its unit.
 | column name | units |
 |-------------|-------|
 | date | calendar date |
-| node_id | — (rain-grid node id) |
+| node_id | — (basin-local rain-grid node id) |
+| global_node_id | — (canonical IEM cell id, shared across basins) |
 | lon | degrees (WGS84) |
 | lat | degrees (WGS84) |
 | precip_in_1d | inches (in), per day |
@@ -37,7 +38,8 @@ The table below lists every column that can appear, with its unit.
 
 | column name | units |
 |-------------|-------|
-| node_id | — (rain-grid node id) |
+| node_id | — (basin-local rain-grid node id) |
+| global_node_id | — (canonical IEM cell id, shared across basins) |
 | x | meters (m), EPSG:5070 easting |
 | y | meters (m), EPSG:5070 northing |
 | lat | degrees (WGS84) |
@@ -83,7 +85,8 @@ The table below lists every column that can appear, with its unit.
 
 | column name | units |
 |-------------|-------|
-| node_id | — (rain-grid node id) |
+| node_id | — (basin-local rain-grid node id) |
+| global_node_id | — (canonical IEM cell id, shared across basins) |
 | year | — (calendar year) |
 | surplus_kgha | kg N/ha |
 | total_kg_N | kg N |
@@ -105,7 +108,8 @@ The table below lists every column that can appear, with its unit.
 
 | column name | units |
 |-------------|-------|
-| node_id | — (rain-grid node id) |
+| node_id | — (basin-local rain-grid node id) |
+| global_node_id | — (canonical IEM cell id, shared across basins) |
 | year | — (calendar year) |
 | Alfalfa | pixel count (30 m × 30 m CDL pixels) |
 | Corn | pixel count (30 m × 30 m CDL pixels) |

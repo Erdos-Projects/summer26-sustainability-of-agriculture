@@ -171,11 +171,11 @@ def _aggregate_surplus_grid(merged: pd.DataFrame, grid) -> pd.DataFrame | None:
         j.groupby(["node_id", "year"])
         .agg(w_density=("w_density", "sum"))
         .reset_index()
-        .merge(grid[["node_id", "cell_area"]], on="node_id")
+        .merge(grid[["node_id", "global_node_id", "cell_area"]], on="node_id")
     )
     g["total_kg_N"] = g["w_density"] / 1e4  # Σ area·density (m²·kg/ha) → kg
     g["surplus_kgha"] = g["w_density"] / g["cell_area"]  # mean over the (full) cell
-    return g[["node_id", "year", "surplus_kgha", "total_kg_N"]]
+    return g[["node_id", "global_node_id", "year", "surplus_kgha", "total_kg_N"]]
 
 
 def write_site_surplus_pixel(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:

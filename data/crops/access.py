@@ -22,9 +22,11 @@ def lookup_crop(index):
 def get_crops(site_uid: str) -> pd.DataFrame:
     """Return a site's CDL crops aggregated onto the rain grid.
 
-    Columns: node_id, year, then one pixel-count column per crop class produced
-    by the remap in make_crops.py (e.g. Corn, Soybeans, ..., Other). Join to the
-    rain grid (data.get_rain_grid) on node_id for coordinates.
+    Columns: node_id, global_node_id, year, then one pixel-count column per crop
+    class produced by the remap in make_crops.py (e.g. Corn, Soybeans, ...,
+    Other). Join to the rain grid (data.get_rain_grid) on node_id for
+    coordinates; global_node_id is the canonical IEM cell index, shared across
+    basins.
 
     Parameters
     ----------

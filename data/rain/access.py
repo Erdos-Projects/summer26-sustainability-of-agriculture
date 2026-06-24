@@ -10,18 +10,21 @@ from pathlib import Path
 _THIS_DIR = Path(__file__).resolve().parent
 _RAIN_DIR = _THIS_DIR / "rain_data"
 _GRID_DIR = _THIS_DIR / "rain_grid"
+_GLOBAL_GRID_FILE = _GRID_DIR / "global_rain_grid.parquet"
 _BASIN_DIR = _THIS_DIR.parent / "basins" / "basin_data"
 
 
 def get_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
     """Load the rain grid (Voronoi target cells) for a site.
 
-    Returns a GeoDataFrame with columns node_id, x, y (EPSG:5070), lat, lon,
-    cell_area, dist_to_sensor, frac_cell_in_basin, geometry. This is the shared
-    spatial grid the surplus and crop aggregates are built on; node_id is the
-    common join key. dist_to_sensor is the metres-of-flow from the node centre to
-    the monitoring sensor; frac_cell_in_basin is the fraction of the cell's area
-    inside the basin, in [0, 1].
+    Returns a GeoDataFrame with columns node_id, global_node_id, x, y (EPSG:5070),
+    lat, lon, cell_area, dist_to_sensor, frac_cell_in_basin, geometry. This is the
+    shared spatial grid the surplus and crop aggregates are built on; node_id is
+    the basin-local join key, global_node_id is the canonical IEM cell index
+    (shared across basins, so overlapping basins match on it). dist_to_sensor is
+    the metres-of-flow from the node centre to the monitoring sensor;
+    frac_cell_in_basin is the fraction of the cell's area inside the basin, in
+    [0, 1].
 
     Raises FileNotFoundError if it has not been generated yet (run make_rain.py).
     """
@@ -29,6 +32,23 @@ def get_rain_grid(site_uid: str) -> gpd.GeoDataFrame:
     if not path.exists():
         raise FileNotFoundError(f"No rain grid for {site_uid}. Run make_rain.py to generate {path.name}.")
     return gpd.read_parquet(path)
+
+
+def get_global_rain_grid() -> pd.DataFrame:
+    """Load the global rain grid (cell -> sites containing it).
+
+    Returns a DataFrame with columns global_node_id, contained_in_sites
+    (list of site_uids whose rain grid includes the cell), n_sites, lat, lon
+    (cell centroid, WGS84). Only cells contained in at least one preferred basin
+    appear; global_node_id is the canonical IEM cell index shared across basins.
+
+    Raises FileNotFoundError if it has not been generated yet (run make_rain.py).
+    """
+    if not _GLOBAL_GRID_FILE.exists():
+        raise FileNotFoundError(
+            f"No global rain grid. Run make_rain.py (build_grids) to generate {_GLOBAL_GRID_FILE.name}."
+        )
+    return pd.read_parquet(_GLOBAL_GRID_FILE)
 
 
 def get_rain(site_uid: str) -> pd.DataFrame:
@@ -41,9 +61,10 @@ def get_rain(site_uid: str) -> pd.DataFrame:
 
     Returns
     -------
-    DataFrame with columns: date, node_id, lon, lat, precip_in_1d,
-    year, month, day_of_year, week.
-    node_id joins each row to its cell in the rain grid (get_rain_grid).
+    DataFrame with columns: date, node_id, global_node_id, lon, lat,
+    precip_in_1d, year, month, day_of_year, week.
+    node_id joins each row to its cell in the rain grid (get_rain_grid);
+    global_node_id is the canonical IEM cell index, shared across basins.
 
     Raises FileNotFoundError if the parquet has not been generated yet
     (run make_rain.py to produce it).

@@ -5,10 +5,12 @@ make_rain), assigns every CDL pixel to the cell that contains it, relabels the
 pixel's CDL code through a remapping function, and counts pixels per class.
 
 Output (crops_data/grid/)
-    {site_uid}_crops_grid.parquet   one row per (node_id, year); one integer
+    {site_uid}_crops_grid.parquet   one row per (node_id, year); columns node_id,
+                                    global_node_id, year, then one integer
                                     pixel-count column per class produced by the
                                     remap function. Join to data.get_rain_grid on
-                                    node_id for coordinates.
+                                    node_id for coordinates; global_node_id is the
+                                    canonical IEM cell index, shared across basins.
 
 The remap is any Callable[[int], str] (default cdl_legend.cdl_to_class). The
 output columns are the full set of class labels the remap can emit (probed over
@@ -96,6 +98,7 @@ def aggregate_site_crops(grid, years, classes, code_to_classidx) -> pd.DataFrame
     """
     n_nodes, n_classes = len(grid), len(classes)
     node_ids = grid["node_id"].to_numpy()
+    global_ids = grid["global_node_id"].to_numpy()  # canonical IEM cell index, shared across basins
     positions = np.arange(n_nodes)  # burn position+1 so 0 = "outside any cell"
     bounds = grid.total_bounds
 
@@ -128,6 +131,7 @@ def aggregate_site_crops(grid, years, classes, code_to_classidx) -> pd.DataFrame
         nz = counts.sum(axis=1) > 0  # nodes with any pixel this year
         df = pd.DataFrame(counts[nz], columns=classes)
         df.insert(0, "year", year)
+        df.insert(0, "global_node_id", global_ids[nz])
         df.insert(0, "node_id", node_ids[nz])
         frames.append(df)
 
