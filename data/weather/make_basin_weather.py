@@ -117,25 +117,35 @@ def build_site_weather(site_uid: str, stats: pd.DataFrame, avail_years: list[int
     return True
 
 
+def _site_built(uid: str) -> bool:
+    """A site is built if its combined file OR its split parts exist (the parts
+    check matters: previously-split large sites have no combined file)."""
+    return (_DATA_DIR / f"{uid}_weather.parquet").exists() or any(
+        _DATA_DIR.glob(f"{uid}_weather_p*.parquet")
+    )
+
+
 def build_basin_weather(site_uids: list[str] | None = None, force: bool = False) -> None:
     """Build/refresh per-site weather files from the global yearly files."""
     from data import basins
 
+    _DATA_DIR.mkdir(parents=True, exist_ok=True)
+    sites = site_uids or basins.get_metadata()["site_uid"].tolist()
+
+    # figure out the work first; the global files are only needed if we actually
+    # have to build something, so a fully-present weather_data set is a no-op even
+    # when weather_global has been deleted.
+    todo = sites if force else [uid for uid in sites if not _site_built(uid)]
+    if not todo:
+        print(f"Basin weather: all {len(sites)} site(s) present, nothing to build")
+        return
+
     avail_years = _available_years()
     if not avail_years:
         raise FileNotFoundError("No global_grid_weather_*.parquet found — run make_global_weather first.")
-    _DATA_DIR.mkdir(parents=True, exist_ok=True)
     stats = pd.read_csv(_STATS_FILE)
-
-    sites = site_uids or basins.get_metadata()["site_uid"].tolist()
-    print(f"Basin weather: {len(sites)} site(s) | weather years {avail_years[0]}-{avail_years[-1]}")
-    for uid in sites:
-        # a site is "built" if its combined file OR its split parts exist; without
-        # the parts check, previously-split large sites get rebuilt as one big file.
-        combined = _DATA_DIR / f"{uid}_weather.parquet"
-        has_parts = any(_DATA_DIR.glob(f"{uid}_weather_p*.parquet"))
-        if (combined.exists() or has_parts) and not force:
-            continue
+    print(f"Basin weather: building {len(todo)} of {len(sites)} site(s) | weather years {avail_years[0]}-{avail_years[-1]}")
+    for uid in todo:
         build_site_weather(uid, stats, avail_years)
 
 
