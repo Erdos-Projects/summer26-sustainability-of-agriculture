@@ -7,4 +7,5 @@ from .access import (
     plot_water,
     get_stats,
     get_all_stats,
+    get_location,
 )

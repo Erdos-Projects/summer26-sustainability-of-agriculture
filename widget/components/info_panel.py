@@ -20,7 +20,7 @@ import pandas as pd
 import plotly.graph_objects as go
 from dash import Input, Output, html, dash_table, no_update
 
-from data import water, rain as rain_data
+from data import water, weather
 
 
 def _render_tables(pairs):
@@ -64,7 +64,7 @@ def _build_timeseries_figure(
         precip_col = f"precip_{interval.lower()}"
         # Rain agg method controls the temporal combine (per cell, within each
         # interval); cells are then combined spatially to one basin value by mean.
-        rain = rain_data.aggregate_by_interval(site_uid, interval=interval, agg_func=agg_func_rain)
+        rain = weather.aggregate_by_interval(site_uid, interval=interval, agg_func=agg_func_rain)
         rain = rain.groupby("date")[precip_col].agg(func="mean").reset_index()
         if rain.shape[0] < _BAR_THRESH:
             fig.add_trace(

@@ -96,7 +96,7 @@ def get_surplus_grid(site_uid: str) -> pd.DataFrame:
     """Return a site's surplus aggregated onto the rain grid.
 
     Columns: node_id, global_node_id, year, surplus_kgha, total_kg_N.
-    Join to the rain grid (data.get_rain_grid) on node_id for coordinates;
+    Join to the grid (data.get_grid) on node_id for coordinates;
     global_node_id is the canonical IEM cell index, shared across basins.
 
     Raises FileNotFoundError if not generated yet (run make_surplus.py).
