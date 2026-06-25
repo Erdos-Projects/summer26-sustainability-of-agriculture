@@ -8,7 +8,7 @@ Output (crops_data/grid/)
     {site_uid}_crops_grid.parquet   one row per (node_id, year); columns node_id,
                                     global_node_id, year, then one integer
                                     pixel-count column per class produced by the
-                                    remap function. Join to data.get_rain_grid on
+                                    remap function. Join to data.get_grid on
                                     node_id for coordinates; global_node_id is the
                                     canonical IEM cell index, shared across basins.
 
@@ -51,7 +51,7 @@ _GRID_AGG_DIR = _DATA_DIR / "grid"  # per-site crops aggregated onto the rain gr
 _MANIFEST_FILE = _GRID_AGG_DIR / ".basin_manifest.csv"
 
 sys.path.insert(0, str(_THIS_DIR.parents[1]))
-from data import basins, get_rain_grid  # top-level access; no rain/surplus module imports
+from data import basins, get_grid  # top-level access; the shared spatial grid (weather)
 from data.crops.cdl_legend import cdl_to_class
 from data.settings import get_config
 
@@ -147,7 +147,7 @@ def write_site_crops(
     if out.exists() and not force:
         return False
     try:
-        grid = get_rain_grid(site_uid)
+        grid = get_grid(site_uid)
     except FileNotFoundError as e:
         print(f"  {site_uid}: {e}")
         return False

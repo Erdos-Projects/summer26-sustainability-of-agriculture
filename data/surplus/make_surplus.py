@@ -83,7 +83,7 @@ import gen_surplus_statistics as stats
 
 sys.path.insert(0, str(_THIS_DIR.parents[1]))
 from data import basins
-from data.access import get_rain_grid  # top-level access; no dependency on the rain module
+from data.access import get_grid  # top-level access; the shared spatial grid (weather)
 from data.settings import get_config, get_equal_area_crs
 
 EQUAL_AREA_CRS = get_equal_area_crs()
@@ -219,7 +219,7 @@ def write_site_surplus_grid(site_uid: str, merged: pd.DataFrame, force: bool = F
         return False
 
     try:
-        grid = get_rain_grid(site_uid)
+        grid = get_grid(site_uid)
     except FileNotFoundError:
         print(f"  {site_uid}: no rain grid — run make_rain.py first; skipping surplus_grid")
         return False

@@ -37,7 +37,7 @@ from dash import Input, Output, State, html, dcc, no_update, ALL, ctx
 from dash_extensions.javascript import assign
 from shapely.geometry import shape, Point
 
-from data import water, map_overlays, rain as rain_data, basins, surplus, crops, get_basin_area
+from data import water, map_overlays, weather, basins, surplus, crops, get_basin_area
 from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
 from components import basin_editor
 import colors
@@ -1076,7 +1076,7 @@ def _rain_grid_features(uid, year):
     """GeoJSON (lon/lat) of a site's rain cells, each with a surplus colour and a
     tooltip joining surplus + crop stats for `year`. Raises FileNotFoundError if
     the rain grid hasn't been built."""
-    grid = rain_data.get_rain_grid(uid).to_crs("EPSG:4326")
+    grid = weather.get_grid(uid).to_crs("EPSG:4326")
     cells = grid[["node_id", "geometry"] + [c for c in ("cell_area", "frac_cell_in_basin", "dist_to_sensor") if c in grid.columns]]
 
     try:
@@ -1090,7 +1090,7 @@ def _rain_grid_features(uid, year):
         c = c[c["year"] == year].drop(columns=["year"])
     except FileNotFoundError:
         c = pd.DataFrame(columns=["node_id"])
-    crop_cols = [col for col in c.columns if col != "node_id"]
+    crop_cols = [col for col in c.columns if col not in ("node_id", "global_node_id")]
 
     cells = cells.merge(s, on="node_id", how="left").merge(c, on="node_id", how="left")
     cells["color"] = cells["surplus_kgha"].map(
@@ -1101,12 +1101,12 @@ def _rain_grid_features(uid, year):
 
 
 def _rain_grid_dots(uid):
-    """Fallback: rain-cell centroids as dots, for sites without a rain grid yet."""
+    """Fallback: grid-cell centroids as dots, for sites without grid geometry yet."""
     try:
-        df = rain_data.get_rain(uid)
+        grid = weather.get_grid(uid)
     except FileNotFoundError:
         return []
-    cells = df[["lon", "lat"]].drop_duplicates()
+    cells = grid[["lon", "lat"]].drop_duplicates()
     return [
         dl.CircleMarker(
             center=[row.lat, row.lon],

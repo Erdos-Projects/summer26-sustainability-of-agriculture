@@ -44,6 +44,12 @@ def get_metadata() -> "pd.DataFrame":
     return _loc_df()
 
 
+def get_location(site_uid):
+    """Return the location of the site as a list [lon, lat]"""
+    df = get_metadata()
+    return df[df.site_uid == site_uid][["longitude", "latitude"]].values[0].tolist()
+
+
 def get_site_ids():
     """Return a list of all site UIDs."""
     return list(_loc_df()["site_uid"].unique())

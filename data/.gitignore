@@ -1,3 +1,4 @@
 api-keys.json
 surplus/surplus_raw/iowa_nitrogen_surplus.parquet
 __pycache__
+_cache/
