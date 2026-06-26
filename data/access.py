@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from functools import lru_cache
 import pandas as pd
 import numpy as np
 import geopandas as gpd
@@ -84,9 +85,15 @@ class SiteData:
         return new_data
 
 
-def get_data(site_uid: str, include: list[str] | None = None) -> SiteData:
-    """Load all available data for a site. Pass include= to load a subset."""
-    load = set(include) if include else set(_ALL_FIELDS)
+@lru_cache(maxsize=64)
+def get_data(site_uid: str) -> SiteData:
+    """Load all available data for a site.
+
+    Memoized per site_uid, and the result is SHARED across callers: treat the returned
+    SiteData and its frames as READ-ONLY -- never mutate them in place (use
+    SiteData.agg() or .copy() to derive modified versions). Call get_data.cache_clear()
+    to drop the cache (e.g. after regenerating data on disk).
+    """
 
     def _try(fn, *args):
         try:
@@ -96,14 +103,14 @@ def get_data(site_uid: str, include: list[str] | None = None) -> SiteData:
 
     return SiteData(
         site_uid=site_uid,
-        basin=_try(get_basin, site_uid) if "basin" in load else None,
-        crops=_try(get_crops, site_uid) if "crops" in load else None,
-        grid=_try(_get_grid, site_uid) if "grid" in load else None,
-        surplus=_try(get_surplus, site_uid) if "surplus" in load else None,
-        water=_try(get_water, site_uid) if "water" in load else None,
-        weather=_try(get_weather, site_uid) if "weather" in load else None,
-        basin_area=_try(get_basin_area, site_uid) if "grid" in load else None,
-        sensor_location=_try(get_location, site_uid) if "water" in load else None,
+        basin=_try(get_basin, site_uid),
+        crops=_try(get_crops, site_uid),
+        grid=_try(_get_grid, site_uid),
+        surplus=_try(get_surplus, site_uid),
+        water=_try(get_water, site_uid),
+        weather=_try(get_weather, site_uid),
+        basin_area=_try(get_basin_area, site_uid),
+        sensor_location=_try(get_location, site_uid),
     )
 
 

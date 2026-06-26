@@ -23,13 +23,11 @@ from .transforms import (
     _DEFAULT_DIST_EDGES_M,
 )
 
-# hyperparameters
-_WINDOW = "31D"
-_LAM = 10_000
-_CENTER_WINDOW = False
 
-
-def isaac_df1(site_uid, edges=_DEFAULT_DIST_EDGES_M, velocity=_VEL, roll_window=_WINDOW, center_roll=_CENTER_WINDOW):
+def isaac_df1(site_uid, edges=_DEFAULT_DIST_EDGES_M, velocity=1.0, roll_window="31D", center_roll=False):
+    """Per-site model frame keyed by (site_uid, date): daily-nitrate target + bucketed,
+    lag-shifted weather and annual crops/surplus + cross-site nitrate climatology
+    features. Standard aggregation (sum / area-weighted mean, no distance decay)."""
     # first turn node_id into distance buckets
     # (0 = near, 1 = med, 2 = far) defined by EDGES_M, then bucket + lag weather
     cb = agg_crops(site_uid, edges=edges)
@@ -44,9 +42,7 @@ def isaac_df1(site_uid, edges=_DEFAULT_DIST_EDGES_M, velocity=_VEL, roll_window=
 
     # cross-site date-keyed reference features (distinct names so they don't collide)
     n_rolling = nitrate_rolling(window=roll_window, center=center_roll).rename("nitrate_roll")
-    n_cal_D = nitrate_avg_calendar(freq="D").rename("nitrate_cal_d")
-    n_cal_W = nitrate_avg_calendar(freq="W").rename("nitrate_cal_w")
-    n_cal_M = nitrate_avg_calendar(freq="M").rename("nitrate_cal_m")
+    n_cal_D = nitrate_avg_calendar(freq="D").rename("nitrate_cal_d")  # causal (t-1)
     pure_signal = doy_climatology_pure_signal(n_daily)  # date-indexed (doy_sin/doy_cos)
 
     # seasonal nitrate averages mapped onto the calendar dates
@@ -67,7 +63,7 @@ def isaac_df1(site_uid, edges=_DEFAULT_DIST_EDGES_M, velocity=_VEL, roll_window=
     # by year. The spine matters because the cross-site climatologies span the whole
     # calendar and would otherwise balloon the row set.
     out = merge_on_date(
-        [n_daily, n_rolling, n_cal_D, n_cal_W, n_cal_M, pure_signal, n_doy, n_woy, n_moy, w_wide, c_wide, s_wide],
+        [n_daily, n_rolling, n_cal_D, pure_signal, n_doy, n_woy, n_moy, w_wide, c_wide, s_wide],
         spine=dates,
     )
 
@@ -81,6 +77,9 @@ def isaac_df1(site_uid, edges=_DEFAULT_DIST_EDGES_M, velocity=_VEL, roll_window=
 
 
 def preet_df1(site_uid, edges=[], velocity=_VEL, lam=_LAM, center_roll=False):
+    """Variant of `isaac_df1` keyed by (site_uid, date): exp-decay-normalised crops/surplus,
+    lag-shifted weather, and several nitrate rolling windows (3/7/14/30D). Single global
+    bucket by default (edges=[]). Same weather-tail drop."""
     # first turn node_id into distance buckets
     # (0 = near, 1 = med, 2 = far) defined by EDGES_M, then bucket + lag weather
     cb = agg_crops(site_uid, edges=edges, lam=lam, normalize=True, exp=True)
@@ -92,13 +91,11 @@ def preet_df1(site_uid, edges=[], velocity=_VEL, lam=_LAM, center_roll=False):
     dates = n_daily.index
 
     # cross-site date-keyed reference features (distinct names so they don't collide)
-    n_rolling_3D = nitrate_rolling(window="3D", center=center_roll).rename("nitrate_roll")
-    n_rolling_7D = nitrate_rolling(window="7D", center=center_roll).rename("nitrate_roll")
-    n_rolling_14D = nitrate_rolling(window="14D", center=center_roll).rename("nitrate_roll")
-    n_rolling_30D = nitrate_rolling(window="30D", center=center_roll).rename("nitrate_roll")
-    n_cal_D = nitrate_avg_calendar(freq="D").rename("nitrate_cal_d")
-    n_cal_W = nitrate_avg_calendar(freq="W").rename("nitrate_cal_w")
-    n_cal_M = nitrate_avg_calendar(freq="M").rename("nitrate_cal_m")
+    n_rolling_3D = nitrate_rolling(window="3D", center=center_roll).rename("nitrate_roll_3d")
+    n_rolling_7D = nitrate_rolling(window="7D", center=center_roll).rename("nitrate_roll_7d")
+    n_rolling_14D = nitrate_rolling(window="14D", center=center_roll).rename("nitrate_roll_14d")
+    n_rolling_30D = nitrate_rolling(window="30D", center=center_roll).rename("nitrate_roll_30d")
+    n_cal_D = nitrate_avg_calendar(freq="D").rename("nitrate_cal_d")  # causal (t-1)
     pure_signal = doy_climatology_pure_signal(n_daily)  # date-indexed (doy_sin/doy_cos)
 
     # seasonal nitrate averages mapped onto the calendar dates
@@ -125,12 +122,10 @@ def preet_df1(site_uid, edges=[], velocity=_VEL, lam=_LAM, center_roll=False):
             c_wide,
             s_wide,
             n_rolling_3D,
-            n_rolling_14D,
+            n_rolling_7D,
             n_rolling_14D,
             n_rolling_30D,
             n_cal_D,
-            n_cal_W,
-            n_cal_M,
             pure_signal,
             n_doy,
             n_woy,

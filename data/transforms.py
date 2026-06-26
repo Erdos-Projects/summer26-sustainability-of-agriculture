@@ -9,7 +9,7 @@ from pathlib import Path
 from .access import get_data, get_site_ids, get_grid
 
 _THIS_DIR = Path(__file__).resolve().parent
-_DEFAULT_DIST_EDGES_M = (50_000, 150_000)
+_DEFAULT_DIST_EDGES_M = []
 _VEL = 1.0
 
 
@@ -22,6 +22,10 @@ def _bucket_map(site_uid, edges=_DEFAULT_DIST_EDGES_M):
 
 
 def bucket_lags(site_uid, water_velocity=_VEL, edges=_DEFAULT_DIST_EDGES_M, max_lag_days=None):
+    """Per-bucket travel-time lag in days (= median cell distance / water speed).
+
+    Returns a Series: bucket -> lag_days, optionally capped at ``max_lag_days``.
+    """
     grid = get_grid(site_uid)
     b = grid["node_id"].map(_bucket_map(site_uid, edges))
     med = grid["dist_to_sensor"].groupby(b).median()
@@ -30,6 +34,11 @@ def bucket_lags(site_uid, water_velocity=_VEL, edges=_DEFAULT_DIST_EDGES_M, max_
 
 
 def lag_buckets(weather_b, lags, cols=None, date_col="date", bucket_col="bucket"):
+    """Shift each bucket's weather columns back by its lag (row t <- value from t-lag).
+
+    `lags` is a bucket->days Series (or list, indexed positionally). With no bucket
+    column (edges=[]) the whole frame is lagged by the single lag value.
+    """
     if cols is None:
         cols = [c for c in weather_b.columns if c not in (date_col, bucket_col)]
 
@@ -53,6 +62,12 @@ def lag_buckets(weather_b, lags, cols=None, date_col="date", bucket_col="bucket"
 
 
 def agg_grid_to_buckets(df, mapping, keys, col_agg):
+    """Aggregate per-cell `df` to one row per (`keys`[, bucket]) via `col_agg` {col: how}.
+
+    `mapping` is node_id -> bucket. The frame is indexed by node_id so weighted
+    aggregators can pull per-cell weights via ``values.index``; the bucket grouping is
+    dropped when the mapping defines a single bucket (edges=[]).
+    """
     # index by node_id so each group's value Series carries node_id as its index;
     # that lets a weighted aggregator (_area_mean_curry) pull the matching per-cell
     # weights via values.index.
@@ -71,6 +86,7 @@ def agg_grid_to_buckets(df, mapping, keys, col_agg):
 
 
 def _agg_dicts(land_use_func, weather_func):
+    """Build the (crops, surplus, weather) {column: agg_func} dicts from two funcs."""
     c_dict = {
         # corn columns
         "Alfalfa": land_use_func,
@@ -104,6 +120,7 @@ def _agg_dicts(land_use_func, weather_func):
 
 
 def _area_mean_curry(site_uid):
+    """Aggregator: basin-area-weighted mean over a group's cells (weights via values.index)."""
     grid = get_data(site_uid=site_uid).grid
     area_ha = pd.Series((grid.cell_area * grid.frac_cell_in_basin / 1e4).values, index=grid.node_id)
 
@@ -115,6 +132,7 @@ def _area_mean_curry(site_uid):
 
 
 def _exp_curry(site_uid, lam):
+    """Aggregator: distance-decay-weighted sum, weight = frac_in_basin * exp(-dist/lam)."""
     grid = get_data(site_uid=site_uid).grid
     # per-cell weight (basin-area fraction * exponential distance decay) indexed by
     # node_id, so it can be subset + aligned to each group's cells via values.index.
@@ -130,6 +148,7 @@ def _exp_curry(site_uid, lam):
 
 
 def _exp_curry_norm(site_uid, lam):
+    """Aggregator: distance-decay-weighted mean (the normalised `_exp_curry`)."""
     grid = get_data(site_uid=site_uid).grid
     cell_w = pd.Series(
         grid.frac_cell_in_basin.values * np.exp(-grid.dist_to_sensor.values / lam),
@@ -143,6 +162,7 @@ def _exp_curry_norm(site_uid, lam):
 
 
 def _standard_agg_dicts(site_uid):
+    """Agg dicts: plain sum for land-use, basin-area-weighted mean for weather."""
     func1 = sum
     func2 = _area_mean_curry(site_uid=site_uid)
 
@@ -150,6 +170,7 @@ def _standard_agg_dicts(site_uid):
 
 
 def _exp_decay_agg_dicts(site_uid, lam, normalize=False):
+    """Agg dicts using exp distance-decay weights (`lam`): normalize -> mean, else sum."""
     sumfunc = _exp_curry(site_uid=site_uid, lam=lam)
     avgfunc = _exp_curry_norm(site_uid=site_uid, lam=lam)
 
