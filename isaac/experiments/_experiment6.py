@@ -42,8 +42,30 @@ def recipe_lagger(lags=[]):
     return recipe
 
 
-recipe = recipe_lagger([1])
+def no_weather(site):
+    cb = flatten_buckets(agg_crops(site, lam=5_000, exp=True))
+    sb = flatten_buckets(agg_surplus(site, lam=5_000, exp=True))
+    n_daily = daily_nitrate(site).rename("nitrate_con")
+    doy = doy_climatology_pure_signal(n_daily)  # doy_sin/doy_cos
+    return merge_on_date([n_daily, cb, sb, doy], spine=n_daily.index)
 
-lags = [1, 2, 3, 7, 10, 14, 21, 30]
-recipes = {f"Lags {lags[:i]}": recipe_lagger(lags[:i]) for i in range(len(lags))}
-print(compare_many(recipes, **FAST_XGB))
+
+lags = [1, 3, 7, 14, 30]
+recipes = {f"{len(lags[:i])}_Lags": recipe_lagger(lags[:i]) for i in range(len(lags))}
+recipes["no_weather"] = no_weather
+
+
+def main(sites=None, extra=False):
+    if sites is None:
+        sites = [s for s in get_site_ids() if daily_nitrate(s).dropna().shape[0] >= 1500]
+    print(f"{len(recipes)} recipes x {len(sites)} sites\n")
+
+    from pathlib import Path
+
+    outname = f"test_results/{Path(__file__).stem}.csv"
+    results = compare_many(recipes, sites, target_col="nitrate_con", extra_importance_test=extra, **FAST_XGB)
+    save_comparison(results, outname)
+
+
+if __name__ == "__main__":
+    main()

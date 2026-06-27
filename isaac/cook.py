@@ -6,8 +6,8 @@ A *recipe* is a function  site_uid -> DataFrame  containing a target column, a `
 column, and feature columns (what recipe_A/B/C produce). Recipes stay pure
 (site -> frame) and know nothing about CV; this module supplies the evaluation.
 
-You tell cook WHICH column is the target and how to score it by passing `target=` and
-`task=` to the cook functions (defaults: target="nitrate_con", task="reg"). cook reads
+You tell cook WHICH column is the target and how to score it by passing `target_col=` and
+`task=` to the cook functions (defaults: target_col="nitrate_con", task="reg"). cook reads
 that column off the recipe's output as y and excludes it from the features. For
 classification the recipe builds its own binary target column and you pass task="clf"
 (scored by AUC / PR-AUC / Brier); cook never re-derives the target from a threshold.
@@ -19,9 +19,9 @@ Two evaluation modes, differing only in their LEAKAGE AXIS:
                              recipe model one site's dynamics? Compared vs a persistence
                              baseline (predict yesterday).
   cook_many(recipe, sites)   CROSS-SITE modelling. Leakage axis = SPACE, so CV groups by
-                             site (LOSO, optimistic) and by basin conflict-component
-                             (LOBO, honest -- via data/splits.py). Answers: does the
-                             recipe transfer to an unseen basin?
+                             site (LOSO, optimistic) and by family = basin conflict-
+                             component (LOFO, "leave one family out"; honest -- via
+                             data/splits.py). Answers: transfer to an unseen family?
   cook_fleet(recipe, sites)  bonus: run cook_one on each site, summarise the distribution
                              (individual modelling across the fleet).
 
@@ -29,7 +29,7 @@ Cross-site performance is reported as a DECOMPOSITION rather than one number:
   between_r2  predicted vs actual per-site means -- does it rank site levels?
   within_r2   after removing each site's mean    -- does it track daily movement?
   macro_r2    median per-site R2 (equal weight per site, vs row-weighted overall)
-  loso_r2 / lobo_r2  the leakage bracket (lobo <= real generalisation <= loso)
+  loso_r2 / lofo_r2  the leakage bracket (lofo <= real generalisation <= loso)
 
 Comparison is paired: GroupKFold is deterministic, so every recipe sees identical folds
 for the same `sites` -- differences are attributable to features, not split noise.
@@ -37,10 +37,15 @@ for the same `sites` -- differences are attributable to features, not split nois
 Run:  python isaac/cook.py
 """
 
+# this makes all type annotations lazy, so no runtime cost for annotations
+from __future__ import annotations
+
+# control over runtime warning messages
 import warnings
 
 warnings.filterwarnings("ignore")
 import os, sys, time
+from typing import Any, Callable, Literal, Sequence, TypeAlias
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np, pandas as pd
@@ -54,11 +59,17 @@ from sklearn.metrics import (
     average_precision_score,
     brier_score_loss,
 )
+from sklearn.inspection import permutation_importance
 
 from data.splits import split_groups
 from data.access import get_site_ids
 
-TARGET = "nitrate_con"  # default target column if the caller doesn't pass target=
+# ── type aliases ───────────────────────────
+Recipe: TypeAlias = Callable[[str], pd.DataFrame]  # a recipe: site_uid -> feature/target frame
+Task: TypeAlias = Literal["reg", "clf"]  # regression vs binary classification
+Model: TypeAlias = "xgb.XGBClassifier | xgb.XGBRegressor"  # fitted estimator
+
+TARGET = "nitrate_con"  # default target column if the caller doesn't pass target_col=
 _STRUCTURAL = {"site_uid", "site", "date", "year", "datetime"}  # bookkeeping cols, never features
 
 # fixed, somewhat regularized model config
@@ -75,57 +86,86 @@ _DEFAULT_XGB = dict(
 )
 
 # fast configuration
+# intended use: cook_many(sites, **FAST_XGB)
 FAST_XGB = dict(n_estimators=800, learning_rate=0.05, max_depth=4)
 
-_BASIN = None  # lazy {site -> conflict-component id} loader
+# lazy {site : conflict-graph component id} loader
+# maps a site to its group in the conflict-graph from data.splits
+_BASINGRPS = None
 
 
 # ── shared helpers ─────────────────────────
-def _check_target(recipe, df, target):
-    """Fail fast (and loud) if a recipe didn't actually produce the requested target."""
+def _check_target(recipe: Recipe, df: pd.DataFrame, target: str) -> None:
+    """Fail quickly if a recipe didn't actually produce the requested target.
+    One more way to avoid spending an hour on training for a crash at the end
+    """
+    name = getattr(recipe, "__name__", repr(recipe))
+    if not isinstance(df, pd.DataFrame):
+        raise TypeError(
+            f"recipe {name!r} returned {type(df).__name__}, expected a DataFrame -- did you "
+            f"forget to merge_on_date(...) the parts into one frame (e.g. return a (Series, parts) "
+            f"tuple by mistake)?"
+        )
     if target not in df.columns:
-        name = getattr(recipe, "__name__", repr(recipe))
         raise KeyError(
             f"recipe {name!r} produced columns {list(df.columns)} -- no target {target!r}; "
-            f"pass the right target= to cook_one/cook_many."
+            f"pass the right target_col= to cook_one/cook_many."
         )
 
 
-def _features(df, target):
-    """The feature columns: everything except the target and the bookkeeping columns."""
+def _features(df: pd.DataFrame, target: str) -> list[str]:
+    """Fetches feature columns: everything except the target and the bookkeeping columns."""
     return [c for c in df.columns if c != target and c not in _STRUCTURAL]
 
 
-def _target(df, target, task):
+def _target(df: pd.DataFrame, target: str, task: Task) -> pd.Series:
     """Read the target column off the recipe's output frame (int-cast for clf)."""
     y = df[target]
     return y.astype("int64") if task == "clf" else y
 
 
-def _model(task, **overrides):
-    """Wrapper for returning the appropriate model, Classifier vs Regressor"""
+def _model(task: Task, **overrides: Any) -> Model:
+    """Wrapper for returning the appropriate model, Classifier vs Regressor
+    Pass a different model configuration, for instance, as an unwrapped dictionary.
+    It will override the defaults.
+    """
     cfg = {**_DEFAULT_XGB, **overrides}
     if task == "clf":
         return xgb.XGBClassifier(objective="binary:logistic", eval_metric="logloss", **cfg)
     return xgb.XGBRegressor(eval_metric="rmse", **cfg)
 
 
-def _fit(task, Xtr, ytr, Xval, yval, **xgb_kw):
-    """Fitter helper. Used basically so extra model keywords can be handed off."""
+def _fit(
+    task: Task,
+    Xtr: pd.DataFrame,
+    ytr: pd.Series,
+    Xval: pd.DataFrame,
+    yval: pd.Series,
+    **xgb_kw: Any,
+) -> Model:
+    """Fitter helper. Basically exists only so extra model keywords can be handed off"""
     m = _model(task, **xgb_kw)
     m.fit(Xtr, ytr, eval_set=[(Xval, yval)], verbose=False)
     return m
 
 
-def _oof_predict(model, X, task):
-    """Out of fold predictor helper to differentiate between the two cases"""
+def _oof_predict(model: Model, X: pd.DataFrame, task: Task) -> np.ndarray:
+    """Just an 'Out Of Fold' prediction wrapper. Used soley to differentiate between
+    The two primary tasks.
+    """
     return model.predict_proba(X)[:, 1] if task == "clf" else model.predict(X)
 
 
-def _score(y, pred, task):
-    """Pooled metrics for a set of (y, prediction)."""
-    y = np.asarray(y)
-    pred = np.asarray(pred)
+def _score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, task: Task) -> dict[str, float]:
+    """Pooled metrics for a set of (y, prediction). NaN predictions are dropped (e.g. an
+    all-NaN OOF from a grouped split with too few groups -> all metrics NaN)."""
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    ok = ~(np.isnan(y) | np.isnan(pred))
+    y, pred = y[ok], pred[ok]
+    if len(y) == 0:  # nothing to score (e.g. LOFO with a single basin group)
+        keys = ("auc", "prauc", "brier", "base") if task == "clf" else ("rmse", "mae", "r2")
+        return {k: np.nan for k in keys}
     if task == "clf":
         two = len(np.unique(y)) == 2
         return dict(
@@ -141,7 +181,7 @@ def _score(y, pred, task):
     )
 
 
-def _per_site_score(y, pred, task):
+def _per_site_score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, task: Task) -> float:
     """One-site score, or NaN when undefined (one class / no variance)."""
     y = np.asarray(y)
     pred = np.asarray(pred)
@@ -150,50 +190,91 @@ def _per_site_score(y, pred, task):
     return r2_score(y, pred) if (len(y) > 1 and np.std(y) > 0) else np.nan
 
 
-def basin_groups(site_series):
-    """site_uids -> basin conflict-component ids (data/splits.py); sites missing from the
-    basin graph become their own singleton group so they can't leak into a component."""
-    global _BASIN
-    if _BASIN is None:
-        _BASIN = split_groups()
-    nxt = max(_BASIN.values(), default=-1) + 1
+def basin_groups(sites_mega_series: pd.Series) -> pd.Series:
+    """Take in the mega multi-site dataframe but only the sites_uid column
+
+    Return a mapping from index of sites_mega_series to conflict graph id. Example with fake conflict_graph_id numbers:
+    site_mega_series         output pd.Series
+    index site_uid        index conflict_graph_id
+    0     WQS0039         0            4
+    1     WQS0039    ->   1            4
+    2     WQS0115         2            7
+    3     WQS0003         3            2
+
+    """
+
+    # lazily load the basin conflict graph
+    global _BASINGRPS
+    if _BASINGRPS is None:
+        _BASINGRPS = split_groups()
+
+    # this is the max integer not already a
+    nxt = max(_BASINGRPS.values(), default=-1) + 1
+
+    # build a mapping from site_uid to conflict graph conn comp id
     mapping = {}
-    for s in pd.unique(site_series):
-        mapping[s] = _BASIN.get(s, nxt)
-        nxt += s not in _BASIN
-    return site_series.map(mapping)
+    for s in pd.unique(sites_mega_series):
+        # if site s is in the basin graph, use its component id
+        mapping[s] = _BASINGRPS.get(s, nxt)
+        # otherwise, add 1 to the counter
+        nxt += s not in _BASINGRPS
+    return sites_mega_series.map(mapping)
 
 
-# ── INDIVIDUAL site: chronological CV ────────────────
-def cook_one(recipe, site, target=TARGET, task="reg", n_splits=5, test_size=90, **xgb_kw):
-    """Expanding-window CV for `recipe` on one site (time is the only leakage axis).
+# ── INDIVIDUAL site: chronological CV ──────────────
+def cook_one(
+    recipe: Recipe,
+    site_uid: str,
+    target_col: str,
+    task: Task = "reg",
+    n_splits: int = 5,
+    test_size: int = 90,
+    extra_importance_test: bool = False,
+    **xgb_kw: Any,
+) -> dict:
+    """Hand off a recipe, a single site_uid, a target_col, and a task ('reg' or 'clf' are the only options) and then do CV on the one site.
 
     `target`/`task` say which output column is the label and how to score it. Pools
     out-of-fold predictions across folds and scores once (stable, unlike averaging noisy
     per-fold R2); each fold early-stops on the chronological tail of its train set.
     Regression also reports the persistence (predict-yesterday) baseline RMSE.
+
+    Always returns "importance" (mean GAIN across folds, free). With
+    extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
     """
-    df = recipe(site)
-    _check_target(recipe, df, target)
-    df = df.dropna(subset=[target]).reset_index(drop=True)
-    feat = _features(df, target)
-    X, y = df[feat], _target(df, target, task)
+    df = recipe(site_uid)
+    _check_target(recipe, df, target_col)
+    df = df.dropna(subset=[target_col]).reset_index(drop=True)
+    feat = _features(df, target_col)
+    X, y = df[feat], _target(df, target_col, task)
+
+    # storage for the results
     oof = np.full(len(df), np.nan)
 
-    for tr, te in TimeSeriesSplit(n_splits=n_splits, test_size=test_size).split(X):
-        cut = int(len(tr) * 0.85)  # chronological val tail -> early stop
-        m = _fit(task, X.iloc[tr[:cut]], y.iloc[tr[:cut]], X.iloc[tr[cut:]], y.iloc[tr[cut:]], **xgb_kw)
-        oof[te] = _oof_predict(m, X.iloc[te], task)
+    # store (model, test_idx) per fold -> feeds gain + permutation importance
+    fold_models = []
+
+    for train, test in TimeSeriesSplit(n_splits=n_splits, test_size=test_size).split(X):
+        cut = int(len(train) * 0.85)  # chronological val tail -> early stop
+        # fit on the first 85% of the train split, eval on the last 15%
+        m = _fit(task, X.iloc[train[:cut]], y.iloc[train[:cut]], X.iloc[train[cut:]], y.iloc[train[cut:]], **xgb_kw)
+
+        # store the results of the prediction
+        oof[test] = _oof_predict(m, X.iloc[test], task)
+        fold_models.append((m, test))
 
     ok = ~np.isnan(oof)
-    row = dict(site=site, n_test=int(ok.sum()), n_feat=len(feat), **_score(y[ok], oof[ok], task))
+    row = dict(site=site_uid, n_test=int(ok.sum()), n_feat=len(feat), **_score(y[ok], oof[ok], task))
     if task == "reg":
-        row["persist_rmse"] = _persistence_rmse(df, ok, target)
+        row["persist_rmse"] = _persistence_rmse(df, ok, target_col)
+    row["importance"] = _gain_importance(fold_models, feat)  # always (free)
+    if extra_importance_test:
+        row["importance_perm"] = _perm_importance(fold_models, X, y, feat, task)
     return row
 
 
-def _persistence_rmse(df, ok, target):
-    """RMSE of the naive 'predict yesterday's own value' baseline on the tested rows."""
+def _persistence_rmse(df: pd.DataFrame, ok: np.ndarray, target: str) -> float:
+    """The persistence baseline, "predict yesterday's value", for a site does very well. This is the RMSE of that baseline."""
     s = pd.Series(df[target].to_numpy(), index=pd.to_datetime(df["date"])).asfreq("D")
     yhat = s.shift(1).reindex(pd.to_datetime(df["date"])).to_numpy()
     y = df[target].to_numpy()
@@ -201,76 +282,222 @@ def _persistence_rmse(df, ok, target):
     return float(np.sqrt(mean_squared_error(y[m], yhat[m]))) if m.any() else np.nan
 
 
-# ── CROSS-SITE: pooled, basin-grouped CV ─────────
-def _pool(recipe, sites, target, min_rows=500):
-    """Stack many recipe frames into one long dataframe, tagged with `site`.
+# ── CROSS-SITE: pooled, basi/n-grouped CV ─────────
+def _pool(
+    recipe: Recipe, sites: Sequence[str], target: str, min_rows: int = 500, progress_label: str | None = None
+) -> pd.DataFrame:
+    """Build the mega dataframe. Stack many recipe frames into one long dataframe, tagged with `site`.
 
-    Sites whose data fails to build, or that are too short, are skipped; if NOTHING is
-    usable the actual skip reasons are surfaced (instead of a bare 'no usable frame'),
-    so a recipe bug doesn't hide behind an opaque error after a long run.
+    Sites whose data fails to build, or that are too short, are skipped; if NOTHING is usable the actual skip reasons are surfaced (instead of a bare 'no usable frame'), so a recipe bug doesn't hide behind an opaque error after a long run.
+
+    If `progress_label` is given, a self-overwriting status line reports cooking progress
+    (sites cooked so far / total, and how many produced a usable frame).
     """
+    sites = list(sites)
+    total = len(sites)
     frames, skipped = [], []
-    for s in sites:
+    for i, s in enumerate(sites, 1):
+        if progress_label is not None:
+            print(
+                f"\r  pooling {progress_label}: site {i}/{total} ({len(frames)} usable so far)",
+                end="",
+                flush=True,
+            )
         try:
             d = recipe(s)
         except Exception as e:
-            skipped.append(f"{type(e).__name__}: {e}")
+            reason = f"{type(e).__name__}: {e}"
+            skipped.append(reason)
+            print(f"\n  [skipped] {s}: {reason}", file=sys.stderr)  # leading \n: don't clobber the status line
             continue
+
         _check_target(recipe, d, target)  # a missing target is a bug -> raise, never skip
-        d = d.dropna(subset=[target])
+        d = d.dropna(subset=[target])  # drop any rows mising the target
         if len(d) < min_rows:
             skipped.append(f"only {len(d)} usable rows (< {min_rows})")
             continue
         d = d.copy()
         d["site"] = s
         frames.append(d)
+    if progress_label is not None:
+        # overwrite the last heartbeat with the accurate completed total (trailing spaces
+        # clear leftovers from the longer in-progress line), then newline to keep it
+        print(f"\r  cooked {progress_label}: {len(frames)}/{total} sites usable" + " " * 20, flush=True)
     if not frames:
         from collections import Counter
 
+        # if there aren't ANY frames, builds a human-readable error messages explaining
+        # (hopefully) why the sites got skipped.
         reasons = "; ".join(f"{n}x {r}" for r, n in Counter(skipped).most_common(3))
         raise ValueError(f"no sites produced a usable frame ({len(skipped)} sites skipped) -- {reasons}")
     return pd.concat(frames, ignore_index=True)
 
 
-def _grouped_oof(X, y, groups, task, n_splits, seed=0, **xgb_kw):
-    """Out-of-fold predictions from GroupKFold; each fold early-stops on a random
-    held-out slice of its TRAIN rows (test groups stay fully unseen)."""
-    n_groups = pd.Series(groups).nunique()
-    folds = min(n_splits, n_groups)
-    oof = np.full(len(y), np.nan)
+def _grouped_models(X, y, groups, task, n_splits, seed=0, **xgb_kw):
+    """This fits a model using a GroupKFold split. "Rows with the same group class must be kept together."
+
+    The two main kinds of group identities:
+        a. groups = site_uid col of X: then one SITE is left out, LOSO
+        b. groups = conflict graph id: then one FAMILY of basins is left out, LOFO
+
+    For each train/test split in GroupKFold:
+        1. Permute the training rows
+        If this didn't happen, we would evaluate on the last temporal chunk of the last site. We want evaluation spread out between sites. XGBoost doesn't need contiguous time series, it just sees a bag of rows, so this is fine.
+        2. Store the cut so we have an eval piece, hardcoded to 85/15% split
+        3. First the model on this split
+        4. Return the test indices and the model
+
+    The fold/split logic lives here so both OOF prediction and feature importance consume the SAME models -- no duplicated splitting, and importance is free (the models already exist). Each fold early-stops on a random 15% slice of its TRAIN rows.
+    """
+    folds = min(n_splits, pd.Series(groups).nunique())
+    if folds < 2:
+        return  # <2 groups -> grouped CV undefined (e.g. LOFO with one basin); caller gets all-NaN OOF
     rng = np.random.RandomState(seed)
-    for tr, te in GroupKFold(folds).split(X, y, groups=groups):
-        v = rng.permutation(tr)
+    for train, test in GroupKFold(folds).split(X, y, groups=groups):
+        # XGBoost looks at a
+        v = rng.permutation(train)
         cut = int(len(v) * 0.85)
         m = _fit(task, X.iloc[v[:cut]], y.iloc[v[:cut]], X.iloc[v[cut:]], y.iloc[v[cut:]], **xgb_kw)
+        yield test, m
+
+
+def _grouped_oof(
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+    task: Task,
+    n_splits: int,
+    seed: int = 0,
+    **xgb_kw: Any,
+) -> np.ndarray:
+    """OOF predictions under GroupKFold (groups held out intact). Just a wrapper around the _grouped_models above. This method only cares about the predictions of the model. In particular, it doesn't return any info on feature importance."""
+    oof = np.full(len(y), np.nan)
+    for te, m in _grouped_models(X, y, groups, task, n_splits, seed, **xgb_kw):
         oof[te] = _oof_predict(m, X.iloc[te], task)
     return oof
 
 
-def cook_many(recipe, sites=None, target=TARGET, task="reg", n_splits=5, **xgb_kw):
-    """Pooled cross-site CV with site- (LOSO) and basin- (LOBO) grouped holdouts.
+_PERM_REPEATS = 5  # shuffles per feature per fold for the permutation-importance test
+
+
+def _gain_importance(fold_models, feat: list[str]) -> pd.Series:
+    """Mean XGBoost GAIN importance across the fold-models, indexed by feature, sorted desc.
+
+    Reads each model's `feature_importances_` -- free (the models already exist).
+    `fold_models` is an iterable of (model, test_idx). Pass importance_type= via **xgb_kw
+    to switch gain -> weight/cover."""
+    cols = [pd.Series(m.feature_importances_, index=feat) for m, _ in fold_models]
+    return pd.concat(cols, axis=1).mean(axis=1).sort_values(ascending=False)
+
+
+def _perm_importance(fold_models, X, y, feat: list[str], task: Task, seed: int = 0) -> pd.Series:
+    """Mean PERMUTATION importance across folds, indexed by feature, sorted desc.
+
+    For each fold, shuffle each feature on that fold's HELD-OUT rows and measure the drop in
+    score (R2 for reg, ROC-AUC for clf) -- honest, in metric units, but costs
+    ~K * n_feat * _PERM_REPEATS rescorings. Folds whose held-out set can't be scored (e.g. a
+    single-class clf window -> AUC undefined) are skipped; if none are scorable, returns NaNs.
+    """
+    scoring = "r2" if task == "reg" else "roc_auc"
+    fold_models = list(fold_models)
+    n = len(fold_models)
+    cols = []
+    for i, (m, te) in enumerate(fold_models, 1):
+        # slow step (~K * n_feat * _PERM_REPEATS rescorings) -> self-overwriting status line
+        print(
+            f"\r  extra_importance_test: permutation fold {i}/{n} " f"({len(feat)} feats x {_PERM_REPEATS} shuffles)",
+            end="",
+            flush=True,
+        )
+        try:
+            r = permutation_importance(
+                m, X.iloc[te], y.iloc[te], scoring=scoring, n_repeats=_PERM_REPEATS, random_state=seed
+            )
+        except ValueError:
+            continue
+        cols.append(pd.Series(r.importances_mean, index=feat))
+    print(flush=True)  # newline so the finished status line stays put (not erased)
+    if not cols:
+        return pd.Series(np.nan, index=feat)
+    return pd.concat(cols, axis=1).mean(axis=1).sort_values(ascending=False)
+
+
+def cook_many(
+    recipe: Recipe,
+    sites: Sequence[str] | None = None,
+    target_col: str = TARGET,
+    task: Task = "reg",
+    n_splits: int = 5,
+    extra_importance_test: bool = False,
+    progress: bool | str = False,
+    **xgb_kw: Any,
+) -> dict:
+    """Pooled cross-site CV with site- (LOSO) and family- (LOFO) grouped holdouts.
 
     `sites` defaults to all sites (get_site_ids); _pool silently drops any that fail to
-    build or are too short. `target`/`task` say which output column is the label and how
-    to score it. Returns the decomposition (between/within/macro) plus the LOSO/LOBO
+    build or are too short. `target_col`/`task` say which output column is the label and how
+    to score it. Returns the decomposition (between/within/macro) plus the LOSO/LOFO
     bracket. For classification the 'level' analogue is the per-site violation RATE.
+
+    Always returns "importance" (mean GAIN across the LOSO fold-models, free). With
+    extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
+
+    progress: show a self-overwriting per-site "cooking" status line while building the
+    pool. True labels it with recipe.__name__; pass a string to use that label instead
+    (compare_many passes the recipe's display name).
     """
     if sites is None:
         sites = get_site_ids()
-    pool = _pool(recipe, sites, target)
-    feat = _features(pool, target)
-    X, y = pool[feat], _target(pool, target, task)
-    oof_site = _grouped_oof(X, y, pool["site"], task, n_splits, **xgb_kw)
-    oof_basin = _grouped_oof(X, y, basin_groups(pool["site"]), task, n_splits, **xgb_kw)
-    return dict(
+    label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
+    pool = _pool(recipe, sites, target_col, progress_label=label)
+    feat = _features(pool, target_col)
+    X, y = pool[feat], _target(pool, target_col, task)
+    # site (LOSO) folds: collect OOF predictions AND the fold-models (for importance)
+    oof_site = np.full(len(y), np.nan)
+
+    fold_models = []
+    for te, m in _grouped_models(X, y, pool["site"], task, n_splits, **xgb_kw):
+        oof_site[te] = _oof_predict(m, X.iloc[te], task)
+        fold_models.append((m, te))
+
+    basin_grp = basin_groups(pool["site"])
+    n_basins = pd.Series(basin_grp).nunique()
+    if n_basins < 2:  # leave-one-basin-out needs >=2 families to hold one out
+        print(
+            f"  [LOFO skipped] {n_basins} basin family across these {pool['site'].nunique()} "
+            f"sites (need >=2) -- lofo_* = NaN",
+            file=sys.stderr,
+        )
+    oof_basin = _grouped_oof(X, y, basin_grp, task, n_splits, **xgb_kw)
+    out = dict(
         n_sites=pool["site"].nunique(),
         n_rows=len(pool),
         n_feat=len(feat),
         **_cross_metrics(pool, np.asarray(y), oof_site, oof_basin, task),
+        importance=_gain_importance(fold_models, feat),  # always (free)
     )
 
+    # status messages
+    n_total = pool["site"].nunique()
+    test_per_fold = [pool["site"].iloc[te].nunique() for _, te in fold_models]
+    train_per_fold = [n_total - t for t in test_per_fold]
+    n_folds = len(fold_models)
+    print(
+        f"  cooked {label}: {n_total} sites, {n_folds}-fold LOSO "
+        f"(~{int(np.mean(train_per_fold))} train / ~{int(np.mean(test_per_fold))} test per fold)"
+    )
+    if extra_importance_test:
+        out["importance_perm"] = _perm_importance(fold_models, X, y, feat, task)
+    return out
 
-def _cross_metrics(pool, y, oof_site, oof_basin, task):
+
+def _cross_metrics(
+    pool: pd.DataFrame,
+    y: np.ndarray,
+    oof_site: np.ndarray,
+    oof_basin: np.ndarray,
+    task: Task,
+) -> dict[str, float]:
     site = pool["site"].to_numpy()
     tab = pd.DataFrame({"y": y, "p": oof_site, "g": site})
     site_means = tab.groupby("g")[["y", "p"]].mean()  # per-site level
@@ -280,7 +507,7 @@ def _cross_metrics(pool, y, oof_site, oof_basin, task):
     if task == "clf":
         return dict(
             loso_auc=overall["auc"],
-            lobo_auc=_score(y, oof_basin, task)["auc"],
+            lofo_auc=_score(y, oof_basin, task)["auc"],
             prauc=overall["prauc"],
             brier=overall["brier"],
             base=overall["base"],
@@ -291,7 +518,7 @@ def _cross_metrics(pool, y, oof_site, oof_basin, task):
     pm = tab.groupby("g")["p"].transform("mean").to_numpy()
     return dict(
         loso_r2=overall["r2"],
-        lobo_r2=_score(y, oof_basin, task)["r2"],
+        lofo_r2=_score(y, oof_basin, task)["r2"],
         rmse=overall["rmse"],
         between_r2=r2_score(site_means.y, site_means.p),  # ranks site levels
         within_r2=r2_score(y - sm, oof_site - pm),  # daily, level removed
@@ -299,50 +526,243 @@ def _cross_metrics(pool, y, oof_site, oof_basin, task):
     )
 
 
-def cook_fleet(recipe, sites=None, **kw):
+def cook_fleet(recipe: Recipe, sites: Sequence[str] | None = None, progress: bool | str = False, **kw: Any) -> dict:
     """Run cook_one on each site (per-site models) and summarise the distribution.
 
-    `sites` defaults to all sites (get_site_ids); sites that fail are skipped. `target=`
-    / `task=` (and any model kwargs) are forwarded to cook_one."""
+    `sites` defaults to all sites (get_site_ids); sites that fail are skipped. `target_col=`
+    / `task=` (and any model kwargs) are forwarded to cook_one. progress: show a
+    self-overwriting per-site status line (True -> recipe.__name__, or pass a label)."""
     if sites is None:
         sites = get_site_ids()
-    rows = []
-    for s in sites:
+    sites = list(sites)
+    total = len(sites)
+    label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
+    rows, imps, perms = [], [], []
+    for i, s in enumerate(sites, 1):
+        if label is not None:
+            print(f"\r  fleet {label}: {i}/{total} sites ({len(rows)} fit)", end="", flush=True)
         try:
-            rows.append(cook_one(recipe, s, **kw))
+            r = cook_one(recipe, s, **kw)
         except Exception:
             continue
+        imps.append(r.pop("importance"))  # keep the per-site table numeric; aggregate below
+        if "importance_perm" in r:
+            perms.append(r.pop("importance_perm"))
+        rows.append(r)
+    if label is not None:
+        print(flush=True)
     df = pd.DataFrame(rows)
     metric = "auc" if kw.get("task") == "clf" else "r2"
-    return dict(
-        n_sites=len(df), **{f"median_{metric}": df[metric].median(), f"mean_{metric}": df[metric].mean()}, per_site=df
+    out = dict(
+        n_sites=len(df),
+        **{f"median_{metric}": df[metric].median(), f"mean_{metric}": df[metric].mean()},
+        per_site=df,
+        importance=(
+            pd.concat(imps, axis=1).mean(axis=1).sort_values(ascending=False) if imps else pd.Series(dtype=float)
+        ),
     )
+    if perms:
+        out["importance_perm"] = pd.concat(perms, axis=1).mean(axis=1).sort_values(ascending=False)
+    return out
 
 
 # ── comparison (paired: same sites/folds for every recipe) ────
-def compare_one(recipes, site, **kw):
-    """Table of cook_one metrics, one row per named recipe (same site). target=/task=
-    (and model kwargs) are forwarded to cook_one."""
-    return pd.DataFrame([{"recipe": n, **cook_one(fn, site, **kw)} for n, fn in recipes.items()]).set_index("recipe")
+def compare_one(recipes: dict[str, Recipe], site: str, target_col: str, **kw: Any) -> pd.DataFrame:
+    """Table of cook_one metrics, one row per named recipe (same site). target_col=/task=
+    (and model kwargs) are forwarded to cook_one.
+
+    Per-feature importances are kept OUT of the (scalar) metric table and stashed in
+    result.attrs["importance"] = {recipe -> Series} (gain); with extra_importance_test=True
+    also result.attrs["importance_perm"]. View with importance_table(result[, key=...]).
+    """
+    rows, imps, perms = [], {}, {}
+    for name, fn in recipes.items():
+        r = cook_one(fn, site, target_col, **kw)
+        imps[name] = r.pop("importance")
+        if "importance_perm" in r:
+            perms[name] = r.pop("importance_perm")
+        rows.append({"recipe": name, **r})
+    out = pd.DataFrame(rows).set_index("recipe")
+    out.attrs["importance"] = imps
+    if perms:
+        out.attrs["importance_perm"] = perms
+    return out
 
 
-def compare_many(recipes, sites=None, progress=True, **kw):
+def compare_many(
+    recipes: dict[str, Recipe],
+    sites: Sequence[str] | None = None,
+    progress: bool = True,
+    **kw: Any,
+) -> pd.DataFrame:
     """Table of cook_many metrics, one row per named recipe (same sites + folds).
 
     `sites` defaults to all sites; resolved once here so every recipe sees the same set.
-    target=/task= (and model kwargs) are forwarded to cook_many. With progress=True a
-    single self-overwriting status line reports which recipe is running and elapsed time.
+    target_col=/task= (and model kwargs) are forwarded to cook_many. With progress=True each
+    recipe prints a header line (which recipe / elapsed) followed by cook_many's own
+    self-overwriting per-site cooking line.
     """
     if sites is None:
         sites = get_site_ids()
-    rows, n, t0 = [], len(recipes), time.time()
+    rows, imps, perms, n, t0 = [], {}, {}, len(recipes), time.time()
     for i, (name, fn) in enumerate(recipes.items(), 1):
         if progress:
-            print(f"\rcompare_many: [{i}/{n}] {name:<28.28s} elapsed {time.time() - t0:4.0f}s", end="", flush=True)
-        rows.append({"recipe": name, **cook_many(fn, sites, **kw)})
+            print(f"compare_many: [{i}/{n}] {name:<28.28s} elapsed {time.time() - t0:4.0f}s", flush=True)
+        r = cook_many(fn, sites, progress=(name if progress else False), **kw)
+        imps[name] = r.pop("importance")
+        if "importance_perm" in r:
+            perms[name] = r.pop("importance_perm")
+        rows.append({"recipe": name, **r})
     if progress:
-        print(f"\rcompare_many: done {n}/{n} recipes in {time.time() - t0:.0f}s" + " " * 30)
-    return pd.DataFrame(rows).set_index("recipe")
+        print(f"compare_many: done {n}/{n} recipes in {time.time() - t0:.0f}s")
+    out = pd.DataFrame(rows).set_index("recipe")
+    out.attrs["importance"] = imps  # {recipe -> per-feature mean gain}; see importance_table()
+    if perms:
+        out.attrs["importance_perm"] = perms  # permutation importances (extra_importance_test=True)
+    return out
+
+
+def compare_fleet(
+    recipes: dict[str, Recipe],
+    sites: Sequence[str] | None = None,
+    target_col: str = TARGET,
+    progress: bool = True,
+    **kw: Any,
+) -> pd.DataFrame:
+    """Table of cook_fleet metrics, one AGGREGATED row per recipe (NOT per site).
+
+    For each recipe, cook_one is fit on every site independently (individual-site modelling,
+    chronological CV) and the per-site scores are summarised to median/mean. So this answers
+    "which feature set is best suited to learning an individual monitoring site?" -- the
+    individual-site analogue of compare_many's cross-site (transfer) question. The metric is
+    r2 for regression, auc for classification (task='clf').
+
+    `sites` defaults to all sites. target_col/task (and model kwargs) forward to cook_one.
+    The full per-site tables are kept OUT of the (aggregated) result and stashed in
+    result.attrs["per_site"] = {recipe -> DataFrame}; importances in result.attrs["importance"]
+    (and ["importance_perm"] with extra_importance_test=True), viewable via importance_table().
+    """
+    if sites is None:
+        sites = get_site_ids()
+    rows, persite, imps, perms, n, t0 = [], {}, {}, {}, len(recipes), time.time()
+    for i, (name, fn) in enumerate(recipes.items(), 1):
+        if progress:
+            print(f"compare_fleet: [{i}/{n}] {name:<28.28s} elapsed {time.time() - t0:4.0f}s", flush=True)
+        r = cook_fleet(fn, sites, target_col=target_col, progress=(name if progress else False), **kw)
+        persite[name] = r.pop("per_site")  # per-site detail -> attrs; the table stays aggregated
+        imps[name] = r.pop("importance")
+        if "importance_perm" in r:
+            perms[name] = r.pop("importance_perm")
+        rows.append({"recipe": name, **r})
+    if progress:
+        print(f"compare_fleet: done {n}/{n} recipes in {time.time() - t0:.0f}s")
+    out = pd.DataFrame(rows).set_index("recipe")
+    out.attrs["per_site"] = persite  # {recipe -> per-site metrics DataFrame}
+    out.attrs["importance"] = imps
+    if perms:
+        out.attrs["importance_perm"] = perms
+    return out
+
+
+def importance_table(result, topn: int | None = None, key: str = "importance") -> pd.DataFrame:
+    """Tidy feature-importance view: features (rows) x recipes (columns), values = mean
+    importance, sorted by the row mean. Accepts the output of compare_one/compare_many
+    (reads result.attrs[key]), or a {name -> Series} dict, or a single Series.
+
+    key="importance" (gain, default) or key="importance_perm" (permutation, only present if
+    the compare_* call used extra_importance_test=True). `topn` keeps the top-N features.
+    """
+    if isinstance(result, pd.Series):
+        imps = {key: result}
+    elif isinstance(result, dict):
+        imps = result
+    else:  # a compare_* DataFrame
+        imps = result.attrs.get(key)
+        if not imps:
+            raise ValueError(
+                f"no {key!r} importances found -- pass a compare_one/compare_many result"
+                + (" run with extra_importance_test=True" if key == "importance_perm" else "")
+            )
+    tab = pd.DataFrame(imps)  # features (union) x recipes; features absent from a recipe -> NaN
+    tab = tab.loc[tab.mean(axis=1).sort_values(ascending=False).index]  # order by avg importance
+    tab.index.name = "features"  # so to_csv writes a proper header instead of "Unnamed: 0"
+    return tab if topn is None else tab.head(topn)
+
+
+def importance_breakdown(
+    result, recipe: str | None = None, key: str = "importance", topn: int | None = None
+) -> pd.DataFrame:
+    """Per-feature importance for ONE recipe, as 'raw' score + 'pct' (share of the total).
+
+    Accepts a single Series, a {name -> Series} dict, or a compare_* result (reads
+    result.attrs[key]); for a multi-recipe result pass recipe= to pick one. Sorted desc.
+
+    Units depend on `key`:
+      key="importance"      raw = fraction of the model's total GAIN (already sums to ~1),
+                            so pct is that as a percentage -- "X% of the model's gain".
+      key="importance_perm" raw = drop in the score (R2/AUC) when the feature is permuted on
+                            held-out rows (metric units; READ THIS ONE). pct is its share of
+                            the total, which is only loosely meaningful (can be skewed by
+                            negative entries) -- prefer the raw column for permutation.
+    """
+    if isinstance(result, pd.Series):
+        s = result
+    else:
+        imps = result if isinstance(result, dict) else result.attrs.get(key)
+        if not imps:
+            raise ValueError(f"no {key!r} importances found -- pass a compare_* result or a Series")
+        if recipe is None:
+            if len(imps) != 1:
+                raise ValueError(f"result has {len(imps)} recipes {list(imps)}; pass recipe=")
+            recipe = next(iter(imps))
+        s = imps[recipe]
+    s = s.dropna().sort_values(ascending=False)
+    out = pd.DataFrame({"raw": s, "pct": 100 * s / s.sum()})
+    out.index.name = "features"
+    return out if topn is None else out.head(topn)
+
+
+def save_comparison(result: pd.DataFrame, path: str) -> list[str]:
+    """Save a compare_one/compare_many result to CSV(s) for later comparison.
+
+    Writes the metric table to '<path>.csv'. Importances are per-feature vectors that can't
+    share the flat metric CSV, so any in result.attrs are written to sidecar files
+    '<path>_importance.csv' (gain) and '<path>_importance_perm.csv' (permutation, if the run
+    used extra_importance_test=True). Each sidecar carries the raw score per recipe (one
+    '<recipe>' column each). Returns the list of files written; pair with load_comparison().
+    Call this on the object compare_* RETURNED -- reshaping a DataFrame drops .attrs, taking
+    the importances with it.
+    """
+    stem = path[:-4] if path.endswith(".csv") else path
+    written = [f"{stem}.csv"]
+    result.to_csv(written[0])
+    for key, suffix in (("importance", "_importance"), ("importance_perm", "_importance_perm")):
+        if result.attrs.get(key):
+            raw = importance_table(result, key=key)  # features x recipes, raw mean importance
+            fp = f"{stem}{suffix}.csv"
+            raw.to_csv(fp)
+            written.append(fp)
+    print(f"Wrote {len(written)} files:")
+    for f in written:
+        print(f"  {f}")
+    return written
+
+
+def load_comparison(path: str) -> pd.DataFrame:
+    """Load a comparison saved by save_comparison().
+
+    Returns the metric DataFrame with any sidecar importances re-attached to .attrs (as
+    {recipe -> Series} of RAW scores), so importance_table(result[, key=...]) works on it
+    exactly as on a fresh compare_* result.
+    """
+    stem = path[:-4] if path.endswith(".csv") else path
+    out = pd.read_csv(f"{stem}.csv", index_col="recipe")
+    for key, suffix in (("importance", "_importance"), ("importance_perm", "_importance_perm")):
+        fp = f"{stem}{suffix}.csv"
+        if os.path.exists(fp):
+            tab = pd.read_csv(fp, index_col=0)  # features x recipes (raw scores)
+            out.attrs[key] = {c: tab[c].dropna() for c in tab.columns}
+    return out
 
 
 # ── demo / smoke test ───────────────────
@@ -397,5 +817,5 @@ if __name__ == "__main__":
     print(f"\nCROSS-SITE regression (cook_many) on {len(sites)} sites:")
     print(compare_many(reg_recipes, sites).round(3).to_string())
 
-    print(f"\nCROSS-SITE classification -- caller passes target='violation', task='clf':")
-    print(compare_many({"violation": recipe_violation}, sites, target="violation", task="clf").round(3).to_string())
+    print(f"\nCROSS-SITE classification -- caller passes target_col='violation', task='clf':")
+    print(compare_many({"violation": recipe_violation}, sites, target_col="violation", task="clf").round(3).to_string())

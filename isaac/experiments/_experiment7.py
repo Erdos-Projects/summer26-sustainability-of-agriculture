@@ -9,6 +9,7 @@ from data.features import (
     agg_weather,
     daily_nitrate,
     nitrate_violations,
+    nitrate_avg_except_this,
     lagged_sensor_nitrate,
     nitrate_rolling,
     nitrate_avg_seasonal,
@@ -19,6 +20,14 @@ from data.features import (
 from functools import lru_cache
 from data.transforms import flatten_buckets, merge_on_date, match_seasonal
 from data import get_site_ids
+
+from cook import *
+
+
+def all_but_this(site):
+    s = set(get_site_ids())
+    s.discard(site)
+    return s
 
 
 @lru_cache(maxsize=None)
@@ -44,6 +53,10 @@ def _add_static(site, d):
     for k, v in site_static(site).items():
         d[k] = v
     return d
+
+
+def _crop_to_date(df, max_date):
+    return df[df.date <= max_date]
 
 
 # ----- recipes ------------------------------
@@ -82,7 +95,7 @@ def recipe_C(site):
         match_seasonal(dates, nitrate_avg_seasonal("W")).rename("nwoy"),
         match_seasonal(dates, nitrate_avg_seasonal("M")).rename("nmoy"),
     ]
-    neigh = [lagged_sensor_nitrate(get_site_ids(), shift=k) for k in (1, 3, 7)]
+    neigh = [lagged_sensor_nitrate(list(all_but_this(site)), shift=k) for k in (1, 3, 7)]
     return merge_on_date([n_daily, *parts, *clim, *neigh], spine=dates)
 
 
@@ -90,28 +103,53 @@ def recipe_C_static(site):
     return _add_static(site, recipe_C(site))
 
 
-# ── best performers ─────────────────────
-# Measured under leakage-aware CV. Headline winners:
-# * INDIVIDUAL site, daily regression      -> recipe_B  (own autoregression)
-# cook_one R2 ~ 0.79 (vs ~0.23 covariates-only); just edges out persistence.
-# * CROSS-SITE regression, unseen basin    -> recipe_A_static  (whole-basin covariates
-# + static descriptors).  LOSO R2 ~ 0.45, honest LOFO ~ 0.33.
-# (distance buckets and neighbour AR did NOT help cross-site.)
-# * CROSS-SITE classification (best result)-> recipe_violation_static
-# "will the day exceed the limit?"  LOSO AUC ~ 0.85, LOFO ~ 0.82 -- transfers best.
-# Feature-construction tuning (exp4): edges=[] (no buckets), lam=5000, vel ~ 0.3-0.8.
-
-
-def recipe_violation(site, threshold=10):
-    """Best classification base: covariates + a binary 'violation' target (nitrate >=
-    threshold). The continuous nitrate is NOT included (no leakage). Run via cook with
-    target='violation', task='clf'."""
+def recipe_D(site):
+    """A + cross-site rolling avg + past nitrate of all other sensors with lag"""
     n_daily, parts = _covariates(site)
-    v = nitrate_violations(site, threshold=threshold).rename("violation")
-    return merge_on_date([v, *parts], spine=n_daily.index)
+    dates = n_daily.index
+    clim = [
+        nitrate_rolling("3D", center=False).rename("nroll_3"),
+        nitrate_rolling("7D", center=False).rename("nroll_7"),
+        nitrate_rolling("14D", center=False).rename("nroll_14"),
+        nitrate_rolling("30D", center=False).rename("nroll_30"),
+    ]
+    lagged_avgs = [
+        nitrate_avg_except_this(site, shift=1),
+        nitrate_avg_except_this(site, shift=2),
+        nitrate_avg_except_this(site, shift=3),
+        nitrate_avg_except_this(site, shift=7),
+        nitrate_avg_except_this(site, shift=14),
+    ]
+    return merge_on_date([n_daily, *parts, *clim, *lagged_avgs], spine=dates)
 
 
-def recipe_violation_static(site, threshold=10):
-    """recipe_violation + static site descriptors -- the best cross-site model overall
-    (LOSO AUC ~0.85 / LOFO ~0.82). Run via cook with target='violation', task='clf'."""
-    return _add_static(site, recipe_violation(site, threshold))
+def recipe_D_static(site):
+    return _add_static(site, recipe_D(site))
+
+
+recipes = {
+    # "A": recipe_A,
+    "A_static": recipe_A_static,
+    # "B": recipe_B,
+    "B_static": recipe_B_static,
+    # "C": recipe_C,
+    "C_static": recipe_C_static,
+    # "D": recipe_D,
+    "D_static": recipe_D_static,
+}
+
+
+def main(sites=None, extra=False):
+    if sites is None:
+        sites = [s for s in get_site_ids() if daily_nitrate(s).dropna().shape[0] >= 1500][:10]
+    print(f"{len(recipes)} recipes x {len(sites)} sites\n")
+
+    from pathlib import Path
+
+    outname = f"test_results/{Path(__file__).stem}.csv"
+    results = compare_fleet(recipes, sites=sites, target_col="nitrate_con", extra_importance_test=extra)
+    save_comparison(results, outname)
+
+
+if __name__ == "__main__":
+    main()

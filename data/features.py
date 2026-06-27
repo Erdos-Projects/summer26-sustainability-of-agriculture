@@ -17,6 +17,7 @@ Spatial covariate aggregates (per site, binned by each cell's distance to the se
 Static & neighbour features
   site_static(site)                Time-invariant site descriptors: sensor lat/lon, log basin area, cell-distance spread.
   lagged_sensor_nitrate(uids, k)   Past daily nitrate of the given site(s), shifted k days back (own history or neighbours).
+  nitrate_avg_except_this(site, shift)  Cross-site daily-mean nitrate over all OTHER sites, lagged `shift` days (leakage-free neighbour level).
 
 Cross-site nitrate climatology (cached; all built from the all-sites daily mean)
   nitrate_avg_calendar(freq)       Causal cross-site daily-mean nitrate, lagged one day (yesterday's basin-wide level).
@@ -195,31 +196,66 @@ def _cache_series(name, compute, force=False):
     return s
 
 
+def _state_daily_wide(force=False):
+    """Per-site daily-max nitrate_con aligned into one wide frame (columns = site_uids).
+
+    The shared base for the cross-site climatologies: each site's nitrate resampled to a
+    daily mean, aligned on the union of dates (missing -> NaN). Naive daily DatetimeIndex.
+    Cached as a frame so the all-sites load happens once.
+    """
+    _CACHE.mkdir(parents=True, exist_ok=True)
+    path = _CACHE / "nitrate_state_daily_wide.parquet"
+    if path.exists() and not force:
+        return pd.read_parquet(path)
+    frames = []
+    for s in get_site_ids():
+        try:
+            n = get_data(s).water["nitrate_con"]
+        except (FileNotFoundError, KeyError):
+            continue
+        if n is None or n.dropna().empty:
+            continue
+        frames.append(n.resample("1D").max().rename(s))
+    wide = pd.concat(frames, axis=1)
+    if wide.index.tz is not None:
+        wide.index = wide.index.tz_localize(None)
+    wide.index.name = "date"
+    wide.to_parquet(path)
+    return wide
+
+
 def _state_daily_base(force=False):
     """Cross-site mean nitrate_con per calendar day -- the base for all climatologies.
 
-    Each site's nitrate is resampled to a daily mean; the per-site daily series are
-    aligned and averaged across sites (skipping missing). Naive daily DatetimeIndex.
-    Cached so the all-sites load happens once.
+    The per-site daily series (from `_state_daily_wide`) averaged across sites (skipping
+    missing). Naive daily DatetimeIndex. Cached so the all-sites load happens once.
     """
+    return _cache_series(
+        "nitrate_state_daily",
+        lambda: _state_daily_wide(force=force).mean(axis=1).rename("nitrate_con_state_avg"),
+        force=force,
+    )
 
-    def compute():
-        frames = []
-        for s in get_site_ids():
-            try:
-                n = get_data(s).water["nitrate_con"]
-            except (FileNotFoundError, KeyError):
-                continue
-            if n is None or n.dropna().empty:
-                continue
-            frames.append(n.resample("1D").mean().rename(s))
-        base = pd.concat(frames, axis=1).mean(axis=1).rename("nitrate_con")
-        if base.index.tz is not None:
-            base.index = base.index.tz_localize(None)
-        base.index.name = "date"
-        return base
 
-    return _cache_series("nitrate_state_daily", compute, force=force)
+def nitrate_avg_except_this(site_to_exclude, shift=0, force=False):
+    """Daily cross-site mean nitrate over ALL sites except `site_to_exclude`, optionally
+    shifted `shift` days into the past.
+
+    Leave-one-site-out version of `nitrate_state_daily`: the average of every other sensor,
+    with the target site's own readings removed -- a leakage-free "what are the neighbours
+    doing" feature when modelling `site_to_exclude`. With shift>0 the value on date t is the
+    neighbour average from t-shift (only past info), so it is safe to use causally.
+
+    Returns a date-indexed Series named "nbr_nitrate_lag{shift}" -- NOT "nitrate_con", so it
+    never collides with the target, and DISTINCT per shift, so several lags can be merged
+    together. Pass several shifts for a lagged neighbour set, e.g.
+    ``[nitrate_avg_except_this(site, shift=k) for k in (0, 1, 3, 7)]``.
+    """
+    others = _state_daily_wide(force=force).drop(columns=site_to_exclude, errors="ignore")
+    avg = others.mean(axis=1)
+    if shift:
+        avg = avg.asfreq("D").shift(shift)  # regular daily grid so shift is exactly `shift` days
+    return avg.rename(f"rest_of_state_nitrate_lag{shift}")
 
 
 def nitrate_avg_calendar(freq="D", force=False):
