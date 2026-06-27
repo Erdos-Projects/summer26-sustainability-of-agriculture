@@ -14,13 +14,15 @@ Three modes select how many of those sites to use:
 --extra=True additionally runs each experiment's slow permutation-importance test
 (extra_importance_test); default False.
 
-Experiments run in numeric-then-suffix order (6, 6c, 7, 7c, 8, 8c, 9, 9c, ...), each
-preceded by a banner like  ======= exp 6 =======.
+By default every experiment runs in numeric-then-suffix order (6, 6c, 7, 7c, 8, 8c, 9, 9c,
+...). Pass experiment identifiers as positional args to run only those, IN THE ORDER GIVEN.
+Each is preceded by a banner like  ======= exp 6 =======.
 
 Usage:
-    python _runexps.py                  # test (default), no permutation importance
+    python _runexps.py                       # all, test mode (default), no perm importance
     python _runexps.py --med --extra=True
     python _runexps.py --full --extra=True
+    python _runexps.py --med --extra=True 6 7c 9c 8 10   # only these, in this order
 """
 
 import argparse
@@ -77,8 +79,23 @@ def _as_bool(s):
     return str(s).strip().lower() in ("1", "true", "yes", "y", "t")
 
 
+def _select(ids):
+    """Map experiment identifiers (e.g. '6', '7c', '10') to their files.
+
+    With no ids, returns every experiment in natural order. With ids, returns exactly those
+    in the ORDER GIVEN (so '6 7c 9c 8 10' runs in that sequence). Unknown ids raise.
+    """
+    by_label = {p.stem.replace("_experiment", ""): p for p in _experiment_files()}
+    if not ids:
+        return list(by_label.values())
+    missing = [i for i in ids if i not in by_label]
+    if missing:
+        raise SystemExit(f"unknown experiment id(s): {', '.join(missing)}. available: {', '.join(by_label)}")
+    return [by_label[i] for i in ids]
+
+
 def main():
-    ap = argparse.ArgumentParser(description="Run all experiments in order.")
+    ap = argparse.ArgumentParser(description="Run experiments in order.")
     g = ap.add_mutually_exclusive_group()
     for m in MODES:
         g.add_argument(f"--{m}", dest="mode", action="store_const", const=m)
@@ -88,15 +105,22 @@ def main():
         default=False,
         help="run the slow permutation-importance test in each experiment (extra_importance_test). e.g. --extra=True",
     )
+    ap.add_argument(
+        "ids",
+        nargs="*",
+        help="experiment identifiers to run, in the order given (e.g. 6 7c 9c 8 10). Default: all, in natural order.",
+    )
     ap.set_defaults(mode="test")
     args = ap.parse_args()
+
+    paths = _select(args.ids)
 
     n = MODES[args.mode]
     sites = build_sites()
     sites = sites if n is None else sites[:n]
     print(f"mode={args.mode}: {len(sites)} sites (earliest-history first)  extra={args.extra}\n")
 
-    for path in _experiment_files():
+    for path in paths:
         label = path.stem.replace("_experiment", "")
         print(f"\n======= exp {label} =======", flush=True)
         mod = importlib.import_module(path.stem)

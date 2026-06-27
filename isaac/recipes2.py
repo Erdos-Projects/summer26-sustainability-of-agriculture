@@ -11,10 +11,13 @@ from data.features import (
     nitrate_violations,
     lagged_sensor_nitrate,
     nitrate_rolling,
+    nitrate_avg_except_this,
     nitrate_avg_seasonal,
     nitrate_avg_calendar,
     doy_climatology_pure_signal,
     site_static,
+    rolling_precip,
+    water_balance,
 )
 from functools import lru_cache
 from data.transforms import flatten_buckets, merge_on_date, match_seasonal
@@ -44,6 +47,48 @@ def _add_static(site, d):
     for k, v in site_static(site).items():
         d[k] = v
     return d
+
+
+def _extend_years_forward(annual, last_year):
+    """Use this for broadcasting the surplus values forward from 2017 onward."""
+    full = range(int(annual["year"].min()), int(last_year) + 1)
+    return annual.set_index("year").reindex(full).ffill().reset_index()
+
+
+# current default general-location regressor
+def recipe_REG(site, edge=20_000, vel=0.8, lam=5_000, new_name_of_target="nitrate_con"):
+    wb = flatten_buckets(agg_weather_w_lag(site, edges=[edge], exp=False, water_velocity=vel))
+    cb = flatten_buckets(agg_crops(site, edges=[edge], lam=lam, exp=True))
+    sb = flatten_buckets(agg_surplus(site, edges=[edge], lam=lam, exp=True))
+    n = daily_nitrate(site).rename("nitrate_con")
+    sb = _extend_years_forward(sb, n.index.year.max())  # 2017 held constant for 2018+
+    doy = doy_climatology_pure_signal(n)
+    lagged_avgs = [
+        nitrate_avg_except_this(site, shift=1),
+        nitrate_avg_except_this(site, shift=2),
+        nitrate_avg_except_this(site, shift=3),
+        nitrate_avg_except_this(site, shift=5),
+    ]
+    return _add_static(site, merge_on_date([n, wb, cb, sb, doy, *lagged_avgs], spine=n.index))
+
+
+# current default general-location classifier
+def recipe_CLF(site, edge=20_000, vel=0.8, lam=5_000, thresh=10, new_name_of_target="nitrate_con"):
+    wb = flatten_buckets(agg_weather_w_lag(site, edges=[edge], exp=False, water_velocity=vel))
+    cb = flatten_buckets(agg_crops(site, edges=[edge], lam=lam, exp=True))
+    sb = flatten_buckets(agg_surplus(site, edges=[edge], lam=lam, exp=True))
+    n = daily_nitrate(site).rename("nitrate_con")
+    sb = _extend_years_forward(sb, n.index.year.max())  # 2017 held constant for 2018+
+    doy = doy_climatology_pure_signal(n)
+    lagged_avgs = [
+        nitrate_avg_except_this(site, shift=1),
+        nitrate_avg_except_this(site, shift=2),
+        nitrate_avg_except_this(site, shift=3),
+        nitrate_avg_except_this(site, shift=5),
+    ]
+    rolling_water = [rolling_precip(site), water_balance(site)]
+    v = nitrate_violations(site, threshold=thresh).rename("violation")
+    return _add_static(site, merge_on_date([v, wb, cb, sb, doy, *lagged_avgs, *rolling_water], spine=n.index))
 
 
 # ----- recipes ------------------------------

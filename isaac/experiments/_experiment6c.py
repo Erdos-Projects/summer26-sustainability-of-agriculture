@@ -27,7 +27,7 @@ from data.transforms import flatten_buckets, merge_on_date, match_seasonal
 from data import get_site_ids
 
 from cook import *
-from recipes2 import _covariates
+from isaac.recipes2 import _covariates
 
 
 def recipe_lagger(lags=[]):

@@ -14,6 +14,10 @@ Spatial covariate aggregates (per site, binned by each cell's distance to the se
   agg_weather_w_lag(site)          agg_weather with each bucket shifted back by its water travel-time lag.
   agg_site_to_buckets(site)        Convenience bundle: (crops, surplus, weather) bucketed for one site.
 
+Antecedent-weather integrators (basin-wide rolling sums; capture catchment wetness)
+  rolling_precip(site, windows)    Antecedent precipitation index: trailing rolling sum of basin-mean daily precip.
+  water_balance(site, windows)     Trailing rolling sum of basin-mean (precip - PET) in mm: a PDSI-lite wetness/drought integrator.
+
 Static & neighbour features
   site_static(site)                Time-invariant site descriptors: sensor lat/lon, log basin area, cell-distance spread.
   lagged_sensor_nitrate(uids, k)   Past daily nitrate of the given site(s), shifted k days back (own history or neighbours).
@@ -109,6 +113,58 @@ def agg_site_to_buckets(site_uid, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, norma
     sb = agg_surplus(site_uid, edges=edges, lam=lam, normalize=normalize, exp=True)
     wb = agg_weather(site_uid, edges=edges, lam=lam, normalize=normalize, exp=False)
     return cb, sb, wb
+
+
+# ── antecedent-weather integrators (basin-wide rolling sums) ──────────────────
+
+
+@lru_cache(maxsize=256)
+def _basin_daily_weather(site_uid):
+    """Basin-wide daily weather: simple mean over all cells per date, date-indexed.
+
+    One row per day (tz-naive DatetimeIndex), columns = the raw weather variables. Memoized
+    per site; the returned frame is shared, so treat it as read-only (copy before mutating).
+    """
+    w = get_data(site_uid).weather
+    daily = w.groupby("date").mean(numeric_only=True)
+    daily.index = pd.DatetimeIndex(daily.index)
+    return daily.sort_index()
+
+
+@lru_cache(maxsize=256)
+def rolling_precip(site_uid, windows=(14, 30, 60)):
+    """Antecedent precipitation index: trailing rolling SUM of basin-mean daily precip.
+
+    For each window w (days) the value on date t is the total basin-mean precip over the
+    `w` days ending at t (inches). Unlike experiment 6's lagged weather (the same daily value
+    shifted), this ACCUMULATES rain over a window, capturing how wet the catchment has been
+    -- the antecedent-moisture state that drives nitrate flushing.
+
+    Precip is an exogenous covariate (not derived from the target), so including today is not
+    leakage. Returns a date-indexed DataFrame, one column per window: 'precip_roll{w}d'.
+    Memoized per (site, windows); treat the result as read-only.
+    """
+    p = _basin_daily_weather(site_uid)["precip_in_1d"]
+    cols = {f"precip_roll{w}d": p.rolling(f"{w}D", min_periods=1).sum() for w in windows}
+    return pd.concat(cols, axis=1)
+
+
+@lru_cache(maxsize=256)
+def water_balance(site_uid, windows=(30, 60)):
+    """Antecedent water balance: trailing rolling SUM of basin-mean (precip - PET), in mm.
+
+    Precip (inches) is converted to mm and reference ET (already mm) subtracted, so each day
+    is net water input (+) or loss (-); the rolling sum over the `w` days ending at t is the
+    running catchment surplus/deficit -- a hand-rolled drought/wetness integrator from the
+    columns we already have (a PDSI-lite). Positive = net wetting, negative = net drying.
+
+    Both inputs are exogenous, so today is not leakage. Returns a date-indexed DataFrame, one
+    column per window: 'wbal_roll{w}d'. Memoized per (site, windows); treat as read-only.
+    """
+    daily = _basin_daily_weather(site_uid)
+    bal = daily["precip_in_1d"] * 25.4 - daily["evapotranspiration"]  # inches -> mm, minus PET (mm)
+    cols = {f"wbal_roll{w}d": bal.rolling(f"{w}D", min_periods=1).sum() for w in windows}
+    return pd.concat(cols, axis=1)
 
 
 @lru_cache(maxsize=256)

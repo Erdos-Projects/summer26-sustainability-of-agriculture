@@ -81,10 +81,10 @@ def make_bucket_recipe(edges, vel):
     return recipe
 
 
-# ── case grid ──────────────────────────────────────────────────────
-LAMS = (2_000, 5_000, 10_000, 20_000)  # decay length (m) for family A
-EDGES = ([5_000], [10_000], [5_000, 15_000])  # bucket boundaries (m) for family B
-VELS = (0.3, 0.8)  # water velocity (m/s) -> weather travel-time lag, family B
+# ── case grid ---------
+LAMS = (2_000, 5_000, 10_000, 20_000)
+EDGES = ([5_000], [10_000], [5_000, 15_000])
+VELS = (0.3, 0.8, 1.5)
 
 
 def _edge_tag(edges):
@@ -104,7 +104,9 @@ def main(sites=None, extra=False):
         sites = [s for s in get_site_ids() if daily_nitrate(s).dropna().shape[0] >= 1500]
     print(f"{len(recipes)} recipes x {len(sites)} sites\n")
 
-    results = compare_many(recipes, sites, extra_importance_test=extra, **FAST_XGB)  # target_col defaults to 'nitrate_con', task='reg'
+    results = compare_many(
+        recipes, sites, extra_importance_test=extra, **FAST_XGB
+    )  # target_col defaults to 'nitrate_con', task='reg'
     print(results.round(3).to_string())
 
     Path("test_results").mkdir(exist_ok=True)

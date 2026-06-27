@@ -44,7 +44,7 @@ from __future__ import annotations
 import warnings
 
 warnings.filterwarnings("ignore")
-import os, sys, time
+import os, sys, time, json
 from typing import Any, Callable, Literal, Sequence, TypeAlias
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -763,6 +763,140 @@ def load_comparison(path: str) -> pd.DataFrame:
             tab = pd.read_csv(fp, index_col=0)  # features x recipes (raw scores)
             out.attrs[key] = {c: tab[c].dropna() for c in tab.columns}
     return out
+
+
+# ── train & persist a deployable model ───────────────────
+
+
+def fit_full(
+    recipe: Recipe,
+    sites: Sequence[str] | None = None,
+    target_col: str = TARGET,
+    task: Task = "reg",
+    val_frac: float = 0.1,
+    seed: int = 42,
+    extra_importance_test: bool = False,
+    final_fit: bool = False,
+    save_path: str | None = None,
+    progress: bool | str = False,
+    **xgb_kw: Any,
+) -> tuple[Model, list[str], dict[str, pd.Series]]:
+    """Fit ONE deployable model on the full pooled dataset (no cross-validation holdout).
+
+    cook_many only produces cross-validated fold-models for *scoring* -- each is trained on
+    N-1 sites, so none is a single model fit on all the data. This pools every usable row
+    across `sites` (same pooling cook_many uses) and fits one estimator suitable for saving
+    and predicting on new sites.
+
+    A `val_frac` random slice is held out (it both picks the early-stopping iteration, when
+    the config uses early_stopping_rounds -- the default does -- and serves as the held-out
+    set for permutation importance). By default the shipped model is the one trained on the
+    rest (1 - val_frac of the rows).
+
+    final_fit=True instead trains the shipped model on 100% of the rows: it first fits on the
+    holdout to learn the early-stopping iteration, then refits on ALL rows at that fixed tree
+    count (early_stopping_rounds disabled). Use this for the deployed model -- it sees every
+    row. (With no early_stopping_rounds configured there's nothing to learn, so it just fits
+    on all rows.)
+
+    Always computes GAIN importance (free, from the shipped model). With
+    extra_importance_test=True also computes PERMUTATION importance on the val_frac holdout
+    using the holdout-trained model (honest -- that model never saw those rows). Both are
+    returned in the importance dict and, if `save_path` is given, written to CSV sidecars.
+
+    If `save_path` is given, also persists the model: '<save_path>' (booster) +
+    '<save_path>.meta.json' + '<stem>_importance.csv' (+ '<stem>_importance_perm.csv').
+
+    Returns (model, feat, importance) where feat is the ordered feature columns the model
+    expects (pass new data as df[feat]) and importance is {"importance": gain Series[,
+    "importance_perm": perm Series]}.
+    """
+    if sites is None:
+        sites = get_site_ids()
+    label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
+    pool = _pool(recipe, sites, target_col, progress_label=label)
+    feat = _features(pool, target_col)
+    X, y = pool[feat], _target(pool, target_col, task)
+
+    cfg = {**_DEFAULT_XGB, **xgb_kw}
+    has_es = bool(cfg.get("early_stopping_rounds"))
+    need_val = has_es or extra_importance_test
+
+    es_model = None  # trained on (1 - val_frac); source of best_iteration and perm importance
+    if need_val:
+        val = np.random.RandomState(seed).rand(len(X)) < val_frac
+        if has_es:
+            es_model = _fit(task, X[~val], y[~val], X[val], y[val], **xgb_kw)
+        else:
+            es_model = _model(task, **xgb_kw)
+            es_model.fit(X[~val], y[~val], verbose=False)
+
+    if final_fit or not need_val:  # shipped model trains on ALL rows
+        final_kw = dict(xgb_kw)
+        if has_es:  # can't early-stop without a holdout -> fix the tree count instead
+            final_kw["early_stopping_rounds"] = None
+            if final_fit:
+                final_kw["n_estimators"] = int(es_model.best_iteration) + 1
+        m = _model(task, **final_kw)
+        m.fit(X, y, verbose=False)
+    else:  # default: ship the holdout-trained model (1 - val_frac of the rows)
+        m = es_model
+
+    importance = {"importance": pd.Series(m.feature_importances_, index=feat).sort_values(ascending=False)}
+    if extra_importance_test:  # perm on the holdout, using the model that never saw it
+        importance["importance_perm"] = _perm_importance([(es_model, np.flatnonzero(val))], X, y, feat, task, seed)
+
+    if save_path is not None:
+        for f in save_model(m, feat, save_path, task=task, target_col=target_col):
+            print(f"  wrote {f}")
+        stem = save_path[:-5] if save_path.endswith(".json") else save_path
+        for f in _save_importance(importance, stem):
+            print(f"  wrote {f}")
+    return m, feat, importance
+
+
+def save_model(model: Model, feat: Sequence[str], path: str, task: Task = "reg", target_col: str = TARGET) -> list[str]:
+    """Persist a fitted model (XGBoost native booster) plus a sidecar of what's needed to use it.
+
+    Writes '<path>' (the booster in XGBoost's version-robust JSON format) and
+    '<path>.meta.json' (the ordered feature columns, task, and target name). The sidecar is
+    what lets you line up new data's columns at predict time. Pair with load_model(). Returns
+    the files written.
+    """
+    model.get_booster().save_model(path)  # booster-level: avoids the sklearn-wrapper save_model quirk
+    meta = {"feat": list(feat), "task": task, "target": target_col, "model_class": type(model).__name__}
+    with open(f"{path}.meta.json", "w") as f:
+        json.dump(meta, f, indent=2)
+    return [path, f"{path}.meta.json"]
+
+
+def _save_importance(importance: dict[str, pd.Series], stem: str) -> list[str]:
+    """Write a single model's importance Series to CSV sidecars ('<stem>_importance.csv' for
+    gain, '<stem>_importance_perm.csv' for permutation), features as the index. Returns files
+    written."""
+    written = []
+    for key, suffix in (("importance", "_importance"), ("importance_perm", "_importance_perm")):
+        s = importance.get(key)
+        if s is not None:
+            fp = f"{stem}{suffix}.csv"
+            s.rename("importance").rename_axis("features").to_frame().to_csv(fp)
+            written.append(fp)
+    return written
+
+
+def load_model(path: str) -> tuple[Model, dict]:
+    """Load a model saved by save_model(). Returns (model, meta).
+
+    meta carries 'feat' (the feature-column order), 'task', and 'target'. Predict with
+        model.predict(new_df[meta["feat"]])                 # regression
+        model.predict_proba(new_df[meta["feat"]])[:, 1]     # classification
+    where new_df is a recipe frame for the site(s) you want to score.
+    """
+    with open(f"{path}.meta.json") as f:
+        meta = json.load(f)
+    m = xgb.XGBClassifier() if meta["task"] == "clf" else xgb.XGBRegressor()
+    m.load_model(path)
+    return m, meta
 
 
 # ── demo / smoke test ───────────────────
