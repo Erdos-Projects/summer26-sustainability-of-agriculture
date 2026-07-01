@@ -45,7 +45,7 @@ os.chdir(_HERE)
 from data.features import daily_nitrate
 from data import get_site_ids
 
-MODES = {"test": 2, "med": 20, "full": None}  # how many sites each mode uses
+MODES = {"test": 2, "small": 8, "med": 20, "full": None}  # how many sites each mode uses
 
 
 def build_sites():

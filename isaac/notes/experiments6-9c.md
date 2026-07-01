@@ -181,15 +181,15 @@ Also both total and surplus nitrate show up as important variables in the shuffl
 
 - **loso_r2** — Leave-one-site-out $R^2$: pooled $R^2$ over out-of-fold predictions where each site is held out once and predicted by a model trained on the others. This is the headline cross-site generalization score, row-weighted so big sites dominate.
 
-- **lofo_r2** — Leave-one-family-out $R^2$: the same idea but folds are whole basin families (hydrologically connected sites) instead of single sites. It is stricter than LOSO because it prevents a site leaking through its connected neighbors, so it is the more honest transfer estimate (and is NaN when there are fewer than 2 families).
+- **lofo_r2** — Leave-one-family-out $R^2$: the same idea but folds are whole site families (connected components of the basin graph) instead of single sites. It is stricter than LOSO (always smaller) because it prevents a site leaking through its connected neighbors, so it is the more honest transfer estimate (and is NaN when there are fewer than 2 families).
 
 - **rmse** — Root mean squared error of the LOSO out-of-fold predictions, in the target's units (mg/L nitrate). Unlike $R^2$ it is an absolute error scale, so lower is better and it is comparable across recipes but not across different targets.
 
-- **between_r2** — $R^2$ of per-site *mean* predicted vs per-site *mean* actual, i.e. does the model rank which sites are high- vs low-nitrate. It collapses each site to one point, so it isolates cross-site *level* prediction — and goes negative when the model cannot place an unseen site's baseline.
+- **between_r2** — $R^2$ of per-site *mean* predicted vs per-site *mean* actual, i.e. is the model good at guessing the mean nitrate levels of a site. It collapses each site to a single point, it's mean nitrate level over the entire test time period for that site, and then $R^2$ errors. If this is positive it's pretty impressive. Basically an attempt at measuring "does the model learn which sites are generally high or low".
 
-- **within_r2** — $R^2$ after subtracting each site's own mean from both actual and predicted, i.e. does the model track day-to-day movement *within* a site. It isolates temporal dynamics from level, so it can be healthy even when `between_r2` is negative.
+- **within_r2** — $R^2$ after subtracting each site's actual mean from both actual and predicted, i.e. does the model do a good job of tracking day-to-day movement away from baseline *within* a site.
 
-- **macro_r2** — The median of the per-site $R^2$ scores, giving every site equal weight regardless of how many rows it has. It complements the row-weighted `loso_r2` by showing the typical-site performance rather than the big-site-dominated average.
+- **macro_r2** — The median of the per-site $R^2$ scores. This gives sites equal measure regardless of how many observations the site has. It's supposed to complement the row-weighted `loso_r2` by showing the *typical*-site performance rather than the big-site-dominated average.
 
 
 ## Classification score table columns (e.g. `_experiment6c.csv`)

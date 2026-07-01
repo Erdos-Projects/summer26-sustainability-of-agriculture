@@ -190,6 +190,43 @@ def _per_site_score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, tas
     return r2_score(y, pred) if (len(y) > 1 and np.std(y) > 0) else np.nan
 
 
+def _persistence_pred(site: np.ndarray, date: np.ndarray, y: np.ndarray) -> np.ndarray:
+    """Per-site 'predict yesterday's target', aligned to (site, date, y) on a daily grid so the
+    prediction at t is that site's value at t-1 (NaN where the prior calendar day is absent). The
+    reference baseline -- it 'cheats' by using the site's own history, but it's the standard strong
+    baseline to score against, and normalising by it is comparable across target definitions."""
+    df = pd.DataFrame({"date": pd.to_datetime(np.asarray(date)), "y": np.asarray(y, dtype=float)})
+    df["site"] = np.asarray(site)
+    out = np.full(len(df), np.nan)
+    for _, g in df.groupby("site", sort=False):
+        g = g.sort_values("date")
+        s = pd.Series(g["y"].to_numpy(), index=g["date"])
+        out[g.index.to_numpy()] = s.asfreq("D").shift(1).reindex(g["date"]).to_numpy()
+    return out
+
+
+def _persistence_skill(y: np.ndarray, pred: np.ndarray, persist: np.ndarray) -> float:
+    """1 - MSE(model)/MSE(persistence) over rows where all three are defined (squared error for
+    both tasks -> a Brier skill score for the 0/1 clf target). >0 beats 'predict yesterday', 0
+    ties it, <0 is worse. Because it normalises by each target's OWN persistence difficulty, it is
+    comparable ACROSS different target definitions, unlike raw R2 / RMSE / AUC."""
+    y, pred, persist = np.asarray(y, float), np.asarray(pred, float), np.asarray(persist, float)
+    m = ~(np.isnan(y) | np.isnan(pred) | np.isnan(persist))
+    if m.sum() == 0:
+        return float("nan")
+    mse_model = np.mean((y[m] - pred[m]) ** 2)
+    mse_persist = np.mean((y[m] - persist[m]) ** 2)
+    return float(1 - mse_model / mse_persist) if mse_persist > 0 else float("nan")
+
+
+def _spearman(y: np.ndarray, pred: np.ndarray) -> float:
+    """Pooled Spearman rank correlation of prediction vs actual -- scale-free, so comparable
+    across targets (a rolling-max target and a daily-max target are ranked on the same footing).
+    NaN if fewer than 2 paired non-NaN rows."""
+    s = pd.DataFrame({"y": np.asarray(y, float), "p": np.asarray(pred, float)}).dropna()
+    return float(s["y"].corr(s["p"], method="spearman")) if len(s) >= 2 else float("nan")
+
+
 def basin_groups(sites_mega_series: pd.Series) -> pd.Series:
     """Take in the mega multi-site dataframe but only the sites_uid column
 
@@ -461,19 +498,20 @@ def cook_many(
         fold_models.append((m, te))
 
     basin_grp = basin_groups(pool["site"])
-    n_basins = pd.Series(basin_grp).nunique()
-    if n_basins < 2:  # leave-one-basin-out needs >=2 families to hold one out
+    n_families = pd.Series(basin_grp).nunique()
+    if n_families < 2:  # leave-one-basin-out needs >=2 families to hold one out
         print(
-            f"  [LOFO skipped] {n_basins} basin family across these {pool['site'].nunique()} "
+            f"  [LOFO skipped] {n_families} basin family across these {pool['site'].nunique()} "
             f"sites (need >=2) -- lofo_* = NaN",
             file=sys.stderr,
         )
-    oof_basin = _grouped_oof(X, y, basin_grp, task, n_splits, **xgb_kw)
+    oof_family = _grouped_oof(X, y, basin_grp, task, n_splits, **xgb_kw)
     out = dict(
         n_sites=pool["site"].nunique(),
+        n_families=int(n_families),  # # of basin families = # of LOFO groups (low -> noisy LOFO)
         n_rows=len(pool),
         n_feat=len(feat),
-        **_cross_metrics(pool, np.asarray(y), oof_site, oof_basin, task),
+        **_cross_metrics(pool, np.asarray(y), oof_site, oof_family, task),
         importance=_gain_importance(fold_models, feat),  # always (free)
     )
 
@@ -495,7 +533,7 @@ def _cross_metrics(
     pool: pd.DataFrame,
     y: np.ndarray,
     oof_site: np.ndarray,
-    oof_basin: np.ndarray,
+    oof_family: np.ndarray,
     task: Task,
 ) -> dict[str, float]:
     site = pool["site"].to_numpy()
@@ -503,13 +541,17 @@ def _cross_metrics(
     site_means = tab.groupby("g")[["y", "p"]].mean()  # per-site level
     per_site = tab.groupby("g").apply(lambda d: _per_site_score(d.y, d.p, task))
     overall = _score(y, oof_site, task)
+    # skill vs the persistence ("predict yesterday") baseline -- comparable across targets
+    persist = _persistence_pred(site, pool["date"].to_numpy(), y)
+    persist_skill = _persistence_skill(y, oof_site, persist)
 
     if task == "clf":
         return dict(
             loso_auc=overall["auc"],
-            lofo_auc=_score(y, oof_basin, task)["auc"],
+            lofo_auc=_score(y, oof_family, task)["auc"],
             prauc=overall["prauc"],
             brier=overall["brier"],
+            persist_skill=persist_skill,  # Brier skill vs predict-yesterday (>0 beats it)
             base=overall["base"],
             between_rate_r2=r2_score(site_means.y, site_means.p),  # ranks violation rates
             macro_auc=float(np.nanmedian(per_site)),
@@ -518,8 +560,10 @@ def _cross_metrics(
     pm = tab.groupby("g")["p"].transform("mean").to_numpy()
     return dict(
         loso_r2=overall["r2"],
-        lofo_r2=_score(y, oof_basin, task)["r2"],
+        lofo_r2=_score(y, oof_family, task)["r2"],
         rmse=overall["rmse"],
+        persist_skill=persist_skill,  # 1 - MSE/MSE(persistence); comparable across targets
+        spearman=_spearman(y, oof_site),  # rank corr of pred vs actual; scale-free
         between_r2=r2_score(site_means.y, site_means.p),  # ranks site levels
         within_r2=r2_score(y - sm, oof_site - pm),  # daily, level removed
         macro_r2=float(np.nanmedian(per_site)),

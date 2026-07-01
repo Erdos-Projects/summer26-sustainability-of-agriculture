@@ -16,8 +16,7 @@ from data.features import (
     nitrate_avg_calendar,
     doy_climatology_pure_signal,
     site_static,
-    rolling_precip,
-    water_balance,
+    rolling_nitrate_avg_except_this,
 )
 from functools import lru_cache
 from data.transforms import flatten_buckets, merge_on_date, match_seasonal
@@ -69,7 +68,8 @@ def recipe_REG(site, edge=20_000, vel=0.8, lam=5_000, new_name_of_target="nitrat
         nitrate_avg_except_this(site, shift=3),
         nitrate_avg_except_this(site, shift=5),
     ]
-    return _add_static(site, merge_on_date([n, wb, cb, sb, doy, *lagged_avgs], spine=n.index))
+    roll_except_this = rolling_nitrate_avg_except_this(site, windows=(7, 14, 30, 60))
+    return _add_static(site, merge_on_date([n, wb, cb, sb, doy, *lagged_avgs, roll_except_this], spine=n.index))
 
 
 # current default general-location classifier
@@ -86,9 +86,9 @@ def recipe_CLF(site, edge=20_000, vel=0.8, lam=5_000, thresh=10, new_name_of_tar
         nitrate_avg_except_this(site, shift=3),
         nitrate_avg_except_this(site, shift=5),
     ]
-    rolling_water = [rolling_precip(site), water_balance(site)]
+    roll_except_this = rolling_nitrate_avg_except_this(site, windows=(7, 14, 30, 60))
     v = nitrate_violations(site, threshold=thresh).rename("violation")
-    return _add_static(site, merge_on_date([v, wb, cb, sb, doy, *lagged_avgs, *rolling_water], spine=n.index))
+    return _add_static(site, merge_on_date([v, wb, cb, sb, doy, *lagged_avgs, roll_except_this], spine=n.index))
 
 
 # ----- recipes ------------------------------

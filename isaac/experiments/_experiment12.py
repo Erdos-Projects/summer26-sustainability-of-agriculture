@@ -76,9 +76,19 @@ def make_recipe(extend):
     return recipe
 
 
+def recipe_none_surplus(site):
+    n = daily_nitrate(site).rename("nitrate_con")
+    wb = flatten_buckets(agg_weather_w_lag(site, edges=[EDGE], exp=False, water_velocity=VEL))
+    cb = flatten_buckets(agg_crops(site, edges=[EDGE], lam=LAM, exp=True))
+    # sb = flatten_buckets(agg_surplus(site, edges=[EDGE], lam=LAM, exp=True))
+    doy = doy_climatology_pure_signal(n)
+    return _add_static(site, merge_on_date([n, wb, cb, doy], spine=n.index))
+
+
 recipes = {
+    "none_surplus": recipe_none_surplus,
     "surplus_stop2017": make_recipe(False),
-    "surplus_extended": make_recipe(True),
+    # "surplus_extended": make_recipe(True),
 }
 
 
@@ -87,11 +97,13 @@ def main(sites=None, extra=False):
         sites = [s for s in get_site_ids() if daily_nitrate(s).dropna().shape[0] >= 1500]
     print(f"{len(recipes)} recipes x {len(sites)} sites\n")
 
-    results = compare_many(recipes, sites, extra_importance_test=extra, **FAST_XGB)  # target_col defaults to 'nitrate_con', task='reg'
+    results = compare_many(
+        recipes, sites, extra_importance_test=extra, **FAST_XGB
+    )  # target_col defaults to 'nitrate_con', task='reg'
     print(results.round(3).to_string())
 
     Path("test_results").mkdir(exist_ok=True)
-    save_comparison(results, f"test_results/{Path(__file__).stem}.csv")
+    # save_comparison(results, f"test_results/{Path(__file__).stem}.csv")
 
 
 if __name__ == "__main__":

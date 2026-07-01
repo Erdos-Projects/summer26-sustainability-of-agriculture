@@ -149,6 +149,12 @@ def rolling_precip(site_uid, windows=(14, 30, 60)):
     return pd.concat(cols, axis=1)
 
 
+def rolling_nitrate_avg_except_this(site_to_exclude, windows=(14, 30, 60)):
+    n = nitrate_avg_except_this(site_to_exclude=site_to_exclude)
+    cols = {f"roll_n_avg_except_this{w}d": n.rolling(f"{w}D", min_periods=1).mean() for w in windows}
+    return pd.concat(cols, axis=1)
+
+
 @lru_cache(maxsize=256)
 def water_balance(site_uid, windows=(30, 60)):
     """Antecedent water balance: trailing rolling SUM of basin-mean (precip - PET), in mm.
@@ -180,6 +186,25 @@ def daily_nitrate(site_uid, agg_meth="max"):
     return nitrate.resample("1D").agg(agg_meth)
 
 
+def nitrate_daily_rolling(site_uid, window=7, min_obs=1, agg_meth="max"):
+    """Regression target: the max daily nitrate over the trailing `window` days (today
+    inclusive). A smoothed/peak-tracking version of daily_nitrate -- it shrugs off single
+    missing days and emphasizes the recent worst case.
+
+    NaN handling is just coverage, not the asymmetric OR of nitrate_violations_rolling:
+    the rolling max ignores missing days and is a LOWER bound on the true window max (a gap
+    could hide a higher day), so a window needs >= min_obs observed days to emit a value;
+    fewer than that -> NaN, dropped before training like daily_nitrate itself. min_obs=1
+    keeps the most rows but trusts a single day to stand in for the whole window; raise it
+    (e.g. 3-4 of 7) for max estimates backed by more coverage.
+    """
+    daily = daily_nitrate(site_uid, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
+    n_obs = daily.notna().rolling(window, min_periods=1).sum()
+    rolled = daily.rolling(window, min_periods=1).max()  # max skips NaN days
+    rolled[n_obs < min_obs] = np.nan  # too few observed days -> undecidable
+    return rolled.rename("nitrate_daily_rolling")
+
+
 def nitrate_violations(site_uid, threshold=10, agg_meth="max"):
     """Binary target: 1 if the day's nitrate is at or above `threshold` (default 10
     mg/L, the drinking-water limit), else 0.
@@ -192,6 +217,69 @@ def nitrate_violations(site_uid, threshold=10, agg_meth="max"):
     viol = (daily >= threshold).astype("Int8")
     viol[daily.isna()] = pd.NA
     return viol.rename("nitrate_violations")
+
+
+def nitrate_violations_rolling(site_uid, window=7, threshold=10, min_obs=1, agg_meth="max"):
+    """Binary target: 1 if ANY day in the trailing `window` days (today inclusive) was a
+    violation (daily nitrate >= threshold), 0 if the window was OBSERVED-and-clean, <NA>
+    when there isn't enough data to decide.
+
+    NaN handling is asymmetric because "any violation in the window" is an OR: one confirmed
+    violation day forces 1 (missing days can't undo a real exceedance), but a 0 requires
+    >= min_obs observed, non-violating days (a window can't be certified clean from gaps).
+    Everything else stays <NA> and is dropped before training, exactly like daily_nitrate
+    and the instantaneous nitrate_violations target.
+
+    `min_obs` trades data retention against label trust: 1 mirrors the instantaneous target
+    (a single clean day certifies the window); raise it (e.g. 3-4 of 7) for stricter
+    negatives at the cost of dropping sparse windows. Build via daily max (agg_meth) so any
+    intraday exceedance counts, same as nitrate_violations.
+
+    Note: (daily >= threshold) maps NaN days to False, so missing days are masked via
+    notna() and never silently counted as non-violations.
+    """
+    daily = daily_nitrate(site_uid, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
+    obs = daily.notna()
+    viol_day = (daily >= threshold) & obs  # True only on OBSERVED violation days
+    n_obs = obs.rolling(window, min_periods=1).sum()
+    n_viol = viol_day.rolling(window, min_periods=1).sum()
+
+    out = pd.Series(pd.NA, index=daily.index, dtype="Int8")
+    out[n_obs >= min_obs] = 0  # enough clean evidence -> 0
+    out[n_viol >= 1] = 1  # a confirmed exceedance always wins -> 1 (set last)
+    return out.rename("nitrate_violations_rolling")
+
+
+def nitrate_anomaly_z(site_uid, window=21, min_obs=5, agg_meth="max"):
+    """Standardized anomaly z(t) = (x(t) - mean) / std, where mean/std are over the TRAILING
+    `window` days ending yesterday (today excluded -> no leakage). A site-relative measure of how
+    far today's nitrate sits from its own recent baseline, in baseline-std units -- a 'spike' is a
+    large positive z. Because it's relative to each site's own mean and scale, it targets the
+    within-site dynamics rather than the between-site level the absolute targets struggle with.
+
+    The trailing window skips missing days and needs >= min_obs observed days to define the
+    baseline. z(t) is NaN where today is unobserved, the baseline has < min_obs days, or the
+    baseline std is 0 (a flat baseline -> no scale to standardize against); those rows drop before
+    training like the other targets. Continuous -> the regression spike target; threshold it for
+    the classification one (see nitrate_spike)."""
+    daily = daily_nitrate(site_uid, agg_meth=agg_meth).asfreq("D")  # contiguous daily grid
+    prev = daily.shift(1)  # baseline ends yesterday -> today never enters its own baseline
+    mean = prev.rolling(window, min_periods=min_obs).mean()
+    std = prev.rolling(window, min_periods=min_obs).std()
+    z = (daily - mean) / std.where(std > 0)  # std == 0 / NaN -> NaN (undefined anomaly)
+    return z.rename("nitrate_anomaly_z")
+
+
+def nitrate_spike(site_uid, window=21, k=2.0, min_obs=5, agg_meth="max"):
+    """Binary spike target: 1 if today's standardized anomaly z(t) >= k, else 0; NaN where z is
+    undecidable (see nitrate_anomaly_z). A 'spike' = today's nitrate sits at least k baseline-std
+    above the site's own trailing mean -- a site-relative, event-like deviation rather than an
+    absolute level. Built from nitrate_anomaly_z so the regression (z) and classification (spike)
+    targets stay consistent."""
+    z = nitrate_anomaly_z(site_uid, window=window, min_obs=min_obs, agg_meth=agg_meth)
+    spike = (z >= k).astype("Int8")
+    spike[z.isna()] = pd.NA  # NaN >= k is False, so restore NaN where the anomaly is undecidable
+    return spike.rename("nitrate_spike")
 
 
 def lagged_sensor_nitrate(site_uids, shift, agg_meth="max"):

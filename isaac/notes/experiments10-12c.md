@@ -1,4 +1,156 @@
-# Experiments 10, 10c, 11, 11c, 12, 12c
+# Full model run
+
+Best features:
+* statewide nitrate except this site yesterday/2 days ago/etc
+* latitude, longitude
+* land use (nonag, soybeans, corn, total_kg_N)
+* fuel_moisture_1000h for some reason
+* doy_sin/cos
+
+Things we can realistically model I think:
+* With a live statewide sensor network can predict an unseen site's nitrate level to `lofo_r2` ≈ 0.30 and can classify violation days with `lofo_auc` ≈ 0.82 (accuracy with leave out one family). Can probably do better with more tuning and leaving out bad features (rolling precip, baseline water, maybe even nitrate surplus?)
+* "will this day exceed 10mg/L" seems like the deployable target, it generalizes well to unseen basins even from just land use + weather + seasonality. Exact nitrogen concentration way harder, as expected.
+
+Things that would be nice to add (but I don't think we should)
+* stream discharge/flow (would be new data at IWQIS, USGS sites have it already)
+* weighted statewise nitrate by proximity/effect, hard to get/compute this
+* tile-drainage/soil-drainage info, could be obtained from SDA, but would be super annoying due to quirks of the Soil Survey data
+* groundwater contribution (how?)
+* upstream pollution source (how?)
+
+
+#### Regression Results:
+|recipe|n_sites|n_rows|n_feat|loso_r2|lofo_r2|rmse|between_r2|within_r2|macro_r2|
+|-|-|-|-|-|-|-|-|-|-|
+|recipe_REG1|80|160074|49|0.3867143853016163|0.2969753085683242|4.333739304881686|0.2218880575763181|0.4034734341534287|0.2148661911419198|
+|recipe_REG1.1|80|160074|53|0.3862454096282613|0.3007417421106281|4.33539597989904|0.170500826589815|0.4205302664657541|0.2348099524397399|
+
+#### Exp models/recipe_REG1 Feature Importance XGBoost
+(Top 12 kept for each column)
+|features|recipe_REG1|
+|-|-|
+|rest_of_state_nitrate_lag1|0.11943444|
+|lat|0.11920109|
+|rest_of_state_nitrate_lag2|0.081969105|
+|log_basin_area|0.07125277|
+|max_dist_to_sensor|0.06431921|
+|mean_dist_to_sensor|0.059197336|
+|lon|0.049699448|
+|rest_of_state_nitrate_lag3|0.032135047|
+|total_kg_N_b0|0.025927627|
+|surplus_kgha_b0|0.023251582|
+|Alfalfa_b1|0.022484068|
+|total_kg_N_b1|0.02243711|
+
+#### Exp models/recipe_REG1 Feature Importance Col Shuffle
+(Top 12 kept for each column)
+|features|recipe_REG1|
+|-|-|
+|rest_of_state_nitrate_lag1|0.137302714658248|
+|lat|0.1023564744104964|
+|Nonag_b0|0.0661153355555913|
+|fuel_moisture_1000h_b1|0.0312348938627558|
+|Soybeans_b0|0.0263034641637942|
+|doy_cos|0.0259184827892206|
+|Other_b0|0.0253243271418093|
+|mean_dist_to_sensor|0.0248255927700502|
+|lon|0.024439420182633|
+|doy_sin|0.0239678637384701|
+|log_basin_area|0.023645788800462|
+|Hay_Pasture_b0|0.0215531598932214|
+
+
+#### Classification Results
+|recipe|n_sites|n_rows|n_feat|loso_auc|lofo_auc|prauc|brier|base|between_rate_r2|macro_auc|
+|-|-|-|-|-|-|-|-|-|-|-|
+|recipe_CLF1|80|160074|54|0.844212002711415|0.8236680412527867|0.6919980477855588|0.1383109624486463|0.2626847582992865|0.1528189156460403|0.9025626314782942|
+|recipe_CLF1.1|80|160074|53|0.8413091062515001|0.8170238979771478|0.6901833601839927|0.1390727981163664|0.2626847582992865|0.2044539343132374|0.9005241262802239|
+
+#### Exp models/recipe_CLF1 Feature Importance XGBoost
+(Top 12 kept for each column)
+|features|recipe_CLF1|
+|-|-|
+|rest_of_state_nitrate_lag1|0.11197402|
+|max_dist_to_sensor|0.07463344|
+|mean_dist_to_sensor|0.06829254|
+|lat|0.06392017|
+|rest_of_state_nitrate_lag2|0.0525944|
+|lon|0.044951625|
+|rest_of_state_nitrate_lag3|0.040149074|
+|log_basin_area|0.039124332|
+|total_kg_N_b1|0.026312914|
+|surplus_kgha_b0|0.025599644|
+|Corn_b0|0.024177978|
+|total_kg_N_b0|0.02391933|
+
+#### Exp models/recipe_CLF1 Feature Importance Col Shuffle
+(Top 12 kept for each column)
+|features|recipe_CLF1|
+|-|-|
+|rest_of_state_nitrate_lag1|0.0408899048196702|
+|doy_sin|0.022921881462287|
+|lat|0.0151968764159769|
+|lon|0.0136608130113002|
+|Nonag_b0|0.0089102322149579|
+|mean_dist_to_sensor|0.0072455570371064|
+|wbal_roll60d|0.0069288175780315|
+|Other_b0|0.0052788493119492|
+|precip_roll14d|0.0050888109352837|
+|fuel_moisture_1000h_b1|0.0045819282202427|
+|max_dist_to_sensor|0.0035277279063158|
+|precip_roll30d|0.002794583073563|
+
+
+
+# Experiments 10, 10c, 11, 11c, 12, 12c, First Full Model Run
+
+Each num/numc pair goes together, just regression vs classificaiton. Data/scores/feature importance ranks down below, here are the results first.
+
+### Experiment 10/10c
+
+Searching for optimal bucket edge/water velocity/LAM values. Grid search over 
+
+edge (m) in {5_000, 15_000, 50_000}     -- one inner/outer boundary
+
+VEL  (m/s) in {0.3, 1.2, 2.1}           -- weather travel-time lag
+
+LAM  (m)  in {2_000, 20_000, 100_000}   -- crop/surplus distance-decay length
+
+so 27 total recipes.
+
+Best `lofo_r2` score for regression: edge = 50k, vel = 2.1, lam = 100k. Look at model `e50k_v2.1_l100k` in the table.
+
+Best `lofo_auc` score for classification: edge = 5k, vel = 2.1, lam = 20k. Look at model `e5k_v2.1_l20k` in the table.
+
+### Experiment 11/11c
+
+Q: Does including rolling precipitation averages and water_balance (precipitation - evaporation) improve models:
+
+A: Nope. It makes it worse. Don't include them.
+
+### Experiment 12/12c
+
+Q: Does extending the 2017 surplus data into 2018-2025 improve the models?
+
+A: Nope, not as I did it anyways (just copy 2017 to 2018-2025). Makes regression much worse and classification slightly worse. I reran it with only the "up to 2017 model" and another model with NO surplus data of any kind, and 2017 won there again. The importance and importance_perm columns are missing because the scores clearly show nitrate helps, so I just copied in the row missing from the original run (the none_surplus run). It seems like the surplus is important and that its change over time does in fact tell the model something.
+
+#### 12
+|recipe|n_sites|n_rows|n_feat|loso_r2|lofo_r2|rmse|between_r2|within_r2|macro_r2|
+|-|-|-|-|-|-|-|-|-|-|
+|none_surplus|20|64807|41|-0.1259583746043999|-0.1515571230885939|5.013059517346944|-2.701027683568514|0.2461545773968004|0.2191876887466731|
+|surplus_stop2017|20|64807|45|-0.0265033509985574|0.0131084614398341|4.786542052538254|-2.1816772261030426|0.2964520813786319|0.2439140868389688|
+|surplus_extended|20|64807|45|-0.1551543950901639|-0.1663296430845087|5.0776377076745955|-2.920618889783735|0.2757083409280964|0.1289553912420434|
+
+#### 12c
+|recipe|n_sites|n_rows|n_feat|loso_auc|lofo_auc|prauc|brier|base|between_rate_r2|macro_auc|
+|-|-|-|-|-|-|-|-|-|-|-|
+|none_surplus|20|64807|41|0.7999238775634382|0.7785244760700101|0.5096715290995611|0.1456875000154044|0.2153316771336429|-0.2852470287835391|0.8719896793735047|
+|surplus_stop2017|20|64807|45|0.8095364758784762|0.79600764421763|0.5257006700283002|0.1434997359115581|0.2153316771336429|-0.3437422457768753|0.8820439759876173|
+|surplus_extended|20|64807|45|0.7857603850664152|0.7774287453156156|0.4996715712782904|0.1521775251840391|0.2153316771336429|-0.3903662446986147|0.8671007612367903|
+
+
+# Data
+## Full model regression
 
 ## 10
 |recipe|n_sites|n_rows|n_feat|loso_r2|lofo_r2|rmse|between_r2|within_r2|macro_r2|
@@ -83,17 +235,7 @@
 
 ## 12
 
-|recipe|n_sites|n_rows|n_feat|loso_r2|lofo_r2|rmse|between_r2|within_r2|macro_r2|
-|-|-|-|-|-|-|-|-|-|-|
-|surplus_stop2017|20|64807|45|-0.0265033509985574|0.0131084614398341|4.786542052538254|-2.1816772261030426|0.2964520813786319|0.2439140868389688|
-|surplus_extended|20|64807|45|-0.1551543950901639|-0.1663296430845087|5.0776377076745955|-2.920618889783735|0.2757083409280964|0.1289553912420434|
-
 ## 12c
-
-|recipe|n_sites|n_rows|n_feat|loso_auc|lofo_auc|prauc|brier|base|between_rate_r2|macro_auc|
-|-|-|-|-|-|-|-|-|-|-|-|
-|surplus_stop2017|20|64807|45|0.8095364758784762|0.79600764421763|0.5257006700283002|0.1434997359115581|0.2153316771336429|-0.3437422457768753|0.8820439759876173|
-|surplus_extended|20|64807|45|0.7857603850664152|0.7774287453156156|0.4996715712782904|0.1521775251840391|0.2153316771336429|-0.3903662446986147|0.8671007612367903|
 
 ## REG1
 

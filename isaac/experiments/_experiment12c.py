@@ -63,9 +63,20 @@ def make_recipe(extend):
     return recipe
 
 
+def recipe_none_surplus(site):
+    n = daily_nitrate(site).rename("nitrate_con")
+    wb = flatten_buckets(agg_weather_w_lag(site, edges=[EDGE], exp=False, water_velocity=VEL))
+    cb = flatten_buckets(agg_crops(site, edges=[EDGE], lam=LAM, exp=True))
+    # sb = flatten_buckets(agg_surplus(site, edges=[EDGE], lam=LAM, exp=True))
+    doy = doy_climatology_pure_signal(n)
+    v = nitrate_violations(site).rename("violation")
+    return _add_static(site, merge_on_date([v, wb, cb, doy], spine=n.index))
+
+
 recipes = {
+    "none_surplus": recipe_none_surplus,
     "surplus_stop2017": make_recipe(False),
-    "surplus_extended": make_recipe(True),
+    # "surplus_extended": make_recipe(True),
 }
 
 
