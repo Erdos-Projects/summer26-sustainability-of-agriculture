@@ -48,6 +48,7 @@ _RAW_DIR = _THIS_DIR / "crops_raw"
 _CLIP_DIR = _RAW_DIR / "clipped"  # regional CDL clips (built by clip_crops.py)
 _DATA_DIR = _THIS_DIR / "crops_data"
 _GRID_AGG_DIR = _DATA_DIR / "grid"  # per-site crops aggregated onto the rain grid
+_GRID_SRC_DIR = _THIS_DIR.parent / "weather" / "weather_grid"  # weather grids the crops aggregate depends on
 _MANIFEST_FILE = _GRID_AGG_DIR / ".basin_manifest.csv"
 
 sys.path.insert(0, str(_THIS_DIR.parents[1]))
@@ -140,11 +141,37 @@ def aggregate_site_crops(grid, years, classes, code_to_classidx) -> pd.DataFrame
     return pd.concat(frames, ignore_index=True)
 
 
+def crops_grid(*, grid=None, site_uid=None, years=None, remap=cdl_to_class) -> pd.DataFrame | None:
+    """Aggregate CDL crops onto a grid, for a real site OR an in-memory (virtual) grid.
+
+    Provide exactly one of:
+      * grid      — an in-memory grid GeoDataFrame (e.g. from
+                    make_grid.build_grid_from_basin), for an ungauged/virtual site.
+      * site_uid  — loads that site's stored grid via get_grid.
+
+    Returns the same per-(node_id, year) frame that write_site_crops persists to
+    crops_data/grid/ — columns node_id, global_node_id, year, then one integer
+    pixel-count column per CDL class — or None if no requested year yields pixels.
+
+    `years` defaults to the configured YEARS (pass e.g. [2017] to read a single
+    CDL clip); `remap` is the CDL code->class function (default cdl_to_class), so
+    the class columns match the batch build.
+    """
+    if (grid is None) == (site_uid is None):
+        raise ValueError("provide exactly one of grid= or site_uid=")
+    if grid is None:
+        grid = get_grid(site_uid)
+    classes, code_to_classidx = _build_luts(remap)
+    return aggregate_site_crops(grid, list(years) if years is not None else list(YEARS), classes, code_to_classidx)
+
+
 def write_site_crops(
     site_uid: str, years: list, classes: list[str], code_to_classidx: np.ndarray, force: bool = False
 ) -> bool:
     out = _grid_path(site_uid)
-    if out.exists() and not force:
+    # Rebuild if forced, missing, or stale relative to the weather grid it depends on
+    # (a rebuilt grid must propagate even when the file already exists).
+    if out.exists() and not force and not _grid_agg_stale(site_uid):
         return False
     try:
         grid = get_grid(site_uid)
@@ -167,6 +194,22 @@ def write_site_crops(
     return True
 
 
+def _grid_agg_stale(site_uid: str) -> bool:
+    """True if the site's crops_grid parquet predates the weather grid it was built on.
+
+    The crops aggregate is keyed to weather_grid/{uid}_grid.parquet; if that grid was
+    rebuilt (newer mtime) after the crops were written, the aggregate is stale even when
+    the basin name is unchanged. Modification time (not creation/birth time) is the right
+    signal: to_parquet overwrites in place, so a rebuild bumps mtime but not birthtime.
+    Missing inputs -> not stale here (existence is handled separately).
+    """
+    grid_path = _GRID_SRC_DIR / f"{site_uid}_grid.parquet"
+    out_path = _grid_path(site_uid)
+    if not grid_path.exists() or not out_path.exists():
+        return False
+    return grid_path.stat().st_mtime > out_path.stat().st_mtime
+
+
 def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     manifest = {}
     if _MANIFEST_FILE.exists():
@@ -175,7 +218,9 @@ def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     return [
         row["site_uid"]
         for _, row in preferred_meta.iterrows()
-        if not _grid_path(row["site_uid"]).exists() or manifest.get(row["site_uid"]) != row["basin_name"]
+        if not _grid_path(row["site_uid"]).exists()
+        or manifest.get(row["site_uid"]) != row["basin_name"]
+        or _grid_agg_stale(row["site_uid"])
     ]
 
 

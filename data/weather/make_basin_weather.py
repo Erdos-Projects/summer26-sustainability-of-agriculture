@@ -67,6 +67,64 @@ def _site_date_range(site_uid: str, stats: pd.DataFrame) -> tuple[pd.Timestamp, 
     return start, end
 
 
+def weather_for_grid(grid, *, start=None, end=None, years=None, avail_years=None) -> pd.DataFrame:
+    """Slice the global yearly weather files onto an in-memory grid's cells.
+
+    The site_uid-free core of build_site_weather: given a grid (any frame with node_id +
+    global_node_id, e.g. from make_grid.build_grid_from_basin), returns weather in the
+    per-site get_weather schema — one row per (cell, day): date, node_id, global_node_id,
+    then the weather variables — for a real site OR an ungauged/virtual grid.
+
+    start/end : optional inclusive date bounds (pd.Timestamp-like). Pass a virtual
+                site's window (e.g. TARGET_YEAR +/- 2 months) so trailing rolling/lag
+                features have lead-in/out around the year.
+    years     : which global weather years to read; defaults to the years spanning
+                [start, end], or all available years if both are None.
+    avail_years : the built global-weather years (defaults to _available_years()).
+
+    Values are cast to float32 and node ids to int32, matching the stored per-site
+    weather, so aggregates built from a virtual grid are bit-compatible with real ones.
+    """
+    if avail_years is None:
+        avail_years = _available_years()
+    avail = set(avail_years)
+
+    if years is None:
+        if start is not None and end is not None:
+            years = [y for y in avail_years if pd.Timestamp(start).year <= y <= pd.Timestamp(end).year]
+        else:
+            years = list(avail_years)
+    else:
+        years = [y for y in years if y in avail]
+
+    cells = grid["global_node_id"].tolist()
+    gid2node = dict(zip(grid["global_node_id"], grid["node_id"]))
+
+    frames = []
+    for y in years:
+        gf = _GLOBAL_DIR / f"global_grid_weather_{y}.parquet"
+        # predicate pushdown: read only this grid's cells, not the whole year
+        df = pd.read_parquet(gf, filters=[("global_node_id", "in", cells)])
+        if start is not None:
+            df = df[df["date"] >= pd.Timestamp(start)]
+        if end is not None:
+            df = df[df["date"] <= pd.Timestamp(end)]
+        frames.append(df)
+
+    if not frames or sum(len(f) for f in frames) == 0:
+        return pd.DataFrame(columns=_COLUMN_ORDER)
+
+    df = pd.concat(frames, ignore_index=True)
+    df["node_id"] = df["global_node_id"].map(gid2node)
+    df = df[_COLUMN_ORDER].sort_values(["date", "node_id"], ignore_index=True)
+
+    # shrink: float32 weather values + int32 node ids
+    float_cols = df.select_dtypes("float64").columns
+    df[float_cols] = df[float_cols].astype("float32")
+    df[["node_id", "global_node_id"]] = df[["node_id", "global_node_id"]].astype("int32")
+    return df
+
+
 def build_site_weather(site_uid: str, stats: pd.DataFrame, avail_years: list[int]) -> bool:
     """Write one {site_uid}_weather.parquet. Returns True if written."""
     grid_path = _GRID_DIR / f"{site_uid}_grid.parquet"
@@ -80,30 +138,11 @@ def build_site_weather(site_uid: str, stats: pd.DataFrame, avail_years: list[int
     start, end = rng
 
     grid = gpd.read_parquet(grid_path)[["node_id", "global_node_id"]]
-    cells = grid["global_node_id"].tolist()
-    gid2node = dict(zip(grid["global_node_id"], grid["node_id"]))
+    df = weather_for_grid(grid, start=start, end=end, avail_years=avail_years)
 
-    years = [y for y in avail_years if start.year <= y <= end.year]
-    frames = []
-    for y in years:
-        gf = _GLOBAL_DIR / f"global_grid_weather_{y}.parquet"
-        # predicate pushdown: read only this site's cells, not the whole year
-        df = pd.read_parquet(gf, filters=[("global_node_id", "in", cells)])
-        df = df[(df["date"] >= start) & (df["date"] <= end)]
-        frames.append(df)
-
-    if not frames or sum(len(f) for f in frames) == 0:
-        print(f"  [SKIP] {site_uid}: no weather in {start.date()}..{end.date()} (years {years})")
+    if df.empty:
+        print(f"  [SKIP] {site_uid}: no weather in {start.date()}..{end.date()}")
         return False
-
-    df = pd.concat(frames, ignore_index=True)
-    df["node_id"] = df["global_node_id"].map(gid2node)
-    df = df[_COLUMN_ORDER].sort_values(["date", "node_id"], ignore_index=True)
-
-    # shrink: float32 weather values + int32 node ids, zstd-compressed
-    float_cols = df.select_dtypes("float64").columns
-    df[float_cols] = df[float_cols].astype("float32")
-    df[["node_id", "global_node_id"]] = df[["node_id", "global_node_id"]].astype("int32")
 
     # writing the combined file supersedes any earlier split parts; drop them so
     # we never end up with both the combined file and its (now stale) _p* parts.

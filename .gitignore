@@ -1,6 +1,7 @@
 .DS_Store
 .vscode
 .claude
+MEMORY.md
 
 __pycache__/
 *.pyc

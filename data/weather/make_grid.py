@@ -137,8 +137,28 @@ def _finite_voronoi(points: np.ndarray) -> dict[int, Polygon]:
 
 
 def build_grid(site_uid: str) -> gpd.GeoDataFrame:
-    """Build the Voronoi target-cell grid for one basin (see module docstring)."""
-    basin = basins.get_basin(site_uid).to_crs(_ALBERS)
+    """Build the Voronoi target-cell grid for one site (see module docstring).
+
+    Thin wrapper: resolve the preferred basin + sensor location for `site_uid`
+    from disk, then delegate to build_grid_from_basin. Kept for the batch pipeline
+    (build_grids) and back-compat; the site-agnostic core is build_grid_from_basin.
+    """
+    basin = basins.get_basin(site_uid)
+    lon, lat = _sensor_lonlat(site_uid)
+    return build_grid_from_basin(basin, lat, lon, label=site_uid)
+
+
+def build_grid_from_basin(
+    basin: gpd.GeoDataFrame, sensor_lat: float, sensor_lon: float, label: str = ""
+) -> gpd.GeoDataFrame:
+    """Build the Voronoi target-cell grid for an in-memory basin (see module docstring).
+
+    The site_uid-free core of build_grid: takes a basin GeoDataFrame (any CRS) and
+    the sensor's (lat, lon) directly, so it works for a real site *or* a virtual
+    (ungauged) site built from an arbitrary drop point. `label` is used only in
+    warning messages. Output schema is identical to build_grid.
+    """
+    basin = basin.to_crs(_ALBERS)
     basin_poly = basin.geometry.union_all()
     minx, miny, maxx, maxy = basin.total_bounds
 
@@ -175,7 +195,7 @@ def build_grid(site_uid: str) -> gpd.GeoDataFrame:
     rows = []
     for i in halo.index[halo["is_target"]]:
         if i not in polys:
-            print(f"  [warn] {site_uid}: a target node has an infinite cell (pad too small) — skipped")
+            print(f"  [warn] {label}: a target node has an infinite cell (pad too small) — skipped")
             continue
         rows.append(
             {
@@ -195,11 +215,12 @@ def build_grid(site_uid: str) -> gpd.GeoDataFrame:
     # the sensor and the fraction of each cell inside the basin.
     if len(grid):
         try:
-            grid["dist_to_sensor"] = _grid_node_distances(site_uid, grid)
+            field = _flow_distance_field_ll(sensor_lat, sensor_lon)
+            grid["dist_to_sensor"] = _grid_node_distances(grid, field)
         except Exception as e:
-            print(f"  [warn] {site_uid}: dist_to_sensor unavailable ({e}); column set to NaN")
+            print(f"  [warn] {label}: dist_to_sensor unavailable ({e}); column set to NaN")
             grid["dist_to_sensor"] = np.nan
-        grid["frac_cell_in_basin"] = _grid_basin_fractions(site_uid, grid)
+        grid["frac_cell_in_basin"] = _grid_basin_fractions(basin_poly, grid)
     return grid
 
 
@@ -300,23 +321,38 @@ def _build_flow_field(direction: np.ndarray, col: int, row: int, mb) -> np.ndarr
     return dist
 
 
-def _flow_distance_field(site_uid: str) -> np.ndarray:
-    """Per-cell flow distance (metres) to the sensor's outlet (cached per site)."""
-    if site_uid in _FLOW_FIELD_CACHE:
-        return _FLOW_FIELD_CACHE[site_uid]
+def _flow_distance_field_ll(lat: float, lon: float) -> np.ndarray:
+    """Per-cell flow distance (metres) to the outlet of the sensor at (lat, lon).
+
+    The site_uid-free core of _flow_distance_field: snaps (lat, lon) to the main-stem
+    outlet on the D8 grid and floods the metres-to-outlet field upstream. Cached per
+    rounded (lat, lon) so repeated builds at the same drop point reuse the field.
+    """
+    key = (round(lat, 6), round(lon, 6))
+    if key in _FLOW_FIELD_CACHE:
+        return _FLOW_FIELD_CACHE[key]
 
     from data.basins import make_basins as mb
 
     direction = mb._load_direction_array()
-    lon, lat = _sensor_lonlat(site_uid)
     col, row = mb._ll_to_image_pixel(lat, lon)
     if not (0 <= col < mb._W and 0 <= row < mb._H):
-        raise ValueError(f"{site_uid}: sensor falls outside the D8 raster extent.")
+        raise ValueError(f"sensor ({lat}, {lon}) falls outside the D8 raster extent.")
 
     ocol, orow = _snap_outlet(direction, col, row, mb)
     field = _build_flow_field(direction, ocol, orow, mb)
-    _FLOW_FIELD_CACHE[site_uid] = field
+    _FLOW_FIELD_CACHE[key] = field
     return field
+
+
+def _flow_distance_field(site_uid: str) -> np.ndarray:
+    """Per-cell flow distance (metres) to the sensor's outlet, keyed by site_uid.
+
+    Back-compat wrapper: resolves the sensor location from water metadata and
+    delegates to _flow_distance_field_ll.
+    """
+    lon, lat = _sensor_lonlat(site_uid)
+    return _flow_distance_field_ll(lat, lon)
 
 
 def _sample_field(field: np.ndarray, col: int, row: int, mb) -> float:
@@ -337,17 +373,17 @@ def _sample_field(field: np.ndarray, col: int, row: int, mb) -> float:
     return float(sub[rs[j], cs[j]])
 
 
-def _grid_node_distances(site_uid: str, grid: gpd.GeoDataFrame) -> np.ndarray:
+def _grid_node_distances(grid: gpd.GeoDataFrame, field: np.ndarray) -> np.ndarray:
     """Flow distance (metres) to the sensor for each row of an in-memory grid.
 
-    Pass 1 routes each node through the D8 distance field (with the per-cell
+    Takes the precomputed D8 distance `field` (from _flow_distance_field[_ll]) so it
+    is site-agnostic. Pass 1 routes each node through the field (with the per-cell
     straddler recovery in _sample_field). Pass 2 fills any node still NaN from
     the nearest resolved node B: dist(A) = dist(B) + |centre(A) - centre(B)|
     (straight-line node-centre distance, EPSG:5070 metres).
     """
     from data.basins import make_basins as mb
 
-    field = _flow_distance_field(site_uid)
     dist = np.array(
         [
             _sample_field(field, *mb._ll_to_image_pixel(lat, lon), mb)
@@ -364,12 +400,15 @@ def _grid_node_distances(site_uid: str, grid: gpd.GeoDataFrame) -> np.ndarray:
     return dist
 
 
-def _grid_basin_fractions(site_uid: str, grid: gpd.GeoDataFrame) -> np.ndarray:
-    """Fraction of each cell's area inside the basin, in [0, 1] (row-aligned)."""
+def _grid_basin_fractions(basin_poly, grid: gpd.GeoDataFrame) -> np.ndarray:
+    """Fraction of each cell's area inside the basin, in [0, 1] (row-aligned).
+
+    Takes the basin polygon (assumed already in _ALBERS, as build_grid_from_basin
+    passes it) directly, so it is site-agnostic.
+    """
     cells = grid.geometry
     if cells.crs is not None and cells.crs != _ALBERS:
         cells = cells.to_crs(_ALBERS)
-    basin_poly = basins.get_basin(site_uid).to_crs(_ALBERS).geometry.union_all()
     inside = cells.intersection(basin_poly).area
     return np.clip((inside / cells.area).to_numpy(), 0.0, 1.0)
 

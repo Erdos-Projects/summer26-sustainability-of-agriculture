@@ -53,47 +53,59 @@ _THIS_DIR = Path(__file__).resolve().parent
 _CACHE = _THIS_DIR / "_cache"
 
 
-def agg_crops(site_uid, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, exp=False):
-    """Annual crop areas aggregated to (year, bucket). `exp` -> distance-decay weights, else sum."""
-    if exp == False:
-        c_dict, _, _ = _standard_agg_dicts(site_uid=site_uid)
-    else:
-        c_dict, _, _ = _exp_decay_agg_dicts(site_uid=site_uid, lam=lam, normalize=normalize)
+def _resolve_data(*, site_data=None, site_uid=""):
+    if site_data is None:
+        if site_uid == "":
+            raise ValueError("Either site_data or site_uid must be specified!")
 
-    d = get_data(site_uid=site_uid)
-    mapping = _bucket_map(site_uid, edges)
+        site_data = get_data(site_uid)
+    return site_data
+
+
+def agg_crops(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, exp=False):
+    """Annual crop areas aggregated to (year, bucket). `exp` -> distance-decay weights, else sum."""
+    d = _resolve_data(site_data=site_data, site_uid=site_uid)
+
+    if exp == False:
+        c_dict, _, _ = _standard_agg_dicts(site_data=d)
+    else:
+        c_dict, _, _ = _exp_decay_agg_dicts(site_data=d, lam=lam, normalize=normalize)
+
+    mapping = _bucket_map(site_data=d, edges=edges)
     crops_b = agg_grid_to_buckets(d.crops, mapping, keys=["year"], col_agg=c_dict)
     return crops_b
 
 
-def agg_surplus(site_uid, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, exp=False):
+def agg_surplus(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, exp=False):
     """Annual N surplus aggregated to (year, bucket). `exp` -> distance-decay weights, else sum."""
+    d = _resolve_data(site_data=site_data, site_uid=site_uid)
     if exp == False:
-        _, s_dict, _ = _standard_agg_dicts(site_uid=site_uid)
+        _, s_dict, _ = _standard_agg_dicts(site_data=d)
     else:
-        _, s_dict, _ = _exp_decay_agg_dicts(site_uid=site_uid, lam=lam, normalize=normalize)
+        _, s_dict, _ = _exp_decay_agg_dicts(site_data=d, lam=lam, normalize=normalize)
 
-    d = get_data(site_uid=site_uid)
-    mapping = _bucket_map(site_uid, edges)
+    mapping = _bucket_map(site_data=d, edges=edges)
     surplus_b = agg_grid_to_buckets(d.surplus, mapping, keys=["year"], col_agg=s_dict)
     return surplus_b
 
 
-def agg_weather(site_uid, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, exp=False):
+def agg_weather(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, exp=False):
     """Daily weather aggregated to (date, bucket) by area-weighted mean (or exp-decay if `exp`)."""
-    if exp == False:
-        _, _, w_dict = _standard_agg_dicts(site_uid=site_uid)
-    else:
-        _, _, w_dict = _exp_decay_agg_dicts(site_uid=site_uid, lam=lam, normalize=normalize)
+    d = _resolve_data(site_data=site_data, site_uid=site_uid)
 
-    d = get_data(site_uid=site_uid)
-    mapping = _bucket_map(site_uid, edges)
+    if exp == False:
+        _, _, w_dict = _standard_agg_dicts(site_data=d)
+    else:
+        _, _, w_dict = _exp_decay_agg_dicts(site_data=d, lam=lam, normalize=normalize)
+
+    mapping = _bucket_map(site_data=d, edges=edges)
     weather_b = agg_grid_to_buckets(d.weather, mapping, keys=["date"], col_agg=w_dict)
     return weather_b
 
 
 def agg_weather_w_lag(
-    site_uid,
+    site_uid="",
+    site_data=None,
     edges=_DEFAULT_DIST_EDGES_M,
     lam=10_000,
     normalize=False,
@@ -101,38 +113,49 @@ def agg_weather_w_lag(
     water_velocity=_VEL,
 ):
     """`agg_weather` with each bucket shifted back by its travel-time lag (see bucket_lags)."""
-    wb = agg_weather(site_uid, edges, lam, normalize, exp)
-    lags = bucket_lags(site_uid, water_velocity, edges)
+    d = _resolve_data(site_data=site_data, site_uid=site_uid)
+    wb = agg_weather(site_data=d, edges=edges, lam=lam, normalize=normalize, exp=exp)
+    lags = bucket_lags(site_data=d, water_velocity=water_velocity, edges=edges)
     wb = lag_buckets(wb, lags, date_col="date", bucket_col="bucket")
     return wb
 
 
-def agg_site_to_buckets(site_uid, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, mixed=True):
+def agg_site_to_buckets(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, mixed=True):
     """The default site-to-bucket aggregation. Crops and surplus are aggregated with exponential decay, weather is aggregated without decay."""
-    cb = agg_crops(site_uid, edges=edges, lam=lam, normalize=normalize, exp=True)
-    sb = agg_surplus(site_uid, edges=edges, lam=lam, normalize=normalize, exp=True)
-    wb = agg_weather(site_uid, edges=edges, lam=lam, normalize=normalize, exp=False)
+    cb = agg_crops(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=True)
+    sb = agg_surplus(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=True)
+    wb = agg_weather(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=False)
     return cb, sb, wb
 
 
 # ── antecedent-weather integrators (basin-wide rolling sums) ──────────────────
 
 
-@lru_cache(maxsize=256)
-def _basin_daily_weather(site_uid):
-    """Basin-wide daily weather: simple mean over all cells per date, date-indexed.
-
-    One row per day (tz-naive DatetimeIndex), columns = the raw weather variables. Memoized
-    per site; the returned frame is shared, so treat it as read-only (copy before mutating).
-    """
-    w = get_data(site_uid).weather
+def _basin_daily_weather_impl(w):
     daily = w.groupby("date").mean(numeric_only=True)
     daily.index = pd.DatetimeIndex(daily.index)
     return daily.sort_index()
 
 
 @lru_cache(maxsize=256)
-def rolling_precip(site_uid, windows=(14, 30, 60)):
+def _basin_daily_weather_uid(site_uid):
+    return _basin_daily_weather_impl(get_data(site_uid).weather)
+
+
+def _basin_daily_weather(site_uid="", site_data=None):
+    """Basin-wide daily weather: simple mean over all cells per date, date-indexed.
+
+    One row per day (tz-naive DatetimeIndex), columns = the raw weather variables. The
+    site_uid path is memoized (via _basin_daily_weather_uid); the returned frame is shared,
+    so treat it as read-only (copy before mutating). Pass site_data instead for a virtual
+    site (computed fresh, not cached, since a SiteData is unhashable).
+    """
+    if site_data is None:
+        return _basin_daily_weather_uid(site_uid)
+    return _basin_daily_weather_impl(site_data.weather)
+
+
+def rolling_precip(site_uid="", site_data=None, windows=(14, 30, 60)):
     """Antecedent precipitation index: trailing rolling SUM of basin-mean daily precip.
 
     For each window w (days) the value on date t is the total basin-mean precip over the
@@ -142,9 +165,10 @@ def rolling_precip(site_uid, windows=(14, 30, 60)):
 
     Precip is an exogenous covariate (not derived from the target), so including today is not
     leakage. Returns a date-indexed DataFrame, one column per window: 'precip_roll{w}d'.
-    Memoized per (site, windows); treat the result as read-only.
+    Accepts a site_uid or a site_data (the heavy basin-daily-weather step is cached on the
+    site_uid path); treat the result as read-only.
     """
-    p = _basin_daily_weather(site_uid)["precip_in_1d"]
+    p = _basin_daily_weather(site_uid=site_uid, site_data=site_data)["precip_in_1d"]
     cols = {f"precip_roll{w}d": p.rolling(f"{w}D", min_periods=1).sum() for w in windows}
     return pd.concat(cols, axis=1)
 
@@ -155,8 +179,7 @@ def rolling_nitrate_avg_except_this(site_to_exclude, windows=(14, 30, 60)):
     return pd.concat(cols, axis=1)
 
 
-@lru_cache(maxsize=256)
-def water_balance(site_uid, windows=(30, 60)):
+def water_balance(site_uid="", site_data=None, windows=(30, 60)):
     """Antecedent water balance: trailing rolling SUM of basin-mean (precip - PET), in mm.
 
     Precip (inches) is converted to mm and reference ET (already mm) subtracted, so each day
@@ -165,28 +188,40 @@ def water_balance(site_uid, windows=(30, 60)):
     columns we already have (a PDSI-lite). Positive = net wetting, negative = net drying.
 
     Both inputs are exogenous, so today is not leakage. Returns a date-indexed DataFrame, one
-    column per window: 'wbal_roll{w}d'. Memoized per (site, windows); treat as read-only.
+    column per window: 'wbal_roll{w}d'. Accepts a site_uid or a site_data (the basin-daily-
+    weather step is cached on the site_uid path); treat as read-only.
     """
-    daily = _basin_daily_weather(site_uid)
+    daily = _basin_daily_weather(site_uid=site_uid, site_data=site_data)
     bal = daily["precip_in_1d"] * 25.4 - daily["evapotranspiration"]  # inches -> mm, minus PET (mm)
     cols = {f"wbal_roll{w}d": bal.rolling(f"{w}D", min_periods=1).sum() for w in windows}
     return pd.concat(cols, axis=1)
 
 
-@lru_cache(maxsize=256)
-def daily_nitrate(site_uid, agg_meth="max"):
-    """Target: nitrate_con resampled to one value per day (default daily max), tz-naive.
-
-    Memoized per (site_uid, agg_meth); the returned Series is shared, so treat it as
-    read-only (copy before mutating).
-    """
-    nitrate = get_data(site_uid=site_uid).water["nitrate_con"]
+def _daily_nitrate_impl(water, agg_meth):
+    nitrate = water["nitrate_con"]
     if nitrate.index.tz is not None:
         nitrate = nitrate.tz_localize(None)  # new Series -- never mutate the cached frame
     return nitrate.resample("1D").agg(agg_meth)
 
 
-def nitrate_daily_rolling(site_uid, window=7, min_obs=1, agg_meth="max"):
+@lru_cache(maxsize=256)
+def _daily_nitrate_uid(site_uid, agg_meth="max"):
+    return _daily_nitrate_impl(get_data(site_uid=site_uid).water, agg_meth)
+
+
+def daily_nitrate(site_uid="", site_data=None, agg_meth="max"):
+    """Target: nitrate_con resampled to one value per day (default daily max), tz-naive.
+
+    The site_uid path is memoized per (site_uid, agg_meth); the returned Series is shared, so
+    treat it as read-only (copy before mutating). Pass site_data instead for an in-memory site
+    (computed fresh). Requires water -- undefined for a waterless virtual site.
+    """
+    if site_data is None:
+        return _daily_nitrate_uid(site_uid, agg_meth=agg_meth)
+    return _daily_nitrate_impl(site_data.water, agg_meth)
+
+
+def nitrate_daily_rolling(site_uid="", site_data=None, window=7, min_obs=1, agg_meth="max"):
     """Regression target: the max daily nitrate over the trailing `window` days (today
     inclusive). A smoothed/peak-tracking version of daily_nitrate -- it shrugs off single
     missing days and emphasizes the recent worst case.
@@ -198,14 +233,14 @@ def nitrate_daily_rolling(site_uid, window=7, min_obs=1, agg_meth="max"):
     keeps the most rows but trusts a single day to stand in for the whole window; raise it
     (e.g. 3-4 of 7) for max estimates backed by more coverage.
     """
-    daily = daily_nitrate(site_uid, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
     n_obs = daily.notna().rolling(window, min_periods=1).sum()
     rolled = daily.rolling(window, min_periods=1).max()  # max skips NaN days
     rolled[n_obs < min_obs] = np.nan  # too few observed days -> undecidable
     return rolled.rename("nitrate_daily_rolling")
 
 
-def nitrate_violations(site_uid, threshold=10, agg_meth="max"):
+def nitrate_violations(site_uid="", site_data=None, threshold=10, agg_meth="max"):
     """Binary target: 1 if the day's nitrate is at or above `threshold` (default 10
     mg/L, the drinking-water limit), else 0.
 
@@ -213,13 +248,13 @@ def nitrate_violations(site_uid, threshold=10, agg_meth="max"):
     counts). Days with no observation stay NA (unknown, not 0) so they can be dropped
     before training just like the regression target.
     """
-    daily = daily_nitrate(site_uid, agg_meth=agg_meth)
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth)
     viol = (daily >= threshold).astype("Int8")
     viol[daily.isna()] = pd.NA
     return viol.rename("nitrate_violations")
 
 
-def nitrate_violations_rolling(site_uid, window=7, threshold=10, min_obs=1, agg_meth="max"):
+def nitrate_violations_rolling(site_uid="", site_data=None, window=7, threshold=10, min_obs=1, agg_meth="max"):
     """Binary target: 1 if ANY day in the trailing `window` days (today inclusive) was a
     violation (daily nitrate >= threshold), 0 if the window was OBSERVED-and-clean, <NA>
     when there isn't enough data to decide.
@@ -238,7 +273,7 @@ def nitrate_violations_rolling(site_uid, window=7, threshold=10, min_obs=1, agg_
     Note: (daily >= threshold) maps NaN days to False, so missing days are masked via
     notna() and never silently counted as non-violations.
     """
-    daily = daily_nitrate(site_uid, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
     obs = daily.notna()
     viol_day = (daily >= threshold) & obs  # True only on OBSERVED violation days
     n_obs = obs.rolling(window, min_periods=1).sum()
@@ -250,7 +285,7 @@ def nitrate_violations_rolling(site_uid, window=7, threshold=10, min_obs=1, agg_
     return out.rename("nitrate_violations_rolling")
 
 
-def nitrate_anomaly_z(site_uid, window=21, min_obs=5, agg_meth="max"):
+def nitrate_anomaly_z(site_uid="", site_data=None, window=21, min_obs=5, agg_meth="max"):
     """Standardized anomaly z(t) = (x(t) - mean) / std, where mean/std are over the TRAILING
     `window` days ending yesterday (today excluded -> no leakage). A site-relative measure of how
     far today's nitrate sits from its own recent baseline, in baseline-std units -- a 'spike' is a
@@ -262,7 +297,7 @@ def nitrate_anomaly_z(site_uid, window=21, min_obs=5, agg_meth="max"):
     baseline std is 0 (a flat baseline -> no scale to standardize against); those rows drop before
     training like the other targets. Continuous -> the regression spike target; threshold it for
     the classification one (see nitrate_spike)."""
-    daily = daily_nitrate(site_uid, agg_meth=agg_meth).asfreq("D")  # contiguous daily grid
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq("D")  # contiguous daily grid
     prev = daily.shift(1)  # baseline ends yesterday -> today never enters its own baseline
     mean = prev.rolling(window, min_periods=min_obs).mean()
     std = prev.rolling(window, min_periods=min_obs).std()
@@ -270,13 +305,13 @@ def nitrate_anomaly_z(site_uid, window=21, min_obs=5, agg_meth="max"):
     return z.rename("nitrate_anomaly_z")
 
 
-def nitrate_spike(site_uid, window=21, k=2.0, min_obs=5, agg_meth="max"):
+def nitrate_spike(site_uid="", site_data=None, window=21, k=2.0, min_obs=5, agg_meth="max"):
     """Binary spike target: 1 if today's standardized anomaly z(t) >= k, else 0; NaN where z is
     undecidable (see nitrate_anomaly_z). A 'spike' = today's nitrate sits at least k baseline-std
     above the site's own trailing mean -- a site-relative, event-like deviation rather than an
     absolute level. Built from nitrate_anomaly_z so the regression (z) and classification (spike)
     targets stay consistent."""
-    z = nitrate_anomaly_z(site_uid, window=window, min_obs=min_obs, agg_meth=agg_meth)
+    z = nitrate_anomaly_z(site_uid=site_uid, site_data=site_data, window=window, min_obs=min_obs, agg_meth=agg_meth)
     spike = (z >= k).astype("Int8")
     spike[z.isna()] = pd.NA  # NaN >= k is False, so restore NaN where the anomaly is undecidable
     return spike.rename("nitrate_spike")
@@ -300,21 +335,7 @@ def lagged_sensor_nitrate(site_uids, shift, agg_meth="max"):
     return pd.concat(cols, axis=1)
 
 
-@lru_cache(maxsize=None)
-def site_static(site_uid):
-    """Time-invariant site descriptors derived from existing data (sensor location,
-    basin size, grid geometry).
-
-    Memoized per site; the returned dict is shared, so treat it as read-only.
-    Constant within a site -- they add nothing to a single-site model, but across
-    sites they vary and let a pooled model place a site (ungauged-basin transfer).
-    Returns a dict of scalars:
-        lat, lon            -- sensor coordinates (climate / spatial gradients)
-        log_basin_area      -- log10 of basin area in m^2 (spans orders of magnitude)
-        mean_dist_to_sensor -- mean cell distance (basin size/travel proxy, metres)
-        max_dist_to_sensor  -- basin span (metres)
-    """
-    d = get_data(site_uid=site_uid)
+def _site_static_impl(d):
     lon, lat = d.sensor_location
     dist = d.grid["dist_to_sensor"]
     return {
@@ -324,6 +345,30 @@ def site_static(site_uid):
         "mean_dist_to_sensor": float(dist.mean()),
         "max_dist_to_sensor": float(dist.max()),
     }
+
+
+@lru_cache(maxsize=None)
+def _site_static_uid(site_uid):
+    return _site_static_impl(get_data(site_uid=site_uid))
+
+
+def site_static(site_uid="", site_data=None):
+    """Time-invariant site descriptors derived from existing data (sensor location,
+    basin size, grid geometry).
+
+    The site_uid path is memoized; the returned dict is shared, so treat it as read-only.
+    Pass site_data instead for a virtual site (requires its sensor_location, basin_area and
+    grid to be set). Constant within a site -- they add nothing to a single-site model, but
+    across sites they vary and let a pooled model place a site (ungauged-basin transfer).
+    Returns a dict of scalars:
+        lat, lon            -- sensor coordinates (climate / spatial gradients)
+        log_basin_area      -- log10 of basin area in m^2 (spans orders of magnitude)
+        mean_dist_to_sensor -- mean cell distance (basin size/travel proxy, metres)
+        max_dist_to_sensor  -- basin span (metres)
+    """
+    if site_data is None:
+        return _site_static_uid(site_uid)
+    return _site_static_impl(site_data)
 
 
 # ── cross-site nitrate climatology (cached in data/_cache) ────────────────────

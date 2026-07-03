@@ -94,3 +94,10 @@ There are two ways that two basins can overlap: *spatially* if one basin is phys
 ## Final model
 
 !-----NOT WRITTEN-----!
+
+## Future work
+
+The data suite we've created makes it possible both to incorporate new features as they become available and to rapidly prototype/develop new models for specific use cases. To that end, here are some ideas we have for other models that could be built using the data we've assembled:
+
+1. **Flaky sensor enhancement**. The models we built were trained on the 85 "best" sensors available to us (see [the targets section](#target)). Our regression results improve significantly when trained with access to historical site data. One these models could be used to supplement missing measurements from the other 162 - 85 sensors.
+2. **Spike prediction**.

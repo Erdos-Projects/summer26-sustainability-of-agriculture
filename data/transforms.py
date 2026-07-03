@@ -13,21 +13,31 @@ _DEFAULT_DIST_EDGES_M = []
 _VEL = 1.0
 
 
-def _bucket_map(site_uid, edges=_DEFAULT_DIST_EDGES_M):
+def _resolve_data(*, site_data=None, site_uid=""):
+    if site_data is None:
+        if site_uid == "":
+            raise ValueError("Either site_data or site_uid must be specified!")
+
+        site_data = get_data(site_uid)
+    return site_data
+
+
+def _bucket_map(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M):
     """f: node_id -> dist_bucket, from the grid's dist_to_sensor (fixed bins)."""
-    grid = get_grid(site_uid=site_uid)
+
+    grid = _resolve_data(site_data=site_data, site_uid=site_uid).grid
     e = [-np.inf, *edges, np.inf]
     b = pd.cut(grid["dist_to_sensor"], bins=e, labels=list(range(len(edges) + 1)))
     return pd.Series(b.values, index=grid["node_id"], name="bucket")
 
 
-def bucket_lags(site_uid, water_velocity=_VEL, edges=_DEFAULT_DIST_EDGES_M, max_lag_days=None):
+def bucket_lags(site_uid="", site_data=None, water_velocity=_VEL, edges=_DEFAULT_DIST_EDGES_M, max_lag_days=None):
     """Per-bucket travel-time lag in days (= median cell distance / water speed).
 
     Returns a Series: bucket -> lag_days, optionally capped at ``max_lag_days``.
     """
-    grid = get_grid(site_uid)
-    b = grid["node_id"].map(_bucket_map(site_uid, edges))
+    grid = _resolve_data(site_data=site_data, site_uid=site_uid).grid
+    b = grid["node_id"].map(_bucket_map(site_uid=site_uid, site_data=site_data, edges=edges))
     med = grid["dist_to_sensor"].groupby(b).median()
     lag = (med / (water_velocity * 86400)).round().astype(int)  # days = metres / (m/s * s/day)
     return lag.clip(upper=max_lag_days) if max_lag_days else lag  # Series: bucket -> lag_days
@@ -119,9 +129,9 @@ def _agg_dicts(land_use_func, weather_func):
     return c_dict, s_dict, w_dict
 
 
-def _area_mean_curry(site_uid):
+def _area_mean_curry(site_uid="", site_data=None):
     """Aggregator: basin-area-weighted mean over a group's cells (weights via values.index)."""
-    grid = get_data(site_uid=site_uid).grid
+    grid = _resolve_data(site_data=site_data, site_uid=site_uid).grid
     area_ha = pd.Series((grid.cell_area * grid.frac_cell_in_basin / 1e4).values, index=grid.node_id)
 
     def _func(values):
@@ -131,9 +141,9 @@ def _area_mean_curry(site_uid):
     return _func
 
 
-def _exp_curry(site_uid, lam):
+def _exp_curry(site_data, lam):
     """Aggregator: distance-decay-weighted sum, weight = frac_in_basin * exp(-dist/lam)."""
-    grid = get_data(site_uid=site_uid).grid
+    grid = site_data.grid
     # per-cell weight (basin-area fraction * exponential distance decay) indexed by
     # node_id, so it can be subset + aligned to each group's cells via values.index.
     cell_w = pd.Series(
@@ -147,9 +157,9 @@ def _exp_curry(site_uid, lam):
     return _exp_decay_weighting
 
 
-def _exp_curry_norm(site_uid, lam):
+def _exp_curry_norm(site_data, lam):
     """Aggregator: distance-decay-weighted mean (the normalised `_exp_curry`)."""
-    grid = get_data(site_uid=site_uid).grid
+    grid = site_data.grid
     cell_w = pd.Series(
         grid.frac_cell_in_basin.values * np.exp(-grid.dist_to_sensor.values / lam),
         index=grid.node_id,
@@ -161,18 +171,18 @@ def _exp_curry_norm(site_uid, lam):
     return _exp_decay_weighting
 
 
-def _standard_agg_dicts(site_uid):
+def _standard_agg_dicts(site_data):
     """Agg dicts: plain sum for land-use, basin-area-weighted mean for weather."""
     func1 = sum
-    func2 = _area_mean_curry(site_uid=site_uid)
+    func2 = _area_mean_curry(site_data=site_data)
 
     return _agg_dicts(func1, func2)
 
 
-def _exp_decay_agg_dicts(site_uid, lam, normalize=False):
+def _exp_decay_agg_dicts(site_data, lam, normalize=False):
     """Agg dicts using exp distance-decay weights (`lam`): normalize -> mean, else sum."""
-    sumfunc = _exp_curry(site_uid=site_uid, lam=lam)
-    avgfunc = _exp_curry_norm(site_uid=site_uid, lam=lam)
+    sumfunc = _exp_curry(site_data=site_data, lam=lam)
+    avgfunc = _exp_curry_norm(site_data=site_data, lam=lam)
 
     if normalize:
         return _agg_dicts(avgfunc, avgfunc)

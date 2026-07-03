@@ -19,6 +19,7 @@ from data.features import (
 )
 from data.transforms import flatten_buckets, merge_on_date
 from functools import lru_cache
+import pandas as pd
 
 # Best feature-construction geometry from the exp10 grid search: bucket edge (m) / water
 # travel velocity (m/s) / crop-surplus exp-decay length (m). REG and CLF picked different optima.
@@ -31,8 +32,21 @@ CLF_EDGE, CLF_VEL, CLF_LAM = 5_000, 2.1, 20_000  # exp10 best lofo_auc: e5k_v2.1
 ROLL_WEATHER_LADDER = (1, 3, 7, 14, 30, 60)
 
 
+def _site_kwargs(site):
+    """Map a site identifier -- a site_uid (str) or a SiteData -- to the keyword the
+    generalized data.features/data.transforms helpers expect (site_uid= vs site_data=)."""
+    return {"site_uid": site} if isinstance(site, str) else {"site_data": site}
+
+
+def _site_uid_of(site):
+    """The site_uid label used for cross-site exclusion: the string itself, or a SiteData's
+    .site_uid. A virtual site's uid is absent from the state, so nothing is excluded and the
+    neighbour features become the full rest-of-state average."""
+    return site if isinstance(site, str) else site.site_uid
+
+
 def _add_static(site, d):
-    for k, v in site_static(site).items():
+    for k, v in site_static(**_site_kwargs(site)).items():
         d[k] = v
     return d
 
@@ -58,43 +72,73 @@ def _rolling_weather(wb, windows):
     return frames
 
 
-@lru_cache(maxsize=None)
-def _agg_block_cached(site, edge, vel, lam):
+def _agg_block_compute(site, edge, vel, lam):
     """The expensive, window-INDEPENDENT spatial aggregations (weather-with-lag, exp-decay crop,
-    exp-decay surplus), memoized per (site, edge, vel, lam) -- the args are scalars so the call
-    is hashable (unlike the raw agg_* which take an unhashable `edges` list). window/min_obs
-    never touch these, so a window x min_obs sweep reuses one computation per site across all its
-    recipes instead of rebuilding it each time. The returned frames are READ-ONLY -- callers copy
-    (_rolling_weather, merge_on_date never mutate their inputs), matching the shared-frame pattern
-    used elsewhere."""
-    wb = flatten_buckets(agg_weather_w_lag(site, edges=[edge], exp=False, water_velocity=vel))
-    cb = flatten_buckets(agg_crops(site, edges=[edge], lam=lam, exp=True))
-    sb = flatten_buckets(agg_surplus(site, edges=[edge], lam=lam, exp=True))
+    exp-decay surplus) for a site_uid OR a SiteData (via _site_kwargs). Returned frames are
+    READ-ONLY -- callers copy (_rolling_weather, merge_on_date never mutate their inputs)."""
+    kw = _site_kwargs(site)
+    wb = flatten_buckets(agg_weather_w_lag(**kw, edges=[edge], exp=False, water_velocity=vel))
+    cb = flatten_buckets(agg_crops(**kw, edges=[edge], lam=lam, exp=True))
+    sb = flatten_buckets(agg_surplus(**kw, edges=[edge], lam=lam, exp=True))
     return wb, cb, sb
 
 
 @lru_cache(maxsize=None)
-def _cross_site_nitrate_cached(site):
-    """Window- AND geometry-independent cross-site nitrate features: the neighbour-average lags
-    (shifts 1/2/3/5) and the rolling neighbour averages (7/14/30/60d). Memoized per site (they
-    depend only on the site, not on edge/vel/lam/window), so a sweep computes them once per site
-    and shares them across both tasks. Read-only, like _agg_block_cached."""
-    lagged_avgs = tuple(nitrate_avg_except_this(site, shift=k) for k in (1, 2, 3, 5))
-    rolling_avg_not_this = rolling_nitrate_avg_except_this(site, windows=(7, 14, 30, 60))
+def _agg_block_cached(site, edge, vel, lam):
+    """Memoized per (site_uid, edge, vel, lam) -- the args are scalars/strings so the call is
+    hashable (unlike the raw agg_* which take an unhashable `edges` list). window/min_obs never
+    touch these, so a window x min_obs sweep reuses one computation per site across all its
+    recipes. Only reachable from the site_uid path (see _agg_block)."""
+    return _agg_block_compute(site, edge, vel, lam)
+
+
+def _agg_block(site, edge, vel, lam):
+    """Dispatch: use the site_uid lru_cache when `site` is a (hashable) string, else compute
+    directly for an unhashable SiteData (a virtual site is built once, so no caching needed)."""
+    if isinstance(site, str):
+        return _agg_block_cached(site, edge, vel, lam)
+    return _agg_block_compute(site, edge, vel, lam)
+
+
+def _cross_site_nitrate_compute(site):
+    """The cross-site nitrate neighbour features (lags 1/2/3/5 + rolling 7/14/30/60d) for a
+    site_uid OR SiteData. `site` is used only as the exclusion label (via _site_uid_of)."""
+    uid = _site_uid_of(site)
+    lagged_avgs = tuple(nitrate_avg_except_this(uid, shift=k) for k in (1, 2, 3, 5))
+    rolling_avg_not_this = rolling_nitrate_avg_except_this(uid, windows=(7, 14, 30, 60))
     return lagged_avgs, rolling_avg_not_this
+
+
+@lru_cache(maxsize=None)
+def _cross_site_nitrate_cached(site):
+    """Window- AND geometry-independent cross-site nitrate features, memoized per site_uid (they
+    depend only on the site, not on edge/vel/lam/window). Only reachable from the site_uid path
+    (see _cross_site_nitrate). Read-only, like _agg_block_cached."""
+    return _cross_site_nitrate_compute(site)
+
+
+def _cross_site_nitrate(site):
+    """Dispatch: site_uid lru_cache when possible, else compute directly for a SiteData."""
+    if isinstance(site, str):
+        return _cross_site_nitrate_cached(site)
+    return _cross_site_nitrate_compute(site)
 
 
 def _covariate_block(site, n, edge, vel, lam, window, roll_nitrate_windows=(7, 14, 30, 60)):
     """The feature scaffold: lagged whole-basin weather, exp-decay crop and surplus aggregations
-    (memoized via _agg_block_cached), the pure calendar signal, the cross-site nitrate lags, and
-    the window-scaled rolling weather (see ROLL_WEATHER_LADDER). Returns a fresh list each call.
+    (memoized via _agg_block), the pure calendar signal, the cross-site nitrate lags, and the
+    window-scaled rolling weather (see ROLL_WEATHER_LADDER). Returns a fresh list each call.
+
+    `site` may be a site_uid (str, cached path) or a SiteData (virtual/ungauged, cache bypassed).
+    `n` is a bare date-carrier -- only n.index feeds doy (and, upstream, the merge spine); no
+    nitrate values enter the features, so a waterless virtual site works with a weather spine.
 
     `roll_nitrate_windows` picks which rolling cross-site nitrate windows to append (a subset of
     the cached 7/14/30/60d set; () to omit them). Per the experiment audit these help REG -- with
     the gain concentrated in 7d -- but HURT CLF (recipe_CLF1 without 0.824 > recipe_CLF1.1 with
     0.817), so REG keeps {7} and CLF omits them."""
-    wb, cb, sb = _agg_block_cached(site, edge, vel, lam)
-    lagged_avgs, roll_n_all = _cross_site_nitrate_cached(site)
+    wb, cb, sb = _agg_block(site, edge, vel, lam)
+    lagged_avgs, roll_n_all = _cross_site_nitrate(site)
     doy = doy_climatology_pure_signal(n)
     feats = [wb, cb, sb, doy, *lagged_avgs]
     if roll_nitrate_windows:
@@ -115,17 +159,47 @@ def _best_features_CLF(site, n, window=1, roll_nitrate_windows=()):
     return _covariate_block(site, n, CLF_EDGE, CLF_VEL, CLF_LAM, window, roll_nitrate_windows=roll_nitrate_windows)
 
 
-def _target_maker(site, task="reg", window=1, min_obs=1):
-    n = daily_nitrate(site).rename("nitrate_con")
+def _assemble(site, task, spine, window, target=None):
+    """Shared assembly for the gauged and virtual paths: build the task's feature list on the
+    given `spine` (a DatetimeIndex of output rows), merge, add the static descriptors, and
+    optionally prepend a `target` column.
+
+    `n` is a bare date-carrier built from `spine` -- only its index feeds doy and the merge
+    timeline (no nitrate values enter the features), so a waterless virtual site works by
+    supplying a weather-derived spine and no target."""
+    n = pd.Series(index=pd.DatetimeIndex(spine), dtype="float64")
     if task == "reg":
         feat = _best_features_REG(site, n, window)
-        target = nitrate_daily_rolling(site, window=window, min_obs=min_obs).rename("nitrate_con")
     elif task == "clf":
         feat = _best_features_CLF(site, n, window)
-        target = nitrate_violations_rolling(site, window=window, min_obs=min_obs).rename("violation")
     else:
         raise ValueError(f"Expected 'reg' or 'clf', got {task}")
-    return _add_static(site, merge_on_date([target, *feat], spine=n.index))
+    frames = feat if target is None else [target, *feat]
+    return _add_static(site, merge_on_date(frames, spine=n.index))
+
+
+def build_feature_frame(site, task="reg", spine=None, window=1):
+    """Model-ready feature frame for `site` (a site_uid OR a SiteData), WITHOUT a target.
+
+    `spine` is the DatetimeIndex of output rows. It defaults to the site's daily-nitrate index
+    (the gauged timeline, matching recipe_REG/_CLF minus the target). For an ungauged/virtual
+    site (no water) pass a spine derived from the weather window -- e.g. the TARGET_YEAR daily
+    dates -- and the frame is produced without ever touching water. The deploy virtual recipe
+    calls this."""
+    if spine is None:
+        spine = daily_nitrate(**_site_kwargs(site)).index
+    return _assemble(site, task, spine=spine, window=window, target=None)
+
+
+def _target_maker(site, task="reg", window=1, min_obs=1):
+    n = daily_nitrate(**_site_kwargs(site)).rename("nitrate_con")
+    if task == "reg":
+        target = nitrate_daily_rolling(**_site_kwargs(site), window=window, min_obs=min_obs).rename("nitrate_con")
+    elif task == "clf":
+        target = nitrate_violations_rolling(**_site_kwargs(site), window=window, min_obs=min_obs).rename("violation")
+    else:
+        raise ValueError(f"Expected 'reg' or 'clf', got {task}")
+    return _assemble(site, task, spine=n.index, window=window, target=target)
 
 
 # BEST PARAMETERS WINDOW=1, MIN_OBS=1.

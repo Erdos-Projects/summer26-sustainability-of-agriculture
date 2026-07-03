@@ -1,7 +1,7 @@
 from pathlib import Path
 
 from cook import compare_many, save_comparison, fit_full, save_model
-from recipes2 import recipe_REG, recipe_CLF
+from recipes3 import recipe_REG, recipe_CLF
 
 """The reasoning for this dataset (cross-site, ~60k pooled rows, noisy nitrate, the LOSO/LOFO leakage gap you've seen):
 

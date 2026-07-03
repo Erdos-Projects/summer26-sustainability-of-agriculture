@@ -38,6 +38,7 @@ _IMAGES_DIR = _RAW_DIR / "images"  # Iowa surplus PNGs + JSON bounds sidecars
 _DATA_DIR = _THIS_DIR / "surplus_data"
 _PIXEL_DIR = _DATA_DIR / "pixel"  # per-site pixel-level surplus parquets
 _GRID_AGG_DIR = _DATA_DIR / "grid"  # per-site surplus aggregated onto the rain grid
+_GRID_SRC_DIR = _THIS_DIR.parent / "weather" / "weather_grid"  # weather grids the surplus_grid aggregate depends on
 _MERGED_FILE = _RAW_DIR / "iowa_nitrogen_surplus.parquet"
 _MANIFEST_FILE = _DATA_DIR / ".basin_manifest.csv"
 _GRID_INDEX = None  # cached (transform, height, width) for the Iowa raster
@@ -178,6 +179,68 @@ def _aggregate_surplus_grid(merged: pd.DataFrame, grid) -> pd.DataFrame | None:
     return g[["node_id", "global_node_id", "year", "surplus_kgha", "total_kg_N"]]
 
 
+def load_surplus_source(bbox=None, years=None) -> pd.DataFrame:
+    """Load surplus pixels filtered to a bbox and/or years, without the 53M-row merge.
+
+    Columns: pixel_id, year, surplus_kgha, total_kg_N, x, y, lon, lat (the same schema
+    build_merged produces). The source chunks (surplus_source/surplus*.parquet) are
+    one-year-per-file, so a `years` filter reads only the matching chunk(s) via parquet
+    row-group pushdown; `bbox` (in EPSG:5070 — the lookup's x/y CRS, e.g. a grid's
+    .total_bounds) keeps only pixels near that extent.
+
+    For a single (virtual) basin pass bbox=grid.total_bounds and years=[target_year] so
+    only the relevant pixels/year land in memory. With both None this loads the whole
+    state (equivalent to build_merged, but recomputed rather than cached).
+    """
+    lookup = pd.read_parquet(_SOURCE_DIR / "iowa_grid_lookup.parquet")
+    pid_filter = None
+    if bbox is not None:
+        minx, miny, maxx, maxy = bbox
+        h = _SURPLUS_M / 2  # keep edge pixels whose 250 m square can still overlap the bbox
+        lookup = lookup[lookup["x"].between(minx - h, maxx + h) & lookup["y"].between(miny - h, maxy + h)]
+        pid_filter = set(lookup["pixel_id"].to_numpy().tolist())
+
+    yrs = list(years) if years is not None else None
+    frames = []
+    for f in sorted(_SOURCE_DIR.glob("surplus[0-9]*.parquet")):
+        df = pd.read_parquet(f, filters=[("year", "in", yrs)] if yrs is not None else None)
+        if df.empty:
+            continue
+        if pid_filter is not None:
+            df = df[df["pixel_id"].isin(pid_filter)]
+        if not df.empty:
+            frames.append(df)
+
+    cols = ["pixel_id", "year", "surplus_kgha", "total_kg_N"]
+    surplus = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame(columns=cols)
+    return surplus.merge(lookup, on="pixel_id")
+
+
+def surplus_grid(*, grid=None, site_uid=None, merged=None, year=None) -> pd.DataFrame | None:
+    """Area-weighted nitrogen surplus aggregated onto a grid, for a real site OR an
+    in-memory (virtual) grid.
+
+    Provide exactly one of:
+      * grid      — an in-memory grid GeoDataFrame (e.g. from
+                    make_grid.build_grid_from_basin), for an ungauged/virtual site.
+      * site_uid  — loads that site's stored grid via get_grid.
+
+    Returns the same per-(node_id, year) frame write_site_surplus_grid persists to
+    surplus_data/grid/ — columns node_id, global_node_id, year, surplus_kgha,
+    total_kg_N — or None if no surplus overlaps the grid.
+
+    `merged` is the surplus source (from load_surplus_source / build_merged); if omitted
+    it is loaded lazily, filtered to the grid's bbox and, if given, `year`.
+    """
+    if (grid is None) == (site_uid is None):
+        raise ValueError("provide exactly one of grid= or site_uid=")
+    if grid is None:
+        grid = get_grid(site_uid)
+    if merged is None:
+        merged = load_surplus_source(bbox=tuple(grid.total_bounds), years=[year] if year is not None else None)
+    return _aggregate_surplus_grid(merged, grid)
+
+
 def write_site_surplus_pixel(site_uid: str, merged: pd.DataFrame, force: bool = False) -> bool:
     """Write a site's pixel-level surplus to surplus_data/pixel/.
 
@@ -215,7 +278,9 @@ def write_site_surplus_grid(site_uid: str, merged: pd.DataFrame, force: bool = F
     _aggregate_surplus_grid). Needs the rain grid from make_rain. Independent of
     the pixel-level output. Returns True if the parquet was written."""
     out = _GRID_AGG_DIR / f"{site_uid}_surplus_grid.parquet"
-    if out.exists() and not force:
+    # Rebuild if forced, missing, or stale relative to the weather grid it depends on
+    # (a rebuilt grid must propagate even when the file already exists).
+    if out.exists() and not force and not _grid_agg_stale(site_uid):
         return False
 
     try:
@@ -293,11 +358,28 @@ def write_iowa_surplus_images(merged: pd.DataFrame, force: bool = False) -> None
         print(f"  iowa images: {skipped}/{len(years)} already up to date, skipped.")
 
 
+def _grid_agg_stale(site_uid: str) -> bool:
+    """True if the site's surplus_grid parquet predates the weather grid it was built on.
+
+    The surplus_grid aggregate is keyed to weather_grid/{uid}_grid.parquet; if that grid
+    was rebuilt (newer mtime) after the surplus_grid was written, the aggregate is stale
+    even when the basin name is unchanged. Modification time (not creation/birth time) is
+    the right signal: to_parquet overwrites in place, so a rebuild bumps mtime but not
+    birthtime. Missing inputs -> not stale here (existence is handled separately).
+    """
+    grid_path = _GRID_SRC_DIR / f"{site_uid}_grid.parquet"
+    out_path = _GRID_AGG_DIR / f"{site_uid}_surplus_grid.parquet"
+    if not grid_path.exists() or not out_path.exists():
+        return False
+    return grid_path.stat().st_mtime > out_path.stat().st_mtime
+
+
 def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
     """Return UIDs that need a (re)build.
 
-    A site is stale if its surplus parquet is missing or if the basin recorded
-    in .basin_manifest.csv differs from the current entry in preferred_basin.csv.
+    A site is stale if its surplus parquet is missing, if the basin recorded in
+    .basin_manifest.csv differs from the current entry in preferred_basin.csv, or if
+    its surplus_grid predates the weather grid it was aggregated onto (_grid_agg_stale).
     """
     manifest = {}
     if _MANIFEST_FILE.exists():
@@ -310,6 +392,7 @@ def _stale_sites(preferred_meta: pd.DataFrame) -> list[str]:
         if not (_PIXEL_DIR / f"{row['site_uid']}_surplus_pixel.parquet").exists()
         or not (_GRID_AGG_DIR / f"{row['site_uid']}_surplus_grid.parquet").exists()
         or manifest.get(row["site_uid"]) != row["basin_name"]
+        or _grid_agg_stale(row["site_uid"])
     ]
 
 
