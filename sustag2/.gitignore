@@ -1,0 +1,35 @@
+# Data artifacts live under src/data/ but must never be committed (large / regenerable).
+# Track the dir shells via .gitkeep; ignore their contents.
+src/data/raw/*
+src/data/interim/*
+src/data/processed/*
+src/data/cache/*
+!src/data/**/.gitkeep
+
+# EXCEPTION: the per-site water data + metadata is the ONLY durable copy of IWQIS nitrate
+# (not re-fetchable from any API), so it is tracked in git. The 3.1GB raw IWQIS chunks under
+# raw/water/ stay ignored (rebuildable, and the parquets supersede them as source of truth).
+!src/data/processed/water/
+!src/data/processed/water/**
+
+# EXCEPTION: basins are small (~7MB parquets) and slow to re-fetch (NLDI/KMZ for 85 sites), and
+# the 552KB D8 direction raster is a runtime asset site_view needs. Track both.
+!src/data/processed/basins/
+!src/data/processed/basins/**
+!src/data/raw/basins/
+!src/data/raw/basins/**
+
+# Serialized models / results can be large — keep the dirs, ignore heavy contents as needed.
+artifacts/*.json
+artifacts/*.joblib
+artifacts/*.pkl
+!artifacts/.gitkeep
+
+# Python / tooling
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.pytest_cache/
+
+# Project memory (mirrors sustag/.gitignore)
+MEMORY.md

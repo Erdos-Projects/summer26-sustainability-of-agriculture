@@ -42,14 +42,14 @@ def predict(booster: xgb.Booster, features: pd.DataFrame) -> pd.Series:
 # put your regression feature builder code here
 # should return a pd.DataFrame whose columns match the columns you trained
 # the model with
-def build_features_reg(site_data):
+def build_features_reg(site_data, target_year=2017):
     pass
 
 
 # put your classification feature builder code here
 # should return a pd.DataFrame whose columns match the columns you trained
 # the model with
-def build_features_clf(site_data):
+def build_features_clf(site_data, target_year=2017):
     pass
 
 
@@ -66,8 +66,16 @@ def test():
 
     sd = build_virtual_basin(lat=lat, lon=lon, target_year=year)
 
-    reg_f = build_features_reg(site_data=sd, task="reg", target_year=year)
-    clf_f = build_features_clf(site_data=sd, task="clf", target_year=year)
+    # build the features
+    # use one of the isaacmodels if the name is the default name
+    if reg_model_name == "isaac_REG2.json":
+        reg_f = virtual_recipe(site_data=sd, task="reg", target_year=year)
+    else:
+        reg_f = build_features_reg(site_data=sd, target_year=year)
+    if clf_model_name == "isaac_CLF2.json":
+        clf_f = virtual_recipe(site_data=sd, task="clf", target_year=year)
+    else:
+        clf_f = build_features_clf(site_data=sd, target_year=year)
 
     model_reg = load_model(reg_model_name)
     model_clf = load_model(clf_model_name)

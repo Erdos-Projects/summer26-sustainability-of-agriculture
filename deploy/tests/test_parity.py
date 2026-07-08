@@ -28,7 +28,7 @@ sys.path.insert(0, str(_ROOT))
 sys.path.insert(0, str(_DEPLOY))
 
 import virtual_recipes as vr  # noqa: E402
-import predict as pr  # noqa: E402
+import deploy.isaac_predict as pr  # noqa: E402
 from data import get_data  # noqa: E402
 from data.features import daily_nitrate, nitrate_avg_except_this, _state_daily_wide  # noqa: E402
 

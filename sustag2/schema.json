@@ -1,0 +1,18 @@
+{
+  "_comment": "Stub. Defines SiteData fields + the feature/target schema. TODO: generate from src/data/access.py (SiteData) and src/features/recipes.py once ported.",
+  "SiteData": {
+    "site_uid": "str",
+    "basin": "GeoDataFrame|null (EPSG:4326 polygon)",
+    "grid": "DataFrame|null (node_id, global_node_id, x, y, lat, lon, cell_area, dist_to_sensor, frac_cell_in_basin, geometry)",
+    "crops": "DataFrame|null (node_id, global_node_id, year, <class counts>)",
+    "surplus": "DataFrame|null (node_id, global_node_id, year, surplus_kgha, total_kg_N)",
+    "weather": "DataFrame|null (date, node_id, global_node_id, precip_in_1d, max_temp, min_temp, humidity, vpd, solar_rad, evapotranspiration, fuel_moisture_1000h)",
+    "water": "DataFrame|null (datetime index, nitrate_con, ...)",
+    "basin_area": "float|null (m^2)",
+    "sensor_location": "tuple|null (lon, lat)"
+  },
+  "targets": {
+    "reg": "nitrate_con (mg/L, daily)",
+    "clf": "violation = daily_nitrate >= 10 mg/L (0/1)"
+  }
+}
