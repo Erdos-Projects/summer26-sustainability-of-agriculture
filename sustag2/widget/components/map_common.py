@@ -434,12 +434,13 @@ def _cell_tooltip(row, crop_cols):
     return "<br>".join(lines)
 
 
-@functools.lru_cache(maxsize=32)
-def _rain_grid_features(uid, year):
-    """GeoJSON (lon/lat) of a site's rain cells, each with a surplus colour and a
-    tooltip joining surplus + crop stats for `year`. Raises FileNotFoundError if
-    the rain grid hasn't been built. Cached per (uid, year) -- the result is passed
-    read-only to dl.GeoJSON, so callers must not mutate it."""
+@functools.lru_cache(maxsize=64)
+def _rain_grid_features(uid, year, mode="surplus"):
+    """GeoJSON (lon/lat) of a site's rain cells, each with a per-cell colour and a tooltip joining
+    surplus + crop stats for `year`. `mode` picks the colour: 'surplus' (nitrogen-surplus gradient,
+    the default) or 'crop' (dominant CDL crop, colors.CROP_COLORS). Raises FileNotFoundError if the
+    rain grid hasn't been built. Cached per (uid, year, mode) -- the result is passed read-only to
+    dl.GeoJSON, so callers must not mutate it."""
     grid = access.get_grid(uid).to_crs("EPSG:4326")
     cells = grid[["node_id", "geometry"] + [c for c in ("cell_area", "frac_cell_in_basin", "dist_to_sensor") if c in grid.columns]]
 
@@ -457,9 +458,18 @@ def _rain_grid_features(uid, year):
     crop_cols = [col for col in c.columns if col not in ("node_id", "global_node_id")]
 
     cells = cells.merge(s, on="node_id", how="left").merge(c, on="node_id", how="left")
-    cells["color"] = cells["surplus_kgha"].map(
-        lambda v: surplus_viz.surplus_to_hex(v) if pd.notna(v) else _GRID_NODATA_COLOR
-    )
+    if mode == "crop":  # colour each cell by its dominant crop for the year
+        present = [col for col in crop_cols if col in cells.columns]
+        if present:
+            filled = cells[present].fillna(0)
+            dom = filled.idxmax(axis=1).where(filled.sum(axis=1) > 0)  # NaN where the cell has no crop data
+            cells["color"] = dom.map(colors.CROP_COLORS).fillna(_GRID_NODATA_COLOR)
+        else:
+            cells["color"] = _GRID_NODATA_COLOR
+    else:  # nitrogen-surplus gradient (default)
+        cells["color"] = cells["surplus_kgha"].map(
+            lambda v: surplus_viz.surplus_to_hex(v) if pd.notna(v) else _GRID_NODATA_COLOR
+        )
     cells["tooltip"] = cells.apply(lambda r: _cell_tooltip(r, crop_cols), axis=1)
     return json.loads(cells[["node_id", "color", "tooltip", "geometry"]].to_json())
 

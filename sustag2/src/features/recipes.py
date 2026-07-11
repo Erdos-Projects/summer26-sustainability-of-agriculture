@@ -22,6 +22,13 @@ import pandas as pd
 REG_EDGE, REG_VEL, REG_LAM = 50_000, 2.1, 100_000  # exp10 best lofo_r2:  e50k_v2.1_l100k
 CLF_EDGE, CLF_VEL, CLF_LAM = 5_000, 2.1, 20_000  # exp10 best lofo_auc: e5k_v2.1_l20k
 
+# Distance-bucket boundaries (m). REG stays single-edge -- exp18 showed finer buckets overfit and
+# LOWER its LOFO. CLF gets a 2km riparian inner bucket on top of the tuned edge: exp18/exp19 found
+# this lifts lofo_prauc +0.039 (the classifier's near-field flushing signal resolves violation risk).
+# (Antecedent-precip rolling sums were tested too -- exp17 -- but only overlapped this gain, so out.)
+REG_EDGES = (REG_EDGE,)
+CLF_EDGES = (2_000, CLF_EDGE)
+
 # Weather rolling-average ladder: a target window W gets a trailing mean over every k in this
 # ladder with k <= W. k=1 ("today") is already the daily weather block, so only k>1 add
 # columns -- e.g. W=7 -> roll3d + roll7d, W=3 -> roll3d, W=1 -> none.
@@ -68,32 +75,34 @@ def _rolling_weather(wb, windows):
     return frames
 
 
-def _agg_block_compute(site, edge, vel, lam):
+def _agg_block_compute(site, edges, vel, lam):
     """The expensive, window-INDEPENDENT spatial aggregations (weather-with-lag, exp-decay crop,
-    exp-decay surplus) for a site_uid OR a SiteData (via _site_kwargs). Returned frames are
-    READ-ONLY -- callers copy (_rolling_weather, merge_on_date never mutate their inputs)."""
+    exp-decay surplus) for a site_uid OR a SiteData (via _site_kwargs). `edges` is a tuple of
+    bucket boundaries (m). Returned frames are READ-ONLY -- callers copy (_rolling_weather,
+    merge_on_date never mutate their inputs)."""
     kw = _site_kwargs(site)
-    wb = flatten_buckets(agg_weather_w_lag(**kw, edges=[edge], exp=False, water_velocity=vel))
-    cb = flatten_buckets(agg_crops(**kw, edges=[edge], lam=lam, exp=True))
-    sb = flatten_buckets(agg_surplus(**kw, edges=[edge], lam=lam, exp=True))
+    e = list(edges)
+    wb = flatten_buckets(agg_weather_w_lag(**kw, edges=e, exp=False, water_velocity=vel))
+    cb = flatten_buckets(agg_crops(**kw, edges=e, lam=lam, exp=True))
+    sb = flatten_buckets(agg_surplus(**kw, edges=e, lam=lam, exp=True))
     return wb, cb, sb
 
 
 @lru_cache(maxsize=None)
-def _agg_block_cached(site, edge, vel, lam):
-    """Memoized per (site_uid, edge, vel, lam) -- the args are scalars/strings so the call is
-    hashable (unlike the raw agg_* which take an unhashable `edges` list). window/min_obs never
-    touch these, so a window x min_obs sweep reuses one computation per site across all its
+def _agg_block_cached(site, edges, vel, lam):
+    """Memoized per (site_uid, edges, vel, lam) -- the args are hashable (site_uid str, edges
+    tuple, scalars) unlike the raw agg_* which take an unhashable `edges` list. window/min_obs
+    never touch these, so a window x min_obs sweep reuses one computation per site across all its
     recipes. Only reachable from the site_uid path (see _agg_block)."""
-    return _agg_block_compute(site, edge, vel, lam)
+    return _agg_block_compute(site, edges, vel, lam)
 
 
-def _agg_block(site, edge, vel, lam):
+def _agg_block(site, edges, vel, lam):
     """Dispatch: use the site_uid lru_cache when `site` is a (hashable) string, else compute
     directly for an unhashable SiteData (a virtual site is built once, so no caching needed)."""
     if isinstance(site, str):
-        return _agg_block_cached(site, edge, vel, lam)
-    return _agg_block_compute(site, edge, vel, lam)
+        return _agg_block_cached(site, edges, vel, lam)
+    return _agg_block_compute(site, edges, vel, lam)
 
 
 def _cross_site_nitrate_compute(site):
@@ -120,7 +129,7 @@ def _cross_site_nitrate(site):
     return _cross_site_nitrate_compute(site)
 
 
-def _covariate_block(site, n, edge, vel, lam, window, roll_nitrate_windows=(7, 14, 30, 60)):
+def _covariate_block(site, n, edges, vel, lam, window, roll_nitrate_windows=(7, 14, 30, 60)):
     """The feature scaffold: lagged whole-basin weather, exp-decay crop and surplus aggregations
     (memoized via _agg_block), the pure calendar signal, the cross-site nitrate lags, and the
     window-scaled rolling weather (see ROLL_WEATHER_LADDER). Returns a fresh list each call.
@@ -133,7 +142,7 @@ def _covariate_block(site, n, edge, vel, lam, window, roll_nitrate_windows=(7, 1
     the cached 7/14/30/60d set; () to omit them). Per the experiment audit these help REG -- with
     the gain concentrated in 7d -- but HURT CLF (recipe_CLF1 without 0.824 > recipe_CLF1.1 with
     0.817), so REG keeps {7} and CLF omits them."""
-    wb, cb, sb = _agg_block(site, edge, vel, lam)
+    wb, cb, sb = _agg_block(site, edges, vel, lam)
     lagged_avgs, roll_n_all = _cross_site_nitrate(site)
     doy = doy_climatology_pure_signal(n)
     feats = [wb, cb, sb, doy, *lagged_avgs]
@@ -144,15 +153,17 @@ def _covariate_block(site, n, edge, vel, lam, window, roll_nitrate_windows=(7, 1
 
 
 def _best_features_REG(site, n, window=1):
-    """Best known REG feature list (no target). Rolling cross-site nitrate trimmed to the 7d window
-    (REG1.1 importance concentrates there; 14/30/60d were near-zero)."""
-    return _covariate_block(site, n, REG_EDGE, REG_VEL, REG_LAM, window, roll_nitrate_windows=(7,))
+    """Best known REG feature list (no target). Single-bucket geometry (finer buckets overfit,
+    exp18); rolling cross-site nitrate trimmed to the 7d window (REG1.1 importance concentrates
+    there; 14/30/60d were near-zero); no antecedent-precip (it hurts REG, exp17)."""
+    return _covariate_block(site, n, REG_EDGES, REG_VEL, REG_LAM, window, roll_nitrate_windows=(7,))
 
 
 def _best_features_CLF(site, n, window=1, roll_nitrate_windows=()):
-    """Best known CLF feature list (no target). Same scaffold as REG, different basin geometry; the
-    rolling cross-site nitrate windows are omitted by default (they hurt CLF -- see audit)."""
-    return _covariate_block(site, n, CLF_EDGE, CLF_VEL, CLF_LAM, window, roll_nitrate_windows=roll_nitrate_windows)
+    """Best known CLF feature list (no target). Riparian 2km inner bucket (exp18/exp19, +0.039
+    lofo_prauc -- the classifier's near-field flushing signal); rolling cross-site nitrate omitted
+    by default (it hurts CLF -- see audit)."""
+    return _covariate_block(site, n, CLF_EDGES, CLF_VEL, CLF_LAM, window, roll_nitrate_windows=roll_nitrate_windows)
 
 
 def _assemble(site, task, spine, window, target=None):

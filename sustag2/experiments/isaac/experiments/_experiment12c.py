@@ -1,9 +1,6 @@
 """_experiment12c -- CLASSIFIER version of _experiment12.
 
-Does broadcasting surplus forward past 2017 help? Same two recipes (surplus as-is vs
-broadcast forward to the spine's last year) but the TARGET is the binary 'violation' (daily
-nitrate >= 10 mg/L). Continuous nitrate is never a feature; n_daily is only the spine +
-calendar. Scored as classification (AUC). See _experiment12 for the row-set caveat.
+Does broadcasting surplus forward past 2017 help? Same two recipes (surplus as-is vs broadcast forward to the spine's last year) but the TARGET is the binary 'violation' (daily nitrate >= 10 mg/L). Continuous nitrate is never a feature; n_daily is only the spine + calendar. Scored as classification (AUC). See _experiment12 for the row-set caveat.
 
 Run:  python isaac/experiments/_experiment12c.py
 """

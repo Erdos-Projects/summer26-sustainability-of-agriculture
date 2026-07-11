@@ -37,7 +37,7 @@ import numpy as np
 from functools import lru_cache
 from pathlib import Path
 
-from src.data.access import get_data, get_site_ids
+from src.data.access import get_data, get_water, get_weather, get_site_ids
 from src.features.transformers import (
     _DEFAULT_DIST_EDGES_M,
     _VEL,
@@ -139,7 +139,7 @@ def _basin_daily_weather_impl(w):
 
 @lru_cache(maxsize=256)
 def _basin_daily_weather_uid(site_uid):
-    return _basin_daily_weather_impl(get_data(site_uid).weather)
+    return _basin_daily_weather_impl(get_weather(site_uid))  # weather only -> skip the full SiteData build
 
 
 def _basin_daily_weather(site_uid="", site_data=None):
@@ -206,7 +206,9 @@ def _daily_nitrate_impl(water, agg_meth):
 
 @lru_cache(maxsize=256)
 def _daily_nitrate_uid(site_uid, agg_meth="max"):
-    return _daily_nitrate_impl(get_data(site_uid=site_uid).water, agg_meth)
+    # water only -> read the water parquet directly (get_data(uid).water == get_water(uid)) instead
+    # of building the whole SiteData (basin/grid/crops/surplus/weather). Big speed-up everywhere.
+    return _daily_nitrate_impl(get_water(site_uid), agg_meth)
 
 
 def daily_nitrate(site_uid="", site_data=None, agg_meth="max"):
@@ -399,7 +401,7 @@ def _state_daily_wide(force=False):
     frames = []
     for s in get_site_ids():
         try:
-            n = get_data(s).water["nitrate_con"]
+            n = get_water(s)["nitrate_con"]  # water only -> skip building a full SiteData per site
         except (FileNotFoundError, KeyError):
             continue
         if n is None or n.dropna().empty:

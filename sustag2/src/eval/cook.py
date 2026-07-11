@@ -6,24 +6,14 @@ A *recipe* is a function  site_uid -> DataFrame  containing a target column, a `
 column, and feature columns (what recipe_A/B/C produce). Recipes stay pure
 (site -> frame) and know nothing about CV; this module supplies the evaluation.
 
-You tell cook WHICH column is the target and how to score it by passing `target_col=` and
-`task=` to the cook functions (defaults: target_col="nitrate_con", task="reg"). cook reads
-that column off the recipe's output as y and excludes it from the features. For
-classification the recipe builds its own binary target column and you pass task="clf"
-(scored by AUC / PR-AUC / Brier); cook never re-derives the target from a threshold.
+Tell cook which column is the target by passing `target_col=`. Default "nitrate_con".
+Tell cook which task (regression or classification) by passing `task=`, either "reg" or "clf". Default "reg".
 
 Two evaluation modes, differing only in their LEAKAGE AXIS:
 
-  cook_one(recipe, site)     INDIVIDUAL site modelling. Leakage axis = TIME, so CV is
-                             chronological (expanding TimeSeriesSplit). Answers: can the
-                             recipe model one site's dynamics? Compared vs a persistence
-                             baseline (predict yesterday).
-  cook_many(recipe, sites)   CROSS-SITE modelling. Leakage axis = SPACE, so CV groups by
-                             site (LOSO, optimistic) and by family = basin conflict-
-                             component (LOFO, "leave one family out"; honest -- via
-                             data/splits.py). Answers: transfer to an unseen family?
-  cook_fleet(recipe, sites)  bonus: run cook_one on each site, summarise the distribution
-                             (individual modelling across the fleet).
+  cook_one(recipe, site)     INDIVIDUAL site modelling. Leakage axis = TIME.
+  cook_many(recipe, sites)   CROSS-SITE modelling. Leakage axis = SPACE and TIME.
+  cook_fleet(recipe, sites)  bonus: run cook_one on each site, summarise the distribution.
 
 Cross-site performance is reported as a DECOMPOSITION rather than one number:
   between_r2  predicted vs actual per-site means -- does it rank site levels?
@@ -31,10 +21,9 @@ Cross-site performance is reported as a DECOMPOSITION rather than one number:
   macro_r2    median per-site R2 (equal weight per site, vs row-weighted overall)
   loso_r2 / lofo_r2  the leakage bracket (lofo <= real generalisation <= loso)
 
-Comparison is paired: GroupKFold is deterministic, so every recipe sees identical folds
-for the same `sites` -- differences are attributable to features, not split noise.
-
-Run:  python isaac/cook.py
+Two different holdout strategies:
+    LOSO = Leave One Site Out.
+    LOFO = Leave One Family Out.
 """
 
 # this makes all type annotations lazy, so no runtime cost for annotations
@@ -58,6 +47,7 @@ from sklearn.metrics import (
     roc_auc_score,
     average_precision_score,
     precision_recall_curve,
+    roc_curve,
     brier_score_loss,
 )
 from sklearn.inspection import permutation_importance
@@ -159,10 +149,9 @@ def _oof_predict(model: Model, X: pd.DataFrame, task: Task) -> np.ndarray:
 
 def _best_f1(y: np.ndarray, pred: np.ndarray) -> tuple[float, float]:
     """Best achievable F1 over the probability-threshold sweep, with the threshold that hits it.
-    The 0/1 violation target is rare, so a fixed 0.5 cutoff on a calibrated P(violation) scores
-    F1~=0 and tells you nothing; the max-F1 operating point is the honest 'how good is the
-    exceedance *decision* if you pick a sensible cutoff'. The threshold is tuned on these same OOF
-    rows, so read it as mildly optimistic and always alongside prauc (which is threshold-free)."""
+
+    The 0/1 violation target is rare, so a fixed 0.5 cutoff on a calibrated P(violation) scores F1~=0 and tells you nothing; the max-F1 operating point is the honest 'how good is the exceedance *decision* if you pick a sensible cutoff'. The threshold is tuned on these same OOF rows, so read it as mildly optimistic and always alongside prauc (which is threshold-free).
+    """
     if len(np.unique(y)) < 2:
         return float("nan"), float("nan")
     prec, rec, thr = precision_recall_curve(y, pred)
@@ -170,6 +159,51 @@ def _best_f1(y: np.ndarray, pred: np.ndarray) -> tuple[float, float]:
     i = int(np.nanargmax(f1))
     # precision_recall_curve returns len(thr) == len(prec) - 1; the last point (recall 0) has no cutoff
     return float(f1[i]), float(thr[i]) if i < len(thr) else float("nan")
+
+
+_FAR_BUDGET = 0.10  # false-alarm-rate budget for recall_at_far
+
+
+def _imbalance_suite(
+    y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, far: float = _FAR_BUDGET
+) -> dict[str, float]:
+    """Class-imbalance-robust metrics for a set of (y, P(positive))    threshold-free prauc_lift, which never cherry-picks an operating point.
+
+    prauc_lift    average precision / base rate -- >1 beats a random ranker; imbalance-normalised
+    f2            best F2 (recall weighted 2x precision)
+    mcc           best Matthews correlation
+    recall_at_far recall achievable at a false-alarm rate (FPR) <= `far`
+    """
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    ok = ~(np.isnan(y) | np.isnan(pred))
+    y, pred = y[ok], pred[ok]
+    keys = ("prauc_lift", "f2", "mcc", "recall_at_far")
+    if len(np.unique(y)) < 2:
+        return {k: np.nan for k in keys}
+
+    base = float(y.mean())
+    prauc = average_precision_score(y, pred)
+
+    prec, rec, _ = precision_recall_curve(y, pred)
+    den_f2 = 4.0 * prec + rec  # F_beta with beta=2 -> (1+4)PR / (4P+R)
+    f2 = np.divide(5.0 * prec * rec, den_f2, out=np.zeros_like(prec), where=den_f2 > 0)
+
+    fpr, tpr, _ = roc_curve(y, pred)
+    P = float(y.sum())
+    N = float(len(y) - P)
+    tp, fp = tpr * P, fpr * N
+    fn, tn = P - tp, N - fp
+    den_mcc = np.sqrt((tp + fp) * (tp + fn) * (tn + fp) * (tn + fn))
+    mcc = np.divide(tp * tn - fp * fn, den_mcc, out=np.zeros_like(den_mcc), where=den_mcc > 0)
+    within = fpr <= far  # operating points inside the false-alarm budget
+
+    return dict(
+        prauc_lift=float(prauc / base) if base > 0 else float("nan"),
+        f2=float(np.nanmax(f2)),
+        mcc=float(np.nanmax(mcc)),
+        recall_at_far=float(tpr[within].max()) if within.any() else 0.0,
+    )
 
 
 def _score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, task: Task) -> dict[str, float]:
@@ -188,7 +222,7 @@ def _score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, task: Task) 
         return dict(
             auc=roc_auc_score(y, pred) if two else np.nan,
             prauc=average_precision_score(y, pred) if two else np.nan,
-            f1=f1,               # best-F1 over the threshold sweep (exceedance-decision quality)
+            f1=f1,  # best-F1 over the threshold sweep (exceedance-decision quality)
             f1_thresh=f1_thresh,  # the P(violation) cutoff that achieves it
             brier=brier_score_loss(y, pred),
             base=float(y.mean()),
@@ -290,12 +324,9 @@ def cook_one(
 ) -> dict:
     """Hand off a recipe, a single site_uid, a target_col, and a task ('reg' or 'clf' are the only options) and then do CV on the one site.
 
-    `target`/`task` say which output column is the label and how to score it. Pools
-    out-of-fold predictions across folds and scores once (stable, unlike averaging noisy
-    per-fold R2); each fold early-stops on the chronological tail of its train set.
-    Regression also reports the persistence (predict-yesterday) baseline RMSE.
+    `target`/`task` say which output column is the label and how to score it. Pools out-of-fold predictions across folds and scores once (stable, unlike averaging noisy per-fold R2); each fold early-stops on the chronological tail of its train set. Regression also reports the persistence (predict-yesterday) baseline RMSE.
 
-    Always returns "importance" (mean GAIN across folds, free). With
+    Always returns "importance", free with XGBoost run.
     extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
     """
     df = recipe(site_uid)
@@ -344,10 +375,11 @@ def _pool(
 ) -> pd.DataFrame:
     """Build the mega dataframe. Stack many recipe frames into one long dataframe, tagged with `site`.
 
-    Sites whose data fails to build, or that are too short, are skipped; if NOTHING is usable the actual skip reasons are surfaced (instead of a bare 'no usable frame'), so a recipe bug doesn't hide behind an opaque error after a long run.
+    Use `sites` to pass an explicit site list (REQUIRED: but if used via cook_many or compare_many, it'll pass all valid sites.)
+    Use `target` to specify the target column in the dataframe (REQUIRED)
+    Use `min_rows` to specify the minimum number of non-nan rows a site must have to make it into the dataframe
 
-    If `progress_label` is given, a self-overwriting status line reports cooking progress
-    (sites cooked so far / total, and how many produced a usable frame).
+    If `progress_label` is given, a self-overwriting status line reports cooking progress (sites cooked so far / total, and how many produced a usable frame).
     """
     sites = list(sites)
     total = len(sites)
@@ -362,15 +394,13 @@ def _pool(
         try:
             d = recipe(s)
         except Exception as e:
-            reason = f"{type(e).__name__}: {e}"
-            skipped.append(reason)
-            print(f"\n  [skipped] {s}: {reason}", file=sys.stderr)  # leading \n: don't clobber the status line
+            skipped.append((s, f"{type(e).__name__}: {e}"))  # build failure; reported in the end-summary
             continue
 
         _check_target(recipe, d, target)  # a missing target is a bug -> raise, never skip
         d = d.dropna(subset=[target])  # drop any rows mising the target
         if len(d) < min_rows:
-            skipped.append(f"only {len(d)} usable rows (< {min_rows})")
+            skipped.append((s, f"only {len(d)} usable rows (< {min_rows})"))
             continue
         d = d.copy()
         d["site"] = s
@@ -378,13 +408,20 @@ def _pool(
     if progress_label is not None:
         # overwrite the last heartbeat with the accurate completed total (trailing spaces
         # clear leftovers from the longer in-progress line), then newline to keep it
-        print(f"\r  cooked {progress_label}: {len(frames)}/{total} sites usable" + " " * 20, flush=True)
+        print(
+            f"\r  cooked {progress_label}: {len(frames)}/{total} sites usable (min_rows >= {min_rows})" + " " * 20,
+            flush=True,
+        )
+        # list dropped sites AFTER the heartbeat line -- an inline print mid-loop gets clobbered by
+        # the next \r heartbeat, so both build failures AND the <min_rows drops were invisible.
+        for s, reason in skipped:
+            print(f"    [skipped] {s}: {reason}")
     if not frames:
         from collections import Counter
 
         # if there aren't ANY frames, builds a human-readable error messages explaining
         # (hopefully) why the sites got skipped.
-        reasons = "; ".join(f"{n}x {r}" for r, n in Counter(skipped).most_common(3))
+        reasons = "; ".join(f"{n}x {r}" for r, n in Counter(r for _, r in skipped).most_common(3))
         raise ValueError(f"no sites produced a usable frame ({len(skipped)} sites skipped) -- {reasons}")
     return pd.concat(frames, ignore_index=True)
 
@@ -398,7 +435,7 @@ def _grouped_models(X, y, groups, task, n_splits, seed=0, **xgb_kw):
 
     For each train/test split in GroupKFold:
         1. Permute the training rows
-        If this didn't happen, we would evaluate on the last temporal chunk of the last site. We want evaluation spread out between sites. XGBoost doesn't need contiguous time series, it just sees a bag of rows, so this is fine.
+        If this didn't happen, we would always evaluate on the last temporal chunk of the last site. We want evaluation spread out between sites. XGBoost doesn't need contiguous time series, it just sees a bag of rows, so this is fine.
         2. Store the cut so we have an eval piece, hardcoded to 85/15% split
         3. First the model on this split
         4. Return the test indices and the model
@@ -437,22 +474,18 @@ _PERM_REPEATS = 5  # shuffles per feature per fold for the permutation-importanc
 
 
 def _gain_importance(fold_models, feat: list[str]) -> pd.Series:
-    """Mean XGBoost GAIN importance across the fold-models, indexed by feature, sorted desc.
+    """Mean XGBoost GAIN importance across the fold-models, indexed by feature, sorted desc."""
 
-    Reads each model's `feature_importances_` -- free (the models already exist).
-    `fold_models` is an iterable of (model, test_idx). Pass importance_type= via **xgb_kw
-    to switch gain -> weight/cover."""
     cols = [pd.Series(m.feature_importances_, index=feat) for m, _ in fold_models]
     return pd.concat(cols, axis=1).mean(axis=1).sort_values(ascending=False)
 
 
 def _perm_importance(fold_models, X, y, feat: list[str], task: Task, seed: int = 0) -> pd.Series:
-    """Mean PERMUTATION importance across folds, indexed by feature, sorted desc.
+    """Mean PERMUTATION importance across folds, indexed by feature, sorted desc. Extra feature importance check, optional
 
-    For each fold, shuffle each feature on that fold's HELD-OUT rows and measure the drop in
-    score (R2 for reg, ROC-AUC for clf) -- honest, in metric units, but costs
-    ~K * n_feat * _PERM_REPEATS rescorings. Folds whose held-out set can't be scored (e.g. a
-    single-class clf window -> AUC undefined) are skipped; if none are scorable, returns NaNs.
+    For each fold, shuffle each feature on that fold's HELD-OUT rows and measure the drop in score (R2 for reg, ROC-AUC for clf) -- honest, in metric units, but costs ~K * n_feat * _PERM_REPEATS rescorings.
+
+    Folds whose held-out set can't be scored (e.g. a single-class clf window -> AUC undefined) are skipped; if none are scorable, returns NaNs.
     """
     scoring = "r2" if task == "reg" else "roc_auc"
     fold_models = list(fold_models)
@@ -486,26 +519,27 @@ def cook_many(
     n_splits: int = 5,
     extra_importance_test: bool = False,
     progress: bool | str = False,
+    min_rows: int = 500,
     **xgb_kw: Any,
 ) -> dict:
     """Pooled cross-site CV with site- (LOSO) and family- (LOFO) grouped holdouts.
 
     `sites` defaults to all sites (get_site_ids); _pool silently drops any that fail to
-    build or are too short. `target_col`/`task` say which output column is the label and how
-    to score it. Returns the decomposition (between/within/macro) plus the LOSO/LOFO
-    bracket. For classification the 'level' analogue is the per-site violation RATE.
+    build or produce fewer than `min_rows` usable (non-NaN-target) rows. `target_col`/`task`
+    say which output column is the label and how to score it. Returns the decomposition
+    (between/within/macro) plus the LOSO/LOFO bracket. For classification the 'level' analogue
+    is the per-site violation RATE.
 
-    Always returns "importance" (mean GAIN across the LOSO fold-models, free). With
-    extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
+    `min_rows` (default 500) is the min num of non-nan rows a site needs to make it into the training/testing, otherwise its ignored.
 
-    progress: show a self-overwriting per-site "cooking" status line while building the
-    pool. True labels it with recipe.__name__; pass a string to use that label instead
-    (compare_many passes the recipe's display name).
+    Always returns "importance" (mean GAIN across the LOSO fold-models, free). With    extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
+
+    progress: show a self-overwriting per-site "cooking" status line while building the pool. True labels it with recipe.__name__; pass a string to use that label instead (compare_many passes the recipe's display name).
     """
     if sites is None:
         sites = get_site_ids()
     label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
-    pool = _pool(recipe, sites, target_col, progress_label=label)
+    pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
     feat = _features(pool, target_col)
     X, y = pool[feat], _target(pool, target_col, task)
     # site (LOSO) folds: collect OOF predictions AND the fold-models (for importance)
@@ -559,20 +593,25 @@ def _cross_metrics(
     tab = pd.DataFrame({"y": y, "p": oof_site, "g": site})
     site_means = tab.groupby("g")[["y", "p"]].mean()  # per-site level
     per_site = tab.groupby("g").apply(lambda d: _per_site_score(d.y, d.p, task))
-    overall = _score(y, oof_site, task)          # LOSO (optimistic: nested basins leak)
-    lofo = _score(y, oof_family, task)           # LOFO (the honest generalization number)
+    overall = _score(y, oof_site, task)  # LOSO (optimistic: nested basins leak)
+    lofo = _score(y, oof_family, task)  # LOFO (the honest generalization number)
     # skill vs the persistence ("predict yesterday") baseline -- comparable across targets
     persist = _persistence_pred(site, pool["date"].to_numpy(), y)
     persist_skill = _persistence_skill(y, oof_site, persist)
 
     if task == "clf":
+        # class-imbalance suite on the OOF, for the leaking (loso) and honest (lofo) holdouts
+        loso_imb = _imbalance_suite(y, oof_site)
+        lofo_imb = _imbalance_suite(y, oof_family)
         return dict(
             loso_auc=overall["auc"],
             lofo_auc=lofo["auc"],
             loso_prauc=overall["prauc"],
             lofo_prauc=lofo["prauc"],  # base-rate-aware, honest generalization -- the headline pair
             loso_f1=overall["f1"],
-            lofo_f1=lofo["f1"],        # best-F1 exceedance-decision quality, family-held-out
+            lofo_f1=lofo["f1"],  # best-F1 exceedance-decision quality, family-held-out
+            **{f"loso_{k}": v for k, v in loso_imb.items()},
+            **{f"lofo_{k}": v for k, v in lofo_imb.items()},
             brier=overall["brier"],
             persist_skill=persist_skill,  # Brier skill vs predict-yesterday (>0 beats it); a
             # gauged-site validation metric -- N/A for a virtual site, which has no own history
@@ -666,7 +705,7 @@ def compare_many(
     """Table of cook_many metrics, one row per named recipe (same sites + folds).
 
     `sites` defaults to all sites; resolved once here so every recipe sees the same set.
-    target_col=/task= (and model kwargs) are forwarded to cook_many. With progress=True each
+    target_col=/task=/min_rows= (and model kwargs) are forwarded to cook_many. With progress=True each
     recipe prints a header line (which recipe / elapsed) followed by cook_many's own
     self-overwriting per-site cooking line.
     """
@@ -847,42 +886,26 @@ def fit_full(
     final_fit: bool = False,
     save_path: str | None = None,
     progress: bool | str = False,
+    min_rows: int = 500,
     **xgb_kw: Any,
 ) -> tuple[Model, list[str], dict[str, pd.Series]]:
     """Fit ONE deployable model on the full pooled dataset (no cross-validation holdout).
 
-    cook_many only produces cross-validated fold-models for *scoring* -- each is trained on
-    N-1 sites, so none is a single model fit on all the data. This pools every usable row
-    across `sites` (same pooling cook_many uses) and fits one estimator suitable for saving
-    and predicting on new sites.
+    cook_many only produces cross-validated fold-models for *scoring* -- each is trained on N-1 sites, so none is a single model fit on all the data. This pools every usable row across `sites` (same pooling cook_many uses) and fits one estimator suitable for saving and predicting on new sites.
 
-    A `val_frac` random slice is held out (it both picks the early-stopping iteration, when
-    the config uses early_stopping_rounds -- the default does -- and serves as the held-out
-    set for permutation importance). By default the shipped model is the one trained on the
-    rest (1 - val_frac of the rows).
+    A `val_frac` random slice is held out (it both picks the early-stopping iteration, when the config uses early_stopping_rounds -- the default does -- and serves as the held-out set for permutation importance). By default the shipped model is the one trained on the rest (1 - val_frac of the rows).
 
-    final_fit=True instead trains the shipped model on 100% of the rows: it first fits on the
-    holdout to learn the early-stopping iteration, then refits on ALL rows at that fixed tree
-    count (early_stopping_rounds disabled). Use this for the deployed model -- it sees every
-    row. (With no early_stopping_rounds configured there's nothing to learn, so it just fits
-    on all rows.)
+    final_fit=True instead trains the shipped model on 100% of the rows: it first fits on the holdout to learn the early-stopping iteration, then refits on ALL rows at that fixed tree count (early_stopping_rounds disabled). Use this for the deployed model -- it sees every
+    row. (With no early_stopping_rounds configured there's nothing to learn, so it just fits on all rows.)
 
-    Always computes GAIN importance (free, from the shipped model). With
-    extra_importance_test=True also computes PERMUTATION importance on the val_frac holdout
-    using the holdout-trained model (honest -- that model never saw those rows). Both are
-    returned in the importance dict and, if `save_path` is given, written to CSV sidecars.
+    Always computes GAIN importance (free, from the shipped model). With extra_importance_test=True also computes PERMUTATION importance on the val_frac holdout using the holdout-trained model (honest -- that model never saw those rows). Both are returned in the importance dict and, if `save_path` is given, written to CSV sidecars.
 
-    If `save_path` is given, also persists the model: '<save_path>' (booster) +
-    '<save_path>.meta.json' + '<stem>_importance.csv' (+ '<stem>_importance_perm.csv').
-
-    Returns (model, feat, importance) where feat is the ordered feature columns the model
-    expects (pass new data as df[feat]) and importance is {"importance": gain Series[,
-    "importance_perm": perm Series]}.
+    If `save_path` is given, also persists the model: '<save_path>' (booster) + '<save_path>.meta.json' + '<stem>_importance.csv' (+ '<stem>_importance_perm.csv').
     """
     if sites is None:
         sites = get_site_ids()
     label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
-    pool = _pool(recipe, sites, target_col, progress_label=label)
+    pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
     feat = _features(pool, target_col)
     X, y = pool[feat], _target(pool, target_col, task)
 
@@ -927,9 +950,7 @@ def save_model(model: Model, feat: Sequence[str], path: str, task: Task = "reg",
     """Persist a fitted model (XGBoost native booster) plus a sidecar of what's needed to use it.
 
     Writes '<path>' (the booster in XGBoost's version-robust JSON format) and
-    '<path>.meta.json' (the ordered feature columns, task, and target name). The sidecar is
-    what lets you line up new data's columns at predict time. Pair with load_model(). Returns
-    the files written.
+    '<path>.meta.json' (the ordered feature columns, task, and target name). The sidecar is what lets you line up new data's columns at predict time. Pair with load_model(). Returns the files written.
     """
     model.get_booster().save_model(path)  # booster-level: avoids the sklearn-wrapper save_model quirk
     meta = {"feat": list(feat), "task": task, "target": target_col, "model_class": type(model).__name__}
@@ -939,9 +960,6 @@ def save_model(model: Model, feat: Sequence[str], path: str, task: Task = "reg",
 
 
 def _save_importance(importance: dict[str, pd.Series], stem: str) -> list[str]:
-    """Write a single model's importance Series to CSV sidecars ('<stem>_importance.csv' for
-    gain, '<stem>_importance_perm.csv' for permutation), features as the index. Returns files
-    written."""
     written = []
     for key, suffix in (("importance", "_importance"), ("importance_perm", "_importance_perm")):
         s = importance.get(key)
@@ -953,13 +971,7 @@ def _save_importance(importance: dict[str, pd.Series], stem: str) -> list[str]:
 
 
 def load_model(path: str) -> tuple[Model, dict]:
-    """Load a model saved by save_model(). Returns (model, meta).
-
-    meta carries 'feat' (the feature-column order), 'task', and 'target'. Predict with
-        model.predict(new_df[meta["feat"]])                 # regression
-        model.predict_proba(new_df[meta["feat"]])[:, 1]     # classification
-    where new_df is a recipe frame for the site(s) you want to score.
-    """
+    """Load a model saved by save_model(). Returns (model, meta)."""
     with open(f"{path}.meta.json") as f:
         meta = json.load(f)
     m = xgb.XGBClassifier() if meta["task"] == "clf" else xgb.XGBRegressor()
@@ -967,7 +979,7 @@ def load_model(path: str) -> tuple[Model, dict]:
     return m, meta
 
 
-# ── demo / smoke test ───────────────────
+# demo/smoke test
 if __name__ == "__main__":
     from src.features.features import (
         agg_crops,

@@ -17,7 +17,16 @@ Headline pair is **`lofo_prauc`** + **`lofo_f1`** — base-rate-aware discrimina
 | `base` | Violation rate (reference for prauc/brier) | — |
 | `persist_skill` | Brier skill vs predict-yesterday | ↑; **gauged-site only** — N/A for a virtual site (no own history to persist) |
 
-`_score` also returns `f1_thresh`, the P(violation) cutoff that achieves the best F1 — the operating point to ship in a decision UI. Best-F1 tunes its threshold on the eval rows, so read it as mildly optimistic and always beside `prauc` (threshold-free).
+**Class-imbalance suite** (`_imbalance_suite`, reported `lofo_*` + `loso_*`) — the honest picture when violations are the rare class:
+
+| KPI | Definition | Direction |
+|---|---|---|
+| `lofo_prauc_lift` / `loso_prauc_lift` | PR-AUC ÷ base rate — × better than a random ranker (imbalance-normalised, threshold-free) | ↑ (1 = chance) |
+| `lofo_f2` / `loso_f2` | Best F2 over the sweep (recall weighted 2× precision — false-negative-averse) | ↑ |
+| `lofo_mcc` / `loso_mcc` | Best Matthews correlation (all 4 confusion cells; robust to skew) | ↑ (0 = chance) |
+| `lofo_recall_at_far` / `loso_recall_at_far` | Recall achievable at a false-alarm rate ≤ `_FAR_BUDGET` (10%) | ↑ |
+
+`_score` also returns `f1_thresh`, the P(violation) cutoff that achieves the best F1 — the operating point to ship in a decision UI. The best-over-sweep entries (`f1`, `f2`, `mcc`) tune their threshold on the eval rows, so read them as mildly optimistic and always beside the threshold-free `prauc` / `prauc_lift`.
 
 ## Regression (nitrate concentration, mg/L)
 

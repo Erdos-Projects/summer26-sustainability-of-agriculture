@@ -1,10 +1,6 @@
-"""_experiment11c -- CLASSIFIER version of _experiment11.
+"""_experiment11c, classifier version
 
-Same four recipes (base / +rolling_precip / +water_balance / +both) testing whether explicit
-antecedent-moisture integrators help and whether they displace fuel_moisture_1000h -- but the
-TARGET is the binary 'violation' (daily nitrate >= 10 mg/L). Continuous nitrate is never a
-feature; n_daily is only the spine + calendar. Scored as classification (AUC). Run with
---extra=True for the held-out permutation cross-check on fm1000.
+Same four recipes (base / +rolling_precip / +water_balance / +both) testing whether explicit antecedent-moisture integrators help and whether they displace fuel_moisture_1000h -- but the TARGET is the binary 'violation' (daily nitrate >= 10 mg/L). Continuous nitrate is never a feature; n_daily is only the spine + calendar. Scored as classification (AUC). Run with --extra=True for the held-out permutation cross-check on fm1000.
 
 Run:  python isaac/experiments/_experiment11c.py
 """

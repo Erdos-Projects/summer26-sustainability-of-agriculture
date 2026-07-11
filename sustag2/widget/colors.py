@@ -56,3 +56,53 @@ def pin_basin_style(method):
         "fillColor": c["fill"],
         "interactive": False,
     }
+
+
+# ── Crop palette (dominant-crop grid colouring; mirrors the presentation figure) ──────────────
+# CDL categories the aggregation keeps (see recipes/crop reconciliation). Cells with no crop data
+# fall back to _GRID_NODATA_COLOR in map_common.
+CROP_COLORS = {
+    "Corn": "#f2c14e",
+    "Soybeans": "#2f7d32",
+    "Hay_Pasture": "#8bc34a",
+    "Alfalfa": "#7e57c2",
+    "Small_Grains": "#c8a15a",
+    "Fallow": "#a1887f",
+    "Nonag": "#9e9e9e",
+    "Other": "#d7ccc8",
+}
+
+
+# ── Explore-tab control defaults ──────────────────────────────────────────────────────────────
+# Single source of truth for the initial value of every Explore-tab control. Change a value here
+# to change what the widget shows on load; map_layout's section builders read these via default().
+EXPLORE_DEFAULTS = {
+    # selection
+    "selection-mode": "point",
+    # graph display
+    "graph-toggle": ["show"],
+    "aggregate-interval": "1D",
+    "agg-func-water": "mean",
+    "agg-func-rain": "sum",
+    # map display overlays
+    "hydro-toggle": ["show"],
+    "basin-preferred-toggle": [],
+    "basin-all-toggle": [],
+    "rain-grid-toggle": [],
+    "surplus-heatmap-toggle": [],
+    "iowa-surplus-heatmap-toggle": [],
+    "surplus-year-slider": 2017,
+    "surplus-opacity-slider": 0.8,
+    # presentation display options
+    "grid-color-mode": "surplus",
+    # map layers / debug
+    "tile-selector": "street",
+    "iem-bbox-toggle": [],
+}
+
+
+def default(key, fallback=None):
+    """Initial value for an Explore-tab control id (see EXPLORE_DEFAULTS). Lists are copied so a
+    Dash component can never mutate the shared default in place."""
+    v = EXPLORE_DEFAULTS.get(key, fallback)
+    return list(v) if isinstance(v, list) else v

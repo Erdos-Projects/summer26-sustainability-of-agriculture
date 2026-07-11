@@ -82,8 +82,7 @@ def _as_bool(s):
 def _select(ids):
     """Map experiment identifiers (e.g. '6', '7c', '10') to their files.
 
-    With no ids, returns every experiment in natural order. With ids, returns exactly those
-    in the ORDER GIVEN (so '6 7c 9c 8 10' runs in that sequence). Unknown ids raise.
+    With no ids, returns every experiment in natural order. With ids, returns exactly those in the ORDER GIVEN (so '6 7c 9c 8 10' runs in that sequence). Unknown ids raise.
     """
     by_label = {p.stem.replace("_experiment", ""): p for p in _experiment_files()}
     if not ids:

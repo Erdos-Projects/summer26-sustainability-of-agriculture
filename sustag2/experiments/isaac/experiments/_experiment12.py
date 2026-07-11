@@ -1,23 +1,4 @@
-"""_experiment12 -- does broadcasting surplus forward past 2017 help the model?
-
-The nitrogen surplus source stops at 2017, while crops (CDL) and the nitrate record run to
-the present (~2025). Because merge_on_date left-joins surplus by year, EVERY row from 2018
-onward gets NaN surplus and is dropped -- silently discarding ~7 years of the most recent
-record on any surplus-using recipe. extend_years_forward holds the 2017 surplus values
-constant for 2018+ ("latest known surplus persists"), recovering those rows.
-
-Two otherwise-identical recipes:
-
-  surplus_stop2017   surplus as-is (2018+ rows dropped)
-  surplus_extended   surplus broadcast forward to the spine's last year (2018+ rows kept)
-
-NOTE: the two are scored on DIFFERENT row sets -- 'extended' adds the recovered 2018+ rows
-(real crops + frozen-2017 surplus), so a fair read is "does recovering recent years, under
-the persist-surplus assumption, improve cross-site scores?" Watch n_rows (the recovered
-data) alongside loso_r2/lofo_r2.
-
-Run:  python isaac/experiments/_experiment12.py
-"""
+"""_experiment12 -- does broadcasting surplus forward past 2017 help the model?"""
 
 import sys
 
@@ -44,12 +25,7 @@ LAM = 5_000  # crop/surplus exp-decay length (m)
 
 
 def extend_years_forward(annual, last_year):
-    """Broadcast an annual frame's final-year values forward through `last_year`.
-
-    `annual` has a 'year' column; years after the last present one are filled with that last
-    year's values (ffill over a reindexed contiguous year range). A no-op for years already
-    present.
-    """
+    """Broadcast an annual frame's final-year values forward through `last_year`."""
     full = range(int(annual["year"].min()), int(last_year) + 1)
     return annual.set_index("year").reindex(full).ffill().reset_index()
 

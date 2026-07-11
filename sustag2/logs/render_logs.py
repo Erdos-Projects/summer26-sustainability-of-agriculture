@@ -89,6 +89,7 @@ def _importances_block(key, entry):
     return (
         f"# {_model_type(entry)} Model {key}\n\n"
         f"Recipe: {entry.get('recipe', '?')}\n\n"
+        f"Features:  "
         f"{_importance_table(entry)}\n"
     )
 

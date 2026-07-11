@@ -3,7 +3,7 @@ map_panel.layout()). Shared helpers/constants live in map_common; the UI builder
 Split purely for navigability -- behavior is unchanged."""
 
 from .map_common import *  # noqa: F401,F403
-from .map_layout import layout  # noqa: F401
+from .map_layout import layout, _crop_legend, _surplus_legend  # noqa: F401
 
 
 def register_callbacks(app):
@@ -365,16 +365,29 @@ def register_callbacks(app):
             return []
 
     @app.callback(
+        Output("grid-color-legend", "children"),
+        Input("rain-grid-toggle", "value"),
+        Input("grid-color-mode", "value"),
+        Input("active-graph-site", "data"),
+    )
+    def render_grid_color_legend(rain_toggle, color_mode, active_uid):
+        # only when the rain grid is actually showing (toggle on + a site to draw it for)
+        if "show" not in (rain_toggle or []) or not active_uid:
+            return []
+        return _crop_legend() if color_mode == "crop" else _surplus_legend()
+
+    @app.callback(
         Output("rain-grid-layer", "children"),
         Input("rain-grid-toggle", "value"),
         Input("active-graph-site", "data"),
         Input("surplus-year-slider", "value"),
+        Input("grid-color-mode", "value"),
     )
-    def render_rain_grid(toggle, active_uid, year):
+    def render_rain_grid(toggle, active_uid, year, color_mode):
         if "show" not in toggle or not active_uid:
             return []
         try:
-            features = _rain_grid_features(active_uid, year)
+            features = _rain_grid_features(active_uid, year, color_mode or "surplus")
         except FileNotFoundError:
             return _rain_grid_dots(active_uid)  # no rain grid built yet → centroid dots
         return [

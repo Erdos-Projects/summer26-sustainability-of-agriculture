@@ -1,15 +1,11 @@
-"""_experiment14: do 'spike' targets (deviation from a trailing rolling-mean baseline) model
-better than the absolute level / violation targets?
+"""_experiment14: do 'spike' targets (deviation from a trailing rolling-mean baseline) model better than the absolute level / violation targets?
 
-Spikes are site-relative by construction, so they target the within-site dynamics the level
-models capture rather than the between-site level they don't -- and persistence ("predict
-yesterday") is a much weaker baseline for an anomaly, so persist_skill is the number to watch.
+Spikes are site-relative by construction, so they target the within-site dynamics the level models capture rather than the between-site level they don't -- and persistence ("predict yesterday") is a much weaker baseline for an anomaly, so persist_skill is the number to watch.
 
   REG target -> the continuous standardized anomaly  z(t) = (x - trailing_mean) / trailing_std
   CLF target -> the binary spike  1[z(t) >= k]
 
-REG sweeps the baseline window N (z is independent of k); CLF sweeps N x k. Regression ->
-test_results/_experiment14.csv, classification -> test_results/_experiment14c.csv.
+REG sweeps the baseline window N (z is independent of k); CLF sweeps N x k. Regression -> test_results/_experiment14.csv, classification -> test_results/_experiment14c.csv.
 """
 
 import sys

@@ -11,18 +11,6 @@ sys.path.insert(0, str(_ROOT))  # sustag2/ on path
 from src.eval.cook import compare_many, fit_full, save_model
 from src.features.recipes import recipe_REG, recipe_CLF
 
-"""The reasoning for this dataset (cross-site, ~60k pooled rows, noisy nitrate, the LOSO/LOFO leakage gap you've seen):
-
-Low learning_rate (0.01–0.03) + high n_estimators + early stopping is the single most important choice for a final model — slow learning generalizes better, and early stopping finds the right tree count instead of you guessing.
-Shallow max_depth (3–5) matters more here than usual: deep trees latch onto site-specific interactions that don't transfer to unseen basins (your between_r2 problem). Keep it shallow.
-subsample/colsample_bytree ~0.7 and min_child_weight ~10 are the regularizers that stop the model from overfitting a single site's quirks — keep them on.
-reg_lambda 1–10 is fine; bump it if you still see a big LOSO↔LOFO gap.
-How to actually pick values rather than eyeball them: tune against your lofo_r2 (the honest metric), not loso_r2, using cook_many — e.g. sweep max_depth ∈ {3,4,5,6} and learning_rate ∈ {0.01,0.02,0.05} and take the config with the best LOFO. Then fit the final model with fit_full(**that_config). If you want, I can write a small _tune.py that grid-searches cook_many on LOFO and prints the winning config.
-
-On early_stopping_rounds + fitting the deployed model on 100% of the rows: build() does this. It prefers the tree count from the tuning run — tune.py records best_iteration per recipe in models/lofo_tune.csv, and build() reads it (see _tuned_iters), then fits the deployable model with early_stopping_rounds=None, n_estimators=best_iteration on ALL rows. If no tuned count is on file, it falls back to fit_full(final_fit=True): fit a val_frac holdout to learn best_iteration, then refit on all rows at that count.
-"""
-# CLF config: still the old hand-picked defaults -- the clf _tune.py sweep is pending.
-# TODO: replace with the `python _tune.py clf` winner when it finishes.
 REAL_XGB_old = dict(
     n_estimators=5000,  # high ceiling; early stopping picks the real count
     learning_rate=0.02,  # low -> more trees, better generalization
@@ -70,9 +58,7 @@ _LOFO_FILE = OUT / "lofo_tune.csv"  # tune.py's per-recipe winner table (holds b
 
 
 def _tuned_iters(recipe_name):
-    """best_iteration recorded for `recipe_name` by tune.py (models/lofo_tune.csv), or None if the
-    file / row / column is absent. None -> the full train falls back to fit_full(final_fit=True),
-    which learns the tree count from its own holdout instead of the tuning run."""
+    """best_iteration recorded for `recipe_name` by tune.py (models/lofo_tune.csv), or None if the file / row / column is absent. None -> the full train falls back to fit_full(final_fit=True), which learns the tree count from its own holdout instead of the tuning run."""
     if not _LOFO_FILE.exists():
         return None
     df = pd.read_csv(_LOFO_FILE)
@@ -124,7 +110,7 @@ def log_metadata(name, recipe, target_col, task, xgb, scores):
     return key
 
 
-def build(name, recipe, target_col, task, xgb, final_iters=None):
+def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=500):
     # first check the directory exists before committing
     OUT.mkdir(exist_ok=True)
 
@@ -132,7 +118,7 @@ def build(name, recipe, target_col, task, xgb, final_iters=None):
     print(f"\n===== {name} ({task}) =====")
     print("[1/2] evaluating cross-site (LOSO/LOFO)...")
     scores = compare_many(
-        {name: recipe}, sites=None, target_col=target_col, task=task, extra_importance_test=True, **xgb
+        {name: recipe}, sites=None, target_col=target_col, task=task, extra_importance_test=True, min_rows=min_rows, **xgb
     )
     print(scores.round(3).to_string())
     key = log_metadata(name, recipe, target_col, task, xgb, scores)
@@ -152,7 +138,7 @@ def build(name, recipe, target_col, task, xgb, final_iters=None):
     else:
         print("[2/2] fitting deployable model on all rows (best_iteration from fit_full holdout)...")
     model, feat, _imp = fit_full(
-        recipe, sites=None, target_col=target_col, task=task, final_fit=True, progress=True, **fit_kw
+        recipe, sites=None, target_col=target_col, task=task, final_fit=True, progress=True, min_rows=min_rows, **fit_kw
     )
     for f in save_model(model, feat, str(OUT / f"{name}.json"), task=task, target_col=target_col):
         print(f"  wrote {f}")
@@ -161,7 +147,7 @@ def build(name, recipe, target_col, task, xgb, final_iters=None):
 def main():
     # final_iters defaults to None -> build() auto-reads best_iteration from models/lofo_tune.csv
     # (whatever `python tune.py` last recorded for recipe_REG / recipe_CLF).
-    build("recipe_REG2", recipe_REG, target_col="nitrate_con", task="reg", xgb=REAL_XGB_REG)
+    # build("recipe_REG2", recipe_REG, target_col="nitrate_con", task="reg", xgb=REAL_XGB_REG)
     build("recipe_CLF2", recipe_CLF, target_col="violation", task="clf", xgb=REAL_XGB_CLF)
 
 

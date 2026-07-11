@@ -5,6 +5,77 @@ Shared constants, styles, and helpers come from map_common (star-imported)."""
 from .map_common import *  # noqa: F401,F403
 
 
+_LEGEND_BOX_STYLE = {
+    "background": "rgba(255,255,255,0.95)", "border": "1px solid #ccc", "borderRadius": "6px",
+    "padding": "6px 10px", "boxShadow": "0 1px 4px rgba(0,0,0,0.25)", "fontSize": "12px",
+}
+
+
+def _legend_swatch(fill, stroke):
+    return html.Span(
+        style={
+            "display": "inline-block", "width": "12px", "height": "12px", "borderRadius": "50%",
+            "backgroundColor": fill, "border": f"2px solid {stroke}", "marginRight": "6px", "flex": "0 0 auto",
+        }
+    )
+
+
+def _legend_row(fill, stroke, label):
+    return html.Div(
+        [_legend_swatch(fill, stroke), html.Span(label)],
+        style={"display": "flex", "alignItems": "center", "marginTop": "3px"},
+    )
+
+
+def _build_legend():
+    """Collapsible site-source legend (IWQIS vs USGS). Positioned by the bottom-left legend stack."""
+    return html.Details(
+        id="map-legend",
+        open=True,
+        style=_LEGEND_BOX_STYLE,
+        children=[
+            html.Summary("Legend", style={"cursor": "pointer", "fontWeight": 600, "outline": "none"}),
+            html.Div(
+                [
+                    _legend_row(colors.SITE_DEFAULT["fill"], colors.SITE_DEFAULT["stroke"], "IWQIS site"),
+                    _legend_row(colors.SITE_USGS["fill"], colors.SITE_USGS["stroke"], "USGS site"),
+                ],
+                style={"marginTop": "4px"},
+            ),
+        ],
+    )
+
+
+def _crop_legend():
+    """Skinny vertical list of the dominant-crop colours (no header). Shown when the rain grid is on
+    and grid-colour mode is 'crop' (see render_grid_color_legend)."""
+    return html.Div(
+        [_legend_row(colors.CROP_COLORS[c], colors.CROP_COLORS[c], c.replace("_", " ")) for c in colors.CROP_COLORS],
+        style=_LEGEND_BOX_STYLE,
+    )
+
+
+def _surplus_legend():
+    """Vertical nitrogen-surplus colour scale. Sampled from the ACTUAL cell colour map
+    (surplus_viz.surplus_to_hex -> YlOrRd over the global min/max) so the bar matches the grid, low
+    (bottom) -> high (top). Shown when the rain grid is on and grid-colour mode is 'surplus'."""
+    lo, hi = surplus_viz._min_surplus(), surplus_viz._max_surplus()
+    n = 12
+    stops = [surplus_viz.surplus_to_hex(lo + i / (n - 1) * (hi - lo)) for i in range(n)]
+    bar = html.Div(
+        style={
+            "width": "12px", "height": "80px", "borderRadius": "3px", "border": "1px solid #bbb",
+            "background": "linear-gradient(to top, " + ", ".join(stops) + ")",
+        }
+    )
+    ends = html.Div(
+        [html.Span("high", style={"fontSize": "10px"}), html.Span("low", style={"fontSize": "10px"})],
+        style={"display": "flex", "flexDirection": "column", "justifyContent": "space-between",
+               "height": "80px", "marginLeft": "6px"},
+    )
+    return html.Div([bar, ends], style={**_LEGEND_BOX_STYLE, "display": "flex", "alignItems": "stretch"})
+
+
 def _build_selection_section():
     details = html.Details(
         [
@@ -19,7 +90,7 @@ def _build_selection_section():
                             {"label": " Point", "value": "point"},
                             {"label": " Area", "value": "area"},
                         ],
-                        value="point",
+                        value=colors.default("selection-mode"),
                         style={"display": "flex", "gap": "10px"},
                         labelStyle={"fontSize": "13px", "display": "flex", "alignItems": "center", "cursor": "pointer"},
                         inputStyle={"marginRight": "3px"},
@@ -81,7 +152,7 @@ def _build_graph_display_section():
                     {"label": " Show graph", "value": "show"},
                     {"label": " Display seasons", "value": "seasons"},
                 ],
-                value=["show"],
+                value=colors.default("graph-toggle"),
                 style={**_CHECKBOX_STYLE, **_CHECKBOX_ROW, "marginTop": "6px"},
                 labelStyle=_CHECKBOX_LABEL,
             ),
@@ -104,7 +175,7 @@ def _build_graph_display_section():
                                     {"label": "3MS", "value": "3MS"},
                                     {"label": "1YS", "value": "1YS"},
                                 ],
-                                value="1D",
+                                value=colors.default("aggregate-interval"),
                                 clearable=False,
                                 style={"fontSize": "13px"},
                             ),
@@ -125,7 +196,7 @@ def _build_graph_display_section():
                                     {"label": "max", "value": "max"},
                                     {"label": "min", "value": "min"},
                                 ],
-                                value="mean",
+                                value=colors.default("agg-func-water"),
                                 clearable=False,
                                 style={"fontSize": "13px"},
                             ),
@@ -146,7 +217,7 @@ def _build_graph_display_section():
                                     {"label": "max", "value": "max"},
                                     {"label": "min", "value": "min"},
                                 ],
-                                value="sum",
+                                value=colors.default("agg-func-rain"),
                                 clearable=False,
                                 style={"fontSize": "13px"},
                             ),
@@ -271,7 +342,7 @@ def _build_map_display_section():
             dcc.Checklist(
                 id="hydro-toggle",
                 options=[{"label": " Show rivers & lakes", "value": "show"}],
-                value=["show"],
+                value=colors.default("hydro-toggle"),
                 style={**_CHECKBOX_STYLE, "marginTop": "6px"},
                 labelStyle=_CHECKBOX_LABEL,
             ),
@@ -282,14 +353,14 @@ def _build_map_display_section():
                     dcc.Checklist(
                         id="basin-preferred-toggle",
                         options=[{"label": " Show basin", "value": "show"}],
-                        value=[],
+                        value=colors.default("basin-preferred-toggle"),
                         style=_CHECKBOX_STYLE,
                         labelStyle=_CHECKBOX_LABEL,
                     ),
                     dcc.Checklist(
                         id="basin-all-toggle",
                         options=[{"label": " Show all basins", "value": "show"}],
-                        value=[],
+                        value=colors.default("basin-all-toggle"),
                         style=_CHECKBOX_STYLE,
                         labelStyle=_CHECKBOX_LABEL,
                     ),
@@ -303,7 +374,7 @@ def _build_map_display_section():
                     dcc.Checklist(
                         id="rain-grid-toggle",
                         options=[{"label": " Show site rain grid", "value": "show"}],
-                        value=[],
+                        value=colors.default("rain-grid-toggle"),
                         style=_CHECKBOX_STYLE,
                         labelStyle=_CHECKBOX_LABEL,
                     ),
@@ -328,14 +399,14 @@ def _build_map_display_section():
                             dcc.Checklist(
                                 id="surplus-heatmap-toggle",
                                 options=[{"label": " Show site heatmap", "value": "show"}],
-                                value=[],
+                                value=colors.default("surplus-heatmap-toggle"),
                                 style=_CHECKBOX_STYLE,
                                 labelStyle=_CHECKBOX_LABEL,
                             ),
                             dcc.Checklist(
                                 id="iowa-surplus-heatmap-toggle",
                                 options=[{"label": " Show Iowa heatmap", "value": "show"}],
-                                value=[],
+                                value=colors.default("iowa-surplus-heatmap-toggle"),
                                 style=_CHECKBOX_STYLE,
                                 labelStyle=_CHECKBOX_LABEL,
                             ),
@@ -369,7 +440,7 @@ def _build_map_display_section():
                                             min=2000,
                                             max=2017,
                                             step=1,
-                                            value=2017,
+                                            value=colors.default("surplus-year-slider"),
                                             marks=None,
                                             tooltip={"placement": "bottom", "always_visible": True},
                                             updatemode="mouseup",
@@ -396,7 +467,7 @@ def _build_map_display_section():
                                             min=0.0,
                                             max=1.0,
                                             step=0.05,
-                                            value=0.8,
+                                            value=colors.default("surplus-opacity-slider"),
                                             marks=None,
                                             tooltip={"placement": "bottom", "always_visible": True},
                                             updatemode="mouseup",
@@ -437,6 +508,27 @@ def _build_map_display_section():
     )
 
 
+def _build_presentation_section():
+    """Display options tuned for screen-recording / presentation. Currently the grid-cell colour
+    mode; more toggles will be added here. Controls read their defaults from colors.default()."""
+    return html.Details(
+        [
+            html.Summary("Presentation Display Options", style=_SECTION_LABEL_SUMMARY),
+            html.Div("grid cell color", style=_SUBSECTION_LABEL),
+            dcc.RadioItems(
+                id="grid-color-mode",
+                options=[
+                    {"label": " Nitrogen surplus", "value": "surplus"},
+                    {"label": " Dominant crop", "value": "crop"},
+                ],
+                value=colors.default("grid-color-mode"),
+                style={"fontSize": "13px", "marginTop": "4px"},
+            ),
+        ],
+        open=True,
+    )
+
+
 def _build_map_layers_section():
     details = html.Details(
         [
@@ -449,7 +541,7 @@ def _build_map_layers_section():
                     {"label": " Humanitarian", "value": "humanitarian"},
                     {"label": " Watercolor", "value": "watercolor"},
                 ],
-                value="street",
+                value=colors.default("tile-selector"),
                 style={"fontSize": "13px", "marginTop": "6px"},
             ),
         ],
@@ -481,7 +573,7 @@ def _build_debugging_section():
             dcc.Checklist(
                 id="iem-bbox-toggle",
                 options=[{"label": " Show IEM footprint", "value": "show"}],
-                value=[],
+                value=colors.default("iem-bbox-toggle"),
                 style={"fontSize": "13px", "marginTop": "6px"},
             ),
         ],
@@ -519,7 +611,6 @@ def layout():
                                     }
                                 },
                             ),
-                            dl.ZoomControl(position="bottomleft"),
                             dl.GeoJSON(
                                 data=iowa_geojson,
                                 # interactive:False so this statewide outline's transparent fill
@@ -602,6 +693,16 @@ def layout():
                             ),
                         ],
                     ),
+                    html.Div(
+                        style={
+                            "position": "absolute", "bottom": "12px", "left": "12px", "zIndex": 600,
+                            "display": "flex", "flexDirection": "column", "gap": "6px", "alignItems": "flex-start",
+                        },
+                        children=[
+                            html.Div(id="grid-color-legend"),  # crop/surplus scale, populated when the rain grid shows
+                            _build_legend(),
+                        ],
+                    ),
                 ],
             ),
             # ── Tools panel (20 %) ─────────────────────────────────────────
@@ -628,6 +729,8 @@ def layout():
                             _build_graph_display_section(),
                             _hr(),
                             _build_map_display_section(),
+                            _hr(),
+                            _build_presentation_section(),
                             _hr(),
                             _build_map_layers_section(),
                         ],
