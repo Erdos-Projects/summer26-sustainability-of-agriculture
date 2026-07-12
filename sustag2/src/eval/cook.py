@@ -165,7 +165,7 @@ _FAR_BUDGET = 0.10  # false-alarm-rate budget for recall_at_far
 
 
 def _imbalance_suite(
-    y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, far: float = _FAR_BUDGET
+    y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, far: float | None = None
 ) -> dict[str, float]:
     """Class-imbalance-robust metrics for a set of (y, P(positive))    threshold-free prauc_lift, which never cherry-picks an operating point.
 
@@ -173,7 +173,11 @@ def _imbalance_suite(
     f2            best F2 (recall weighted 2x precision)
     mcc           best Matthews correlation
     recall_at_far recall achievable at a false-alarm rate (FPR) <= `far`
+
+    `far` defaults to the module-level `_FAR_BUDGET`, resolved at CALL time so a runtime override
+    (e.g. train.py's --false-alarm-rate reassigning cook._FAR_BUDGET) is honoured.
     """
+    far = _FAR_BUDGET if far is None else far
     y = np.asarray(y, dtype=float)
     pred = np.asarray(pred, dtype=float)
     ok = ~(np.isnan(y) | np.isnan(pred))

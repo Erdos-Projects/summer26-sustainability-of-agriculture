@@ -92,35 +92,62 @@ def plot_feature_importance(cv_result: pd.DataFrame, n: int = 20, name=None):
     return fig, ax
 
 
-# Preet's classifier recipe: whole-basin distance-decay geometry, breach target
+# Preet's EDA_and_modeling.ipynb REGRESSION baseline geometry
 PREET_LAM = 10_000  # Preet's single exp-decay length (~10 km) for crops + surplus
-PREET_ROLL_WINDOW = 60  # rolling-rain ladder up to 60d (Preet used 3/7/14/30/60/90; 90 is past our ladder)
 
 
-def preet_xgb_baseline(sites=None, n_splits: int = 5, lam: int = PREET_LAM, roll_window: int = PREET_ROLL_WINDOW):
+def _preet_eda_reg_frame(site, lam: int = PREET_LAM):
+    """Preet's EDA_and_modeling.ipynb REGRESSION feature set (the notebook preet_xgb_baseline
+    reconstructs), rebuilt on the refactored data layer: exp-decay-weighted crops & surplus at a
+    single ~10 km scale, basin precip + rolling-SUM antecedent rain (3/7/14/30d), raw calendar
+    (month / day_of_year / week), and basin area -- target = daily-MEAN nitrate_con (as the notebook
+    used). Deliberately EXCLUDES the full gridMET weather block and lat/lon: those are
+    testing_stuff.ipynb (the CLASSIFIER) traits, not this regression notebook. (That classifier
+    feature set is demo_recipes.preet_recipe.)"""
+    kw = {"site_uid": site} if isinstance(site, str) else {"site_data": site}
+    n = daily_nitrate(**kw, agg_meth="mean").rename("nitrate_con")  # EDA used daily-MEAN nitrate
+    # precip ONLY (drop the rest of the gridMET block) + rolling-SUM antecedent rain
+    wb = flatten_buckets(agg_weather(**kw, edges=(), exp=False))[["date", "precip_in_1d"]].copy()
+    wb = wb.sort_values("date").reset_index(drop=True)
+    for k in (3, 7, 14, 30):
+        wb[f"rain_roll_{k}d"] = wb["precip_in_1d"].rolling(k, min_periods=1).sum()
+    cb = flatten_buckets(agg_crops(**kw, edges=(), lam=lam, exp=True))  # exp-decay crops
+    sb = flatten_buckets(agg_surplus(**kw, edges=(), lam=lam, exp=True))  # exp-decay surplus
+    idx = n.index
+    s = pd.Series(idx, index=idx)
+    cal = pd.DataFrame(
+        {"month": s.dt.month, "day_of_year": s.dt.dayofyear, "week": s.dt.isocalendar().week.astype(int)}
+    )
+    frame = merge_on_date([n, wb, cb, sb], spine=idx).join(cal)
+    frame["log_basin_area"] = site_static(**kw).get("log_basin_area")  # basin area (monotone ~ EDA's basin_area)
+    return frame
+
+
+def preet_xgb_baseline(sites=None, n_splits: int = 5, lam: int = PREET_LAM):
     """Faithful reconstruction of Preet's cell-12 XGBoost REGRESSION baseline (EDA_and_modeling,
-    "Model Selection: Establishing an XGBoost Baseline"). Pools the single-lambda whole-basin
-    regression features across sites (preet_recipe with the nitrate_con target), runs a 5-fold
-    GroupKFold spatial CV, and PRINTS -- literally, as Preet did -- per-fold Test RMSE / Test R² on
-    the held-out unseen sites, then the global feature importances.
+    "Model Selection: Establishing an XGBoost Baseline"). Pools EDA_and_modeling's own regression
+    feature set (precip + rolling rain + exp-decay crops/surplus + calendar + basin area, via
+    _preet_eda_reg_frame -- NOT the testing_stuff classifier features in demo_recipes.preet_recipe),
+    runs a 5-fold GroupKFold spatial CV, and PRINTS -- literally, as Preet did -- per-fold Test RMSE
+    / Test R² on the held-out unseen sites, then the global feature importances.
 
     The fold-to-fold R² spread (Preet saw ~0.40 down to ~0.09) is her "spatial generalization gap":
     a single global model transfers unevenly to unseen watersheds. This is the benchmark the
     bucketed + travel-time-lagged spatial recipe_REG had to beat, and the reason plain per-site
-    linear/tree baselines (see demo_eda.regression_model_comparison) were set aside for XGBoost.
+    linear/tree baselines (see demo_baselines.regression_model_comparison) were set aside for XGBoost.
 
     Returns the global feature-importances Series (taken from the last fold's model, as Preet did).
-    NOTE: uses the daily-max nitrate as the concentration target (the project convention), and
-    Preet's exact hyperparameters (500 trees, lr=0.03, depth=6, subsample/colsample=0.8)."""
+    NOTE: target is daily-MEAN nitrate (as EDA_and_modeling used), and Preet's exact hyperparameters
+    (500 trees, lr=0.03, depth=6, subsample/colsample=0.8)."""
     import xgboost as xgb
     from sklearn.model_selection import GroupKFold
     from sklearn.metrics import mean_squared_error, r2_score
 
     def recipe(site):
-        return preet_recipe(site, task="reg", lam=lam, roll_window=roll_window)
+        return _preet_eda_reg_frame(site, lam=lam)
 
-    recipe.__name__ = "preet_recipe_reg"
-    pool = _pool(recipe, sites or get_site_ids(), "nitrate_con", progress_label="preet_recipe_reg")
+    recipe.__name__ = "preet_eda_reg"
+    pool = _pool(recipe, sites or get_site_ids(), "nitrate_con", progress_label="preet_eda_reg")
     feat = _features(pool, "nitrate_con")
     X, y, groups = pool[feat], pool["nitrate_con"], pool["site"]
 

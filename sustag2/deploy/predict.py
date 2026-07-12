@@ -14,20 +14,32 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-_THIS_DIR = Path(__file__).resolve().parent   # sustag2/deploy
+_THIS_DIR = Path(__file__).resolve().parent  # sustag2/deploy
 _MODELS = _THIS_DIR / "models"
-sys.path.insert(0, str(_THIS_DIR.parent))     # sustag2/ -> import src.*
-sys.path.insert(0, str(_THIS_DIR))            # deploy/ -> sibling modules
+sys.path.insert(0, str(_THIS_DIR.parent))  # sustag2/ -> import src.*
+sys.path.insert(0, str(_THIS_DIR))  # deploy/ -> sibling modules
 
 from build_virtual_basin import build_virtual_basin
 from virtual_recipes import virtual_recipe
 
+DEFAULT_REG_NAME = "isaac_REG2.json"
+DEFAULT_CLF_NAME = "isaac_CLF2.json"
 
-def load_model(name: str) -> xgb.Booster:
+
+def load_model(*, task: str = None, name: str = None) -> xgb.Booster:
     """Load a saved XGBoost booster by file name, e.g. 'isaac_REG2.json'."""
+    if name is None:
+        if task == "clf":
+            name = DEFAULT_CLF_NAME
+        elif task == "reg":
+            name = DEFAULT_REG_NAME
+        else:
+            raise ValueError("You must either specify a task ('clf' or 'reg') or pass a model name!")
+
     path = _MODELS / f"{name}"
     if not path.exists():
         raise FileNotFoundError(f"No model {path.name} in {_MODELS}.")
+
     booster = xgb.Booster()
     booster.load_model(str(path))
     return booster
@@ -59,13 +71,15 @@ def test():
     sd = build_virtual_basin(lat=lat, lon=lon, target_year=ty)
     reg_f = virtual_recipe(site_data=sd, task="reg", target_year=ty)
     clf_f = virtual_recipe(site_data=sd, task="clf", target_year=ty)
-    Y_reg = predict(load_model("isaac_REG2.json"), reg_f)
-    Y_clf = predict(load_model("isaac_CLF2.json"), clf_f)
+    Y_reg = predict(load_model(task="reg"), reg_f)
+    Y_clf = predict(load_model(task="clf"), clf_f)
 
     from src.features.features import _basin_daily_weather
+
     precip = _basin_daily_weather(site_data=sd)["precip_in_1d"].reindex(Y_reg.index)
 
     import matplotlib.pyplot as plt
+
     fig, (ax_reg, ax_clf) = plt.subplots(2, 1, sharex=True, figsize=(12, 8))
     ax_reg.plot(Y_reg.index, Y_reg.to_numpy(), color="red", label="predicted nitrate (mg/L)")
     ax_reg.set_ylabel("predicted nitrate (mg/L)", color="red")

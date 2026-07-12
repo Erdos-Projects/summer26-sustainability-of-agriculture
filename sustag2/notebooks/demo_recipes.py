@@ -90,20 +90,23 @@ PREET_ROLL_WINDOW = 60  # rolling-rain ladder up to 60d (Preet used 3/7/14/30/60
 
 
 def preet_recipe(site, lam: int = PREET_LAM, roll_window: int = PREET_ROLL_WINDOW):
-    """Preet's breach-classifier feature geometry, rebuilt on the refactored data layer for use with
-    `plot_pr_curves(preet_recipe)`. Differs from `recipe_CLF` in the ways Preet's notebook did:
+    """Preet's BREACH-CLASSIFIER feature geometry from **testing_stuff.ipynb** (her later, classifier
+    notebook -- NOT the EDA_and_modeling regression notebook), rebuilt on the refactored data layer
+    for `plot_pr_curves(preet_recipe)` / `run_cv(preet_recipe, task="clf")`. Mirrors testing_stuff's
+    choices:
 
       * ONE whole-basin bucket (edges=()), no riparian/distance bucketing -- crops & surplus are
         exp-decay weighted at a SINGLE scale (lam~10km), matching Preet's w_{crop}=crop*exp(-d/lam);
-      * un-lagged weather (no flow-travel-time bucket lags), the full gridMET block (precip, temp,
-        humidity, vpd, solar, ET, ...) plus the rolling-rain ladder out to `roll_window` days;
-      * calendar (day-of-year) signal and the static site descriptors;
+      * the FULL gridMET weather block (precip, temp, humidity, vpd, solar, ET, fuel_moisture),
+        un-lagged, plus the rolling ladder out to `roll_window` days on EVERY weather variable;
+      * lat / lon and the static site descriptors (testing_stuff added site_lat / site_lon);
+      * calendar (day-of-year) signal;
       * NO cross-site nitrate neighbour features (recipe_CLF's rest-of-state lags) -- Preet didn't use them;
-      * target = the plain daily EPA breach (nitrate_max > 10), i.e. `violation` at window=1.
+      * target = the plain daily EPA breach (`violation`, nitrate_max > 10, window=1).
 
-    It is a faithful reconstruction of Preet's *approach* on our data/access layer, not a byte-exact
-    port of the notebook's hand-rolled columns (multi-scale _short/_med/_long variants, seasonal
-    interactions, leaching_risk, etc. are not reproduced)."""
+    Faithful to the *approach* in testing_stuff.ipynb, not a byte-exact port (its multi-scale
+    _short/_med/_long variants, seasonal interactions, leaching_risk, etc. are not reproduced). For
+    Preet's EDA_and_modeling *regression* baseline instead, see demo_model.preet_xgb_baseline."""
     kw = {"site_uid": site} if isinstance(site, str) else {"site_data": site}
     n = daily_nitrate(**kw).rename("nitrate_con")
     wb = flatten_buckets(agg_weather(**kw, edges=(), exp=False))  # single basin bucket, un-lagged

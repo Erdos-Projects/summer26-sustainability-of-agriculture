@@ -38,8 +38,8 @@ def forecast_virtual_site(lat: float, lon: float, target_year: int) -> VirtualFo
     models. The NLDI call + build makes this a several-second operation; wrap callers in dcc.Loading.
     """
     sd = build_virtual_basin(lat=lat, lon=lon, target_year=target_year)
-    reg = _predict(load_model("isaac_REG2.json"), virtual_recipe(sd, task="reg", target_year=target_year))
-    clf = _predict(load_model("isaac_CLF2.json"), virtual_recipe(sd, task="clf", target_year=target_year))
+    reg = _predict(load_model(task="reg"), virtual_recipe(sd, task="reg", target_year=target_year))
+    clf = _predict(load_model(task="clf"), virtual_recipe(sd, task="clf", target_year=target_year))
     precip = _basin_daily_weather(site_data=sd)["precip_in_1d"].reindex(reg.index)
     basin_geojson = json.loads(sd.basin.to_crs("EPSG:4326").to_json())
     return VirtualForecast(

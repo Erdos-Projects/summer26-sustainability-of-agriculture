@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pandas as pd
 
-_THIS_DIR = Path(__file__).resolve().parent           # sustag2/src/build/
-_SRC = _THIS_DIR.parent                               # sustag2/src/
-sys.path.insert(0, str(_SRC.parent))                  # sustag2/ on path
+_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build/
+_SRC = _THIS_DIR.parent  # sustag2/src/
+sys.path.insert(0, str(_SRC.parent))  # sustag2/ on path
 
 from src.build.config import get_config
 from src.build.util import iwqis, site_locations, usgs
@@ -34,8 +34,8 @@ from src.build.util._water_paths import meta_dir
 
 
 def get_api_keys() -> dict:
-    """Load api-keys.toml from the repo root (sustag2/api-keys.toml). Needed for the USGS pull."""
-    p = _SRC.parent / "api-keys.toml"
+    """Load api-keys.toml. Needed for the USGS pull."""
+    p = _THIS_DIR / "api-keys.toml"
     if not p.exists():
         raise FileNotFoundError(f"api-keys.toml not found at {p} (needed for the USGS pull).")
     with open(p, "rb") as f:

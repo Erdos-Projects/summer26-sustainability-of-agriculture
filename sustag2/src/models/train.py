@@ -1,5 +1,6 @@
 import sys
 import json
+import argparse
 from pathlib import Path
 
 import numpy as np
@@ -8,6 +9,7 @@ import pandas as pd
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))  # sustag2/ on path
 
+import src.eval.cook as cook  # for the runtime _FAR_BUDGET override
 from src.eval.cook import compare_many, fit_full, save_model
 from src.features.recipes import recipe_REG, recipe_CLF
 
@@ -52,7 +54,7 @@ REAL_XGB_CLF = dict(
     random_state=42,
 )
 
-OUT = Path("models")
+OUT = Path(__file__).resolve().parent / "models"  # src/models/models -- anchored (CWD-independent, like _LOGFILE)
 _LOGFILE = _ROOT / "logs" / "fulltrain_logs.json"
 _LOFO_FILE = OUT / "lofo_tune.csv"  # tune.py's per-recipe winner table (holds best_iteration)
 
@@ -81,7 +83,7 @@ def _to_native(o):
     raise TypeError(f"not JSON-serializable: {type(o).__name__}")
 
 
-def log_metadata(name, recipe, target_col, task, xgb, scores):
+def log_metadata(name, recipe, target_col, task, xgb, scores, file=None):
     """Append one training-run record to _LOGFILE and return the integer key it was filed under."""
     imp = scores.attrs.get("importance", {}).get(name)
     imp_perm = scores.attrs.get("importance_perm", {}).get(name)
@@ -118,7 +120,13 @@ def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=500):
     print(f"\n===== {name} ({task}) =====")
     print("[1/2] evaluating cross-site (LOSO/LOFO)...")
     scores = compare_many(
-        {name: recipe}, sites=None, target_col=target_col, task=task, extra_importance_test=True, min_rows=min_rows, **xgb
+        {name: recipe},
+        sites=None,
+        target_col=target_col,
+        task=task,
+        extra_importance_test=True,
+        min_rows=min_rows,
+        **xgb,
     )
     print(scores.round(3).to_string())
     key = log_metadata(name, recipe, target_col, task, xgb, scores)
@@ -145,10 +153,33 @@ def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=500):
 
 
 def main():
+    parser = argparse.ArgumentParser(description="Train + log the shipped recipe(s).")
+    parser.add_argument(
+        "--false-alarm-rate",
+        type=float,
+        default=None,
+        metavar="FAR",
+        help="False-alarm-rate (FPR) budget for the recall_at_far metric, in (0, 1) -- e.g. 0.2 for "
+        f"20%%. Default: cook._FAR_BUDGET = {cook._FAR_BUDGET:.2f}.",
+    )
+    parser.add_argument(
+        "--name",
+        type=str,
+        default="recipe_CLF2",
+        help="Name for the trained model: the booster is saved to models/<name>.json and the run is "
+        "logged under this name in fulltrain_logs.json. Default: recipe_CLF2.",
+    )
+    args = parser.parse_args()
+    if args.false_alarm_rate is not None:
+        if not 0.0 < args.false_alarm_rate < 1.0:
+            parser.error("--false-alarm-rate must be in (0, 1)")
+        cook._FAR_BUDGET = args.false_alarm_rate  # resolved at call time by _imbalance_suite
+        print(f"[cfg] recall_at_far false-alarm budget set to {cook._FAR_BUDGET:.2%}")
+
     # final_iters defaults to None -> build() auto-reads best_iteration from models/lofo_tune.csv
     # (whatever `python tune.py` last recorded for recipe_REG / recipe_CLF).
     # build("recipe_REG2", recipe_REG, target_col="nitrate_con", task="reg", xgb=REAL_XGB_REG)
-    build("recipe_CLF2", recipe_CLF, target_col="violation", task="clf", xgb=REAL_XGB_CLF)
+    build(args.name, recipe_CLF, target_col="violation", task="clf", xgb=REAL_XGB_CLF)
 
 
 if __name__ == "__main__":

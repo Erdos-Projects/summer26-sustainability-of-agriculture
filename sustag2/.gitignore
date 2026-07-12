@@ -1,6 +1,9 @@
 # Data artifacts live under src/data/ but must never be committed (large / regenerable).
-# Track the dir shells via .gitkeep; ignore their contents.
-src/data/raw/*
+# keep the raw water folder, needed
+src/data/raw/basins
+src/data/raw/crops
+src/data/raw/surplus
+src/data/raw/weather
 src/data/interim/*
 src/data/processed/*
 src/data/cache/*
