@@ -161,7 +161,15 @@ def build_surplus_global(force: bool = False, years=None) -> pd.DataFrame:
 
 
 def main(force: bool = False, years=None) -> None:
+    # build_surplus_global rebuilds iff force or the output is missing; capture that BEFORE the call
+    # so we only regenerate the widget colour-scale stats when we actually read the raw chunks (a
+    # committed-file short-circuit has no raw chunks, so re-deriving stats there would fail).
+    rebuilt = force or not _SURPLUS_GLOBAL_FILE.exists()
     build_surplus_global(force=force, years=years)
+    if rebuilt:
+        from src.build.util.gen_surplus_statistics import gen_surplus_statistics
+
+        gen_surplus_statistics()  # -> processed/surplus/meta/surplus_stats.csv (surplus_viz colour scale)
 
 
 if __name__ == "__main__":

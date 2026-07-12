@@ -89,7 +89,6 @@ EXPLORE_DEFAULTS = {
     "basin-preferred-toggle": [],
     "basin-all-toggle": [],
     "rain-grid-toggle": [],
-    "surplus-heatmap-toggle": [],
     "iowa-surplus-heatmap-toggle": [],
     "surplus-year-slider": 2017,
     "surplus-opacity-slider": 0.8,

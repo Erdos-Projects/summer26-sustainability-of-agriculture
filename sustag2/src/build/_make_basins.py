@@ -41,9 +41,9 @@ from rasterio.features import shapes
 from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
-_THIS_DIR = Path(__file__).resolve().parent           # sustag2/src/build
-_SRC = _THIS_DIR.parent                               # sustag2/src
-sys.path.insert(0, str(_SRC.parent))                  # sustag2/ on path
+_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build
+_SRC = _THIS_DIR.parent  # sustag2/src
+sys.path.insert(0, str(_SRC.parent))  # sustag2/ on path
 
 from src.data import d8
 from src.data.crs import EQUAL_AREA_CRS
@@ -68,13 +68,17 @@ _NLDI_BASE = "https://api.water.usgs.gov/nldi/linked-data"
 
 def _compute_basin1(uid: str, lat: float, lon: float, timeout: int = 60) -> gpd.GeoDataFrame:
     """NLDI position-snap basin for a single site."""
-    pos = requests.get(f"{_NLDI_BASE}/comid/position", params={"coords": f"POINT({lon} {lat})", "f": "json"}, timeout=timeout)
+    pos = requests.get(
+        f"{_NLDI_BASE}/comid/position", params={"coords": f"POINT({lon} {lat})", "f": "json"}, timeout=timeout
+    )
     pos.raise_for_status()
     feats = pos.json().get("features", [])
     if not feats:
         raise ValueError(f"No NHDPlus catchment near ({lat}, {lon}) for {uid}.")
     comid = feats[0]["properties"]["comid"]
-    resp = requests.get(f"{_NLDI_BASE}/comid/{comid}/basin", params={"f": "json", "simplified": "true"}, timeout=timeout)
+    resp = requests.get(
+        f"{_NLDI_BASE}/comid/{comid}/basin", params={"f": "json", "simplified": "true"}, timeout=timeout
+    )
     resp.raise_for_status()
     gdf = gpd.GeoDataFrame.from_features(resp.json()["features"], crs="EPSG:4326")
     if gdf.empty:
@@ -94,7 +98,9 @@ _SEARCH_RADIUS_DEG = 0.03
 
 
 def _fetch_basin_nwissite(uid: str, timeout: int = 60) -> gpd.GeoDataFrame:
-    resp = requests.get(f"{_NLDI_BASE}/nwissite/{uid}/basin", params={"f": "json", "simplified": "true"}, timeout=timeout)
+    resp = requests.get(
+        f"{_NLDI_BASE}/nwissite/{uid}/basin", params={"f": "json", "simplified": "true"}, timeout=timeout
+    )
     resp.raise_for_status()
     features = resp.json().get("features", [])
     if not features:
@@ -169,7 +175,7 @@ def _fetch_basin_iwqis(uid, lat, lon, station_df, v3_area_km2=None, timeout=30) 
         if score < best_score:
             best_score, best_gdf = score, raw
     if best_gdf is None:
-        raise ValueError(f"No valid IWQIS basin found for {uid}.")
+        raise ValueError(f"Basin 2 not possible for {uid}.")
     best_gdf = best_gdf[["geometry"]].copy()
     best_gdf["site_uid"] = uid
     best_gdf["comid"] = None
@@ -183,13 +189,17 @@ def _compute_basin2(uid, lat, lon, station_df, v3_area_km2, timeout=60) -> gpd.G
         try:
             return _fetch_basin_nwissite(uid, timeout=timeout)
         except requests.HTTPError:
-            pos = requests.get(f"{_NLDI_BASE}/comid/position", params={"coords": f"POINT({lon} {lat})", "f": "json"}, timeout=timeout)
+            pos = requests.get(
+                f"{_NLDI_BASE}/comid/position", params={"coords": f"POINT({lon} {lat})", "f": "json"}, timeout=timeout
+            )
             pos.raise_for_status()
             feats = pos.json().get("features", [])
             if not feats:
                 raise ValueError(f"No NHD catchment near ({lat}, {lon}) for {uid}.")
             comid = feats[0]["properties"]["comid"]
-            resp = requests.get(f"{_NLDI_BASE}/comid/{comid}/basin", params={"f": "json", "simplified": "true"}, timeout=timeout)
+            resp = requests.get(
+                f"{_NLDI_BASE}/comid/{comid}/basin", params={"f": "json", "simplified": "true"}, timeout=timeout
+            )
             resp.raise_for_status()
             gdf = gpd.GeoDataFrame.from_features(resp.json()["features"], crs="EPSG:4326")
             if gdf.empty:
@@ -266,6 +276,7 @@ def _compute_basin3(uid: str, lat: float, lon: float, direction: np.ndarray) -> 
 
 # ── helpers: distance, rivers ─────────────────────────────────────────────────
 
+
 def _dist_km(lat: float, lon: float, gdf: gpd.GeoDataFrame) -> float:
     pt = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs="EPSG:4326").to_crs(EQUAL_AREA_CRS).geometry.iloc[0]
     poly = gdf.to_crs(EQUAL_AREA_CRS).geometry.union_all()
@@ -293,9 +304,13 @@ def _load_river_geometry() -> gpd.GeoDataFrame:
 
 # ── archive helpers ───────────────────────────────────────────────────────────
 
+
 def _archive_check_parquets(archive: pd.DataFrame) -> list[tuple[str, str]]:
-    return [(r["site_uid"], r["basin_name"]) for _, r in archive.iterrows()
-            if not (_BASIN_DATA_DIR / r["basin_name"]).exists()]
+    return [
+        (r["site_uid"], r["basin_name"])
+        for _, r in archive.iterrows()
+        if not (_BASIN_DATA_DIR / r["basin_name"]).exists()
+    ]
 
 
 def _archive_print_divergences(archive: pd.DataFrame) -> int:
@@ -357,7 +372,12 @@ def _restore_from_archive(archive, meta, direction, station_df) -> None:
                 if (_BASIN_DATA_DIR / fb_name).exists():
                     print(f"  {uid}: falling back to basin{fb_type} (auto).")
                     ar = ar.copy()
-                    ar["basin_name"], ar["basin_type"], ar["selection_mode"], ar["reviewed"] = fb_name, fb_type, "auto", False
+                    ar["basin_name"], ar["basin_type"], ar["selection_mode"], ar["reviewed"] = (
+                        fb_name,
+                        fb_type,
+                        "auto",
+                        False,
+                    )
                 else:
                     print(f"  {uid}: no fallback parquet — skipping.")
                     continue
@@ -368,6 +388,7 @@ def _restore_from_archive(archive, meta, direction, station_df) -> None:
 
 # ── preferred basin metadata ──────────────────────────────────────────────────
 
+
 def _build_preferred_csv(meta, rivers_proj, archive=None) -> None:
     """Select preferred basin per site, compute distances/areas/flags, write CSV."""
     rivers_union = rivers_proj.geometry.union_all()
@@ -376,8 +397,14 @@ def _build_preferred_csv(meta, rivers_proj, archive=None) -> None:
     for _, site_row in meta.iterrows():
         uid = site_row["site_uid"]
         lat, lon = float(site_row["latitude"]), float(site_row["longitude"])
-        gdf = {t: (gpd.read_parquet(_BASIN_DATA_DIR / f"{uid}_basin{t}.parquet")
-                   if (_BASIN_DATA_DIR / f"{uid}_basin{t}.parquet").exists() else None) for t in (1, 2, 3)}
+        gdf = {
+            t: (
+                gpd.read_parquet(_BASIN_DATA_DIR / f"{uid}_basin{t}.parquet")
+                if (_BASIN_DATA_DIR / f"{uid}_basin{t}.parquet").exists()
+                else None
+            )
+            for t in (1, 2, 3)
+        }
         nan = float("nan")
         area = {t: float(gdf[t]["area_km2"].sum()) if gdf[t] is not None else nan for t in (1, 2, 3)}
         dist = {t: _dist_km(lat, lon, gdf[t]) if gdf[t] is not None else nan for t in (1, 2, 3)}
@@ -398,16 +425,25 @@ def _build_preferred_csv(meta, rivers_proj, archive=None) -> None:
 
         pt_proj = gpd.GeoDataFrame(geometry=[Point(lon, lat)], crs="EPSG:4326").to_crs(EQUAL_AREA_CRS).geometry.iloc[0]
         existing_dists = [d for d in dist.values() if not math.isnan(d)]
-        rows.append(dict(
-            site_uid=uid, basin_name=basin_name, basin_type=basin_type,
-            dist_to_1=dist[1], dist_to_2=dist[2], dist_to_3=dist[3],
-            area1=area[1], area2=area[2], area3=area[3],
-            selection_mode=sel_mode, reviewed=reviewed,
-            flag_area=(not math.isnan(pref_area)) and pref_area > 50_000,
-            flag_river=pt_proj.distance(rivers_union) < 1_000,
-            flag_not_contained=bool(existing_dists) and all(d > 0 for d in existing_dists),
-            flag_basin1_over_basin2=gdf[2] is not None and basin_type == 1,
-        ))
+        rows.append(
+            dict(
+                site_uid=uid,
+                basin_name=basin_name,
+                basin_type=basin_type,
+                dist_to_1=dist[1],
+                dist_to_2=dist[2],
+                dist_to_3=dist[3],
+                area1=area[1],
+                area2=area[2],
+                area3=area[3],
+                selection_mode=sel_mode,
+                reviewed=reviewed,
+                flag_area=(not math.isnan(pref_area)) and pref_area > 50_000,
+                flag_river=pt_proj.distance(rivers_union) < 1_000,
+                flag_not_contained=bool(existing_dists) and all(d > 0 for d in existing_dists),
+                flag_basin1_over_basin2=gdf[2] is not None and basin_type == 1,
+            )
+        )
     df = pd.DataFrame(rows)
     df.to_csv(_PREFERRED_CSV, index=False)
     n_flagged = df[["flag_area", "flag_river", "flag_not_contained", "flag_basin1_over_basin2"]].any(axis=1).sum()
@@ -452,6 +488,10 @@ def main(api_keys=None, force=False, usgs_only=False, iwqis_only=False, recalcul
     else:
         uids = all_uids
 
+    print("Will attempt to build basin1, basin2 and basin3 for all sites.")
+    print("  - basin1: get nearest USGS basin")
+    print("  - basin2: lookup by site_uid (DOES NOT EXIST FOR ALL SITES)")
+    print("  - basin3: build basin from D8 tif")
     direction = d8.load_direction_array()
     station_df = None
     if not usgs_only:
@@ -466,6 +506,7 @@ def main(api_keys=None, force=False, usgs_only=False, iwqis_only=False, recalcul
         v3 = _BASIN_DATA_DIR / f"{uid}_basin3.parquet"
         v3_area = float(gpd.read_parquet(v3)["area_km2"].iloc[0]) if v3.exists() else None
         return _compute_basin2(uid, lat, lon, station_df, v3_area)
+
     _build_type(uids, coords, 2, _b2, force=force)
 
     print("── Building preferred_basin.csv ──")
@@ -480,5 +521,9 @@ if __name__ == "__main__":
     parser.add_argument("--usgs-only", action="store_true")
     parser.add_argument("--iwqis-only", action="store_true")
     args = parser.parse_args()
-    main(force=args.force or args.recalculate, recalculate=args.recalculate,
-         usgs_only=args.usgs_only, iwqis_only=args.iwqis_only)
+    main(
+        force=args.force or args.recalculate,
+        recalculate=args.recalculate,
+        usgs_only=args.usgs_only,
+        iwqis_only=args.iwqis_only,
+    )

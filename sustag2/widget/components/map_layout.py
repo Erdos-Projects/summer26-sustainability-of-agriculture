@@ -304,6 +304,22 @@ def _build_forecast_section():
                         ],
                         style={"marginBottom": "8px", "marginTop": "6px"},
                     ),
+                    html.Div(
+                        [
+                            html.Label("Recall emphasis (β):", style={"fontSize": "12px", "marginBottom": "2px", "display": "block"}),
+                            dcc.Slider(
+                                id="forecast-beta",
+                                min=0.5, max=4, step=0.5, value=2,
+                                marks={0.5: "0.5", 1: "1", 2: "2", 3: "3", 4: "4"},
+                                tooltip={"placement": "bottom", "always_visible": False},
+                            ),
+                            html.P(
+                                "Higher β flags more violations at the cost of more false alarms.",
+                                style={"fontSize": "11px", "color": "#888", "marginTop": "0", "marginBottom": "0"},
+                            ),
+                        ],
+                        style={"marginBottom": "8px"},
+                    ),
                     html.Button("Run forecast", id="run-forecast-button", n_clicks=0, style={"fontSize": "12px"}),
                     dcc.Loading(
                         [
@@ -396,13 +412,6 @@ def _build_map_display_section():
                             "gap": "4px",
                         },
                         children=[
-                            dcc.Checklist(
-                                id="surplus-heatmap-toggle",
-                                options=[{"label": " Show site heatmap", "value": "show"}],
-                                value=colors.default("surplus-heatmap-toggle"),
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
                             dcc.Checklist(
                                 id="iowa-surplus-heatmap-toggle",
                                 options=[{"label": " Show Iowa heatmap", "value": "show"}],
@@ -626,13 +635,6 @@ def layout():
                             dl.Pane(name="sites-pane", style={"zIndex": 430}),
                             dl.LayerGroup(id="mapunit-layer"),
                             dl.LayerGroup(id="hydro-layer"),
-                            dl.ImageOverlay(
-                                id="surplus-image-overlay",
-                                url=_TRANSPARENT_PNG,
-                                bounds=_IOWA_BOUNDS,
-                                opacity=0,
-                                pane="surplus-pane",
-                            ),
                             dl.ImageOverlay(
                                 id="iowa-surplus-image-overlay",
                                 url=_TRANSPARENT_PNG,

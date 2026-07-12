@@ -10,6 +10,23 @@ continuous weather and land-use data, using XGBoost over a leakage-aware (LOFO) 
 > deleted and `sustag2/`'s contents move up one level to become the new repo root.
 > Until then, `sustag/` remains the source of truth.
 
+## Quickstart
+
+1. Clone the repo and obtain the dependencies.
+
+```bash
+git clone https://github.com/Erdos-Projects/summer26-sustainability-of-agriculture.git
+cd sustag2
+conda env create -f environment.yml
+conda activate sustag
+```
+
+2. Download raw data from https://utexas.box.com/s/h4bjxgsuydcl7ya6gpwyiqepl477cdo7. Place the contents of the download in `src/data/raw/`.
+
+3. Navigate to `src/build/` and run the command `python make_data.py`. Wait for it to finish.
+
+You should now be setup!
+
 ## Architecture in one breath
 
 Two grains, one boundary:

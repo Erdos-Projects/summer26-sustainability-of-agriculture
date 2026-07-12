@@ -1,4 +1,4 @@
-"""Self-consistency tests for the sustag data pipeline (fully self-contained — no legacy refs).
+"""VIBECODED TEST TO ENSURE REFACTOR WORKED CORRECTLY
 
 Replaces the migration-parity harness (whose job — proving sustag2 reproduces the old tree — is
 done). These verify the pipeline's INTERNAL coherence, reading only from within sustag2:
@@ -41,6 +41,7 @@ def _sample_sites(n=SAMPLE):
 
 def test_global_tables() -> Result:
     from src.data.site_view import _grid_global
+
     gg = _grid_global()
     cg, sp = access._crops_global(), access._surplus_global()
     wf = access._weather_global_files()
@@ -55,20 +56,28 @@ def test_global_tables() -> Result:
         bad.append("no weather_global years")
     if not gg["global_node_id"].is_unique:
         bad.append("grid_global global_node_id not unique")
-    return Result("global_tables", PASS if not bad else FAIL,
-                  f"grid {len(gg):,} cells, crops {cg['year'].nunique()}y, surplus {sp['year'].nunique()}y, "
-                  f"weather {len(wf)}y; issues {bad}")
+    return Result(
+        "global_tables",
+        PASS if not bad else FAIL,
+        f"grid {len(gg):,} cells, crops {cg['year'].nunique()}y, surplus {sp['year'].nunique()}y, "
+        f"weather {len(wf)}y; issues {bad}",
+    )
 
 
 def test_water() -> Result:
     ids = access.get_site_ids()
-    ok = len(ids) > 0 and not access.get_metadata().empty and not access.get_water(str(ids[0])).empty \
+    ok = (
+        len(ids) > 0
+        and not access.get_metadata().empty
+        and not access.get_water(str(ids[0])).empty
         and not access.get_all_stats().empty
+    )
     return Result("water", PASS if ok else FAIL, f"{len(ids)} sites; metadata/water/stats readable")
 
 
 def test_basins() -> Result:
     from src.data import d8
+
     meta = access.get_basin_metadata()
     direction = d8.load_direction_array()
     bad = []
@@ -88,6 +97,7 @@ def test_basins() -> Result:
 
 def test_get_data() -> Result:
     from src.data.site_view import _grid_global
+
     gids = set(_grid_global()["global_node_id"])
     sample = _sample_sites()
     bad = []
@@ -136,15 +146,19 @@ def test_splits() -> Result:
     """The leakage-aware CV: conflict components form, folds cover 0..4, and a holdout has NO
     hard (both-axes) leaks across the train/test boundary."""
     from src.splits import conflict_graph as cg
+
     groups = cg.split_groups()
     folds = cg.make_folds()
     tr, te = cg.holdout_split(test_size=0.2)
     audit = cg.audit_split(tr, te)
     hard = 0 if audit.empty else int((audit["severity"] == "hard").sum())
     ok = len(set(groups.values())) > 0 and set(folds["fold"]) == {0, 1, 2, 3, 4} and hard == 0
-    return Result("splits", PASS if ok else FAIL,
-                  f"{len(groups)} sites, {len(set(groups.values()))} conflict components, "
-                  f"folds {sorted(set(folds['fold']))}, holdout {len(tr)}/{len(te)}, hard leaks {hard}")
+    return Result(
+        "splits",
+        PASS if ok else FAIL,
+        f"{len(groups)} sites, {len(set(groups.values()))} conflict components, "
+        f"folds {sorted(set(folds['fold']))}, holdout {len(tr)}/{len(te)}, hard leaks {hard}",
+    )
 
 
 def test_features() -> Result:
@@ -154,6 +168,7 @@ def test_features() -> Result:
     basin size -- a compact basin has only the near `_b0` distance bucket, which predict NaN-fills).
     """
     from src.features.recipes import build_feature_frame
+
     bad = []
     sample = _sample_sites(3)
     for uid in sample:
@@ -164,8 +179,8 @@ def test_features() -> Result:
             has = (
                 len(fr) > 0
                 and {"date", "doy_sin", "doy_cos"} <= cols
-                and any(c.startswith("precip_in_1d") for c in cols)     # weather family
-                and any("Corn" in c for c in cols)                       # crop family
+                and any(c.startswith("precip_in_1d") for c in cols)  # weather family
+                and any("Corn" in c for c in cols)  # crop family
                 and any(c.startswith("rest_of_state_nitrate_lag") for c in cols)  # neighbour
             )
             if not has:

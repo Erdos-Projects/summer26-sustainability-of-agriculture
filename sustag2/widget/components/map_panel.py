@@ -402,22 +402,6 @@ def register_callbacks(app):
         ]
 
     @app.callback(
-        Output("surplus-image-overlay", "url"),
-        Output("surplus-image-overlay", "bounds"),
-        Output("surplus-image-overlay", "opacity"),
-        Input("surplus-heatmap-toggle", "value"),
-        Input("active-graph-site", "data"),
-        Input("selected-site", "data"),
-        Input("surplus-year-slider", "value"),
-        Input("surplus-opacity-slider", "value"),
-    )
-    def render_surplus_heatmap(toggle, active_uid, selected_uids, year, opacity):
-        # The fine per-site surplus heatmap was dropped in the re-grain (its ~1GB pixel data is
-        # gone). Surplus is now shown via the Voronoi rain-grid cell colouring (render_rain_grid)
-        # + the statewide heatmap (render_iowa_surplus_heatmap). This overlay stays transparent.
-        return _TRANSPARENT_PNG, _IOWA_BOUNDS, 0
-
-    @app.callback(
         Output("iowa-surplus-image-overlay", "url"),
         Output("iowa-surplus-image-overlay", "bounds"),
         Output("iowa-surplus-image-overlay", "opacity"),

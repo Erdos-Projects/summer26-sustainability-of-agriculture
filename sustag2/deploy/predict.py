@@ -7,6 +7,7 @@ e.g. a small basin lacking the far `_b1` distance bucket), and extra recipe colu
 feature_mismatch() surfaces both sets so a recipe<->model version skew is explicit.
 """
 
+import json
 import sys
 from pathlib import Path
 
@@ -43,6 +44,29 @@ def load_model(*, task: str = None, name: str = None) -> xgb.Booster:
     booster = xgb.Booster()
     booster.load_model(str(path))
     return booster
+
+
+def load_meta(*, task: str = None, name: str = None) -> dict:
+    """The <model>.json.meta.json sidecar (feat / task / target, plus any beta_table + base_rate
+    written by tune_threshold.py). Resolves the same name as load_model. Empty dict if absent."""
+    if name is None:
+        name = DEFAULT_CLF_NAME if task == "clf" else DEFAULT_REG_NAME if task == "reg" else None
+        if name is None:
+            raise ValueError("You must either specify a task ('clf' or 'reg') or pass a model name!")
+    path = _MODELS / f"{name}.meta.json"
+    return json.loads(path.read_text()) if path.exists() else {}
+
+
+def threshold_for_beta(meta: dict, beta: float) -> dict | None:
+    """Operating point for `beta` from a meta's beta_table (written by tune_threshold): the grid row
+    nearest `beta`, augmented with the pooled base_rate -- keys tau / recall / precision / fdr /
+    base_rate. Returns None when the model has no beta_table (untuned), so callers can fall back to
+    showing the raw probability with no alarm threshold."""
+    table = meta.get("beta_table")
+    if not table:
+        return None
+    row = min(table, key=lambda r: abs(r["beta"] - beta))
+    return {**row, "base_rate": meta.get("base_rate")}
 
 
 def feature_mismatch(booster: xgb.Booster, features: pd.DataFrame) -> dict:
