@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 _ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(_ROOT))  # sustag2/ on path
+sys.path.insert(0, str(_ROOT))  # repo root on path
 
 import src.eval.cook as cook  # for the runtime _FAR_BUDGET override
 from src.eval.cook import compare_many, fit_full, save_model

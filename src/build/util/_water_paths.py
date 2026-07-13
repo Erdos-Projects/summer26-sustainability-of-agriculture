@@ -8,7 +8,7 @@ durable IWQIS source of truth).
 
 from pathlib import Path
 
-_SRC = Path(__file__).resolve().parents[2]      # sustag2/src
+_SRC = Path(__file__).resolve().parents[2]      # src
 _RAW = _SRC / "data" / "raw" / "water"
 _PROC = _SRC / "data" / "processed" / "water"
 

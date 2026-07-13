@@ -42,9 +42,9 @@ import requests
 from scipy.spatial import Voronoi
 from shapely.geometry import Polygon
 
-_THIS_DIR = Path(__file__).resolve().parent          # sustag2/src/build/
-_SRC = _THIS_DIR.parent                              # sustag2/src/
-sys.path.insert(0, str(_SRC.parent))                 # sustag2/ on path -> `import src.data.crs`
+_THIS_DIR = Path(__file__).resolve().parent          # src/build/
+_SRC = _THIS_DIR.parent                              # src/
+sys.path.insert(0, str(_SRC.parent))                 # repo root on path -> `import src.data.crs`
 
 from src.data.crs import EQUAL_AREA_CRS
 

@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 from dataretrieval import waterdata
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # sustag2/ on path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root on path
 from src.build.util._water_paths import data_dir, meta_dir
 
 _SRC = Path(__file__).resolve().parents[2]
@@ -310,5 +310,5 @@ def main(api_keys, extra_filter=None):
 if __name__ == "__main__":
     import tomllib
 
-    with open(Path(__file__).resolve().parents[3] / "api-keys.toml", "rb") as f:  # sustag2/api-keys.toml
+    with open(Path(__file__).resolve().parents[3] / "api-keys.toml", "rb") as f:  # api-keys.toml (repo root)
         main(tomllib.load(f))

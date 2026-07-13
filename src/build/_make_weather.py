@@ -41,9 +41,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import xarray as xr
 
-_THIS_DIR = Path(__file__).resolve().parent           # sustag2/src/build/
-_SRC = _THIS_DIR.parent                               # sustag2/src/
-sys.path.insert(0, str(_SRC.parent))                  # sustag2/ on path
+_THIS_DIR = Path(__file__).resolve().parent           # src/build/
+_SRC = _THIS_DIR.parent                               # src/
+sys.path.insert(0, str(_SRC.parent))                  # repo root on path
 
 from src.build._make_grid import _download_shapefile, _parse_day_gdf, IEM_GRID_DATE
 from src.build.config import get_region_bbox

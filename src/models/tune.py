@@ -41,7 +41,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # sustag2/ on path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root on path
 
 from src.eval.cook import _pool, _features, _target, basin_groups, _grouped_oof, _grouped_models, _score
 from src.data.access import get_site_ids

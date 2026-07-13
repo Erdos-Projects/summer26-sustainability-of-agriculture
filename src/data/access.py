@@ -21,7 +21,7 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-_DATA = Path(__file__).resolve().parent               # sustag2/src/data
+_DATA = Path(__file__).resolve().parent               # src/data
 _INTERIM = _DATA / "interim"
 _PROC_WATER = _DATA / "processed" / "water"
 _PROC_BASINS = _DATA / "processed" / "basins"

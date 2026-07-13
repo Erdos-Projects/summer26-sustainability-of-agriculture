@@ -19,7 +19,7 @@ Notebook use:
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # sustag2/ on path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on path
 
 import warnings
 

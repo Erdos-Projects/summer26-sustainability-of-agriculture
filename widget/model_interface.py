@@ -12,8 +12,8 @@ from pathlib import Path
 
 import pandas as pd
 
-_SUSTAG2 = Path(__file__).resolve().parents[1]  # sustag2/
-for _p in (_SUSTAG2, _SUSTAG2 / "deploy"):
+_ROOT = Path(__file__).resolve().parents[1]  # repo root/
+for _p in (_ROOT, _ROOT / "deploy"):
     sys.path.insert(0, str(_p))
 
 from build_virtual_basin import build_virtual_basin  # deploy/

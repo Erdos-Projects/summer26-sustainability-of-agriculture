@@ -26,7 +26,7 @@ import argparse
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # sustag2/ on path
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))  # repo root on path
 
 from src.build import (
     _make_aux,

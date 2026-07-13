@@ -11,8 +11,8 @@ from pathlib import Path
 
 import pandas as pd
 
-_HERE = Path(__file__).resolve().parent   # sustag2/deploy
-sys.path.insert(0, str(_HERE.parent))     # sustag2/ -> import src.*
+_HERE = Path(__file__).resolve().parent   # deploy
+sys.path.insert(0, str(_HERE.parent))     # repo root -> import src.*
 sys.path.insert(0, str(_HERE))            # deploy/ -> sibling build_virtual_basin
 
 from src.features.recipes import build_feature_frame

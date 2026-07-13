@@ -69,7 +69,7 @@ def delineate_basin_v3_for_pin(lat: float, lon: float) -> dict:
     """
     import sys
     from pathlib import Path
-    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # sustag2/
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root/
 
     from src.data.d8 import load_direction_array
     from src.build._make_basins import _compute_basin3

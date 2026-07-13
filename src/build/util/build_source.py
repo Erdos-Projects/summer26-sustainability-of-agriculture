@@ -37,9 +37,9 @@ from rasterio.mask import mask as rio_mask
 from shapely.geometry import box
 from pyproj import Transformer
 
-_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build/util
-_SRC = _THIS_DIR.parents[1]  # sustag2/src
-sys.path.insert(0, str(_THIS_DIR.parents[2]))  # sustag2/ -> import src.build.config
+_THIS_DIR = Path(__file__).resolve().parent  # src/build/util
+_SRC = _THIS_DIR.parents[1]  # src
+sys.path.insert(0, str(_THIS_DIR.parents[2]))  # repo root -> import src.build.config
 from src.build.config import get_region_bbox
 
 _RAW_SURPLUS = _SRC / "data" / "raw" / "surplus"

@@ -41,9 +41,9 @@ from rasterio.features import shapes
 from shapely.geometry import Point, shape
 from shapely.ops import unary_union
 
-_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build
-_SRC = _THIS_DIR.parent  # sustag2/src
-sys.path.insert(0, str(_SRC.parent))  # sustag2/ on path
+_THIS_DIR = Path(__file__).resolve().parent  # src/build
+_SRC = _THIS_DIR.parent  # src
+sys.path.insert(0, str(_SRC.parent))  # repo root on path
 
 from src.data import d8
 from src.data.crs import EQUAL_AREA_CRS

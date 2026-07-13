@@ -7,7 +7,7 @@ import geopandas as gpd
 import pandas as pd
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # sustag2/ on path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # repo root on path
 from src.data import access
 from src.data.access import SiteData
 

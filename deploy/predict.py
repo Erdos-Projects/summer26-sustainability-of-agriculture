@@ -15,9 +15,9 @@ import numpy as np
 import pandas as pd
 import xgboost as xgb
 
-_THIS_DIR = Path(__file__).resolve().parent  # sustag2/deploy
+_THIS_DIR = Path(__file__).resolve().parent  # deploy
 _MODELS = _THIS_DIR / "models"
-sys.path.insert(0, str(_THIS_DIR.parent))  # sustag2/ -> import src.*
+sys.path.insert(0, str(_THIS_DIR.parent))  # repo root -> import src.*
 sys.path.insert(0, str(_THIS_DIR))  # deploy/ -> sibling modules
 
 from build_virtual_basin import build_virtual_basin

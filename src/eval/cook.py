@@ -36,7 +36,7 @@ warnings.filterwarnings("ignore")
 import os, sys, time, json
 from typing import Any, Callable, Literal, Sequence, TypeAlias
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # sustag2/
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # repo root/
 import numpy as np, pandas as pd
 import xgboost as xgb
 from sklearn.model_selection import TimeSeriesSplit, GroupKFold

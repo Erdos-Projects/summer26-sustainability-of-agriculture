@@ -3,17 +3,13 @@
 Project completed in the Erdos Summer 2026 Data Science Bootcamp. Predict waterborne nitrate concentration (regression) and 10 mg/L violation risk
 (classification) at Iowa monitoring sites — and at arbitrary *virtual* sites — from continuous weather and land-use data, using XGBoost over a leakage-aware (LOFO) CV design.
 
-> **This `sustag2/` tree is the active, working project** — the re-grain + `src/` refactor.
-> It currently lives nested under the original `sustag/` repo and will move up to become the
-> repo root once the legacy `sustag/` tree is retired.
-
 ## Quickstart
 
 1. Clone the repo and obtain the dependencies.
 
 ```bash
 git clone https://github.com/Erdos-Projects/summer26-sustainability-of-agriculture.git
-cd sustag2
+cd summer26-sustainability-of-agriculture
 conda env create -f environment.yml
 conda activate sustag
 ```
@@ -86,8 +82,7 @@ A *full* rebuild from raw (`make_data.py`) additionally needs `src/build/api-key
 
 ## Status
 
-The re-grain + `src/` refactor is functional end to end — data access, feature recipes, cross-site
-CV, model training, the deploy inference path, and the widget all run on the new `global_node_id`
-grain, and the raw-acquisition utilities (`clip_crops`, `build_source`, `gen_surplus_statistics`)
-are ported so the dataset can be rebuilt from source. Remaining: promote `sustag2/` up to the repo
-root once the legacy `sustag/` tree is retired.
+Functional end to end — data access, feature recipes, cross-site CV, model training, the deploy
+inference path, and the widget all run on the `global_node_id` grain, and the raw-acquisition
+utilities (`clip_crops`, `build_source`, `gen_surplus_statistics`) are ported so the dataset can be
+rebuilt from source.

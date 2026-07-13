@@ -31,7 +31,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import precision_recall_curve
 
-_ROOT = Path(__file__).resolve().parents[2]  # sustag2/
+_ROOT = Path(__file__).resolve().parents[2]  # repo root/
 sys.path.insert(0, str(_ROOT))
 
 from src.eval.cook import _pool, _features, _target, basin_groups, _grouped_oof

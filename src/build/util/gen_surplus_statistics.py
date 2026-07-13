@@ -7,7 +7,7 @@ overlay. Zeros are dropped before the min/max so nodata pixels don't flatten the
 
 Source: the pixel-level surplus chunks (src/data/raw/surplus/surplus[0-9]*.parquet, written by
 build_source.py). The legacy version read the merged surplus_raw/iowa_nitrogen_surplus.parquet;
-sustag2 has no merged table, so the equivalent pixel-level values come straight from the chunks.
+this tree has no merged table, so the equivalent pixel-level values come straight from the chunks.
 raw/surplus/ is gitignored, so this only matters when regenerating from raw; the committed
 surplus_global.parquet + a committed surplus_stats.csv cover normal use.
 
@@ -19,8 +19,8 @@ Usage
 import pandas as pd
 from pathlib import Path
 
-_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build/util
-_SRC = _THIS_DIR.parents[1]  # sustag2/src
+_THIS_DIR = Path(__file__).resolve().parent  # src/build/util
+_SRC = _THIS_DIR.parents[1]  # src
 _SOURCE_DIR = _SRC / "data" / "raw" / "surplus"  # pixel-level surplus chunks (build_source.py output)
 _META_DIR = _SRC / "data" / "processed" / "surplus" / "meta"  # where surplus_viz reads the stats
 _STATS_FILE = _META_DIR / "surplus_stats.csv"

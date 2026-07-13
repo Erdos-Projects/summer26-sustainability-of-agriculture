@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # sustag2/ on path
+sys.path.insert(0, str(Path(__file__).resolve().parents[3]))  # repo root on path
 from src.build.config import get_config
 from src.build.util._water_paths import data_dir, meta_dir, raw_dir
 

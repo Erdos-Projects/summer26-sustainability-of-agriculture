@@ -40,14 +40,14 @@ import rasterio
 from rasterio.windows import from_bounds
 from rasterio.warp import transform_bounds
 
-_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build/util
-_SRC = _THIS_DIR.parents[1]  # sustag2/src
+_THIS_DIR = Path(__file__).resolve().parent  # src/build/util
+_SRC = _THIS_DIR.parents[1]  # src
 _RAW_DIR = _SRC / "data" / "raw" / "crops"
 _NATIONAL_DIR = _RAW_DIR / "national"  # put manually-downloaded national .tif files here
 _DOWNLOAD_DIR = _RAW_DIR / "downloaded"  # raw CropScape downloads, before clipping
 _CLIP_DIR = _RAW_DIR / "clipped"  # cached regional clips (what _make_crops reads)
 
-sys.path.insert(0, str(_THIS_DIR.parents[2]))  # sustag2/ -> import src.build.config
+sys.path.insert(0, str(_THIS_DIR.parents[2]))  # repo root -> import src.build.config
 from src.build.config import get_region_bbox, get_config
 
 # ── Region to keep, in WGS84 (lon/lat) ───────────────────────────────────────

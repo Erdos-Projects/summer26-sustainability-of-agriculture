@@ -11,7 +11,7 @@ orchestrates the two sources and the combiner:
 
 The per-site parquets under processed/water are the DURABLE source of truth (IWQIS is not
 re-fetchable) and are tracked in git; see .gitignore. api-keys.toml (for USGS) is read from
-sustag2/api-keys.toml, else the legacy sustag/data/api-keys.toml.
+api-keys.toml (repo root), else the legacy sustag/data/api-keys.toml.
 
 Usage
 -----
@@ -24,9 +24,9 @@ from pathlib import Path
 
 import pandas as pd
 
-_THIS_DIR = Path(__file__).resolve().parent  # sustag2/src/build/
-_SRC = _THIS_DIR.parent  # sustag2/src/
-sys.path.insert(0, str(_SRC.parent))  # sustag2/ on path
+_THIS_DIR = Path(__file__).resolve().parent  # src/build/
+_SRC = _THIS_DIR.parent  # src/
+sys.path.insert(0, str(_SRC.parent))  # repo root on path
 
 from src.build.config import get_config
 from src.build.util import iwqis, site_locations, usgs

@@ -19,7 +19,7 @@ from PIL import Image
 from pyproj import Geod
 from rasterio.transform import Affine
 
-_DATA = Path(__file__).resolve().parent               # sustag2/src/data
+_DATA = Path(__file__).resolve().parent               # src/data
 _RASTER = _DATA / "raw" / "basins" / "cache" / "direction500m.png"
 _RASTER_URL = "https://iwqis.iowawis.org/app/inc/watershed/direction500m.png"
 
