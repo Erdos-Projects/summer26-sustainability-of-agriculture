@@ -56,3 +56,6 @@ MEMORY.md
 # macOS Finder cruft (must win over the processed/** exceptions above)
 .DS_Store
 **/.DS_Store
+
+# never commit the zipped weather bundle (it is the Box download)
+src/data/interim.zip

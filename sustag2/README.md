@@ -18,11 +18,19 @@ conda env create -f environment.yml
 conda activate sustag
 ```
 
-2. Download raw data from https://utexas.box.com/s/h4bjxgsuydcl7ya6gpwyiqepl477cdo7. Place the contents of the download in `src/data/raw/`.
+2. Download the weather layer from https://utexas.box.com/s/h4bjxgsuydcl7ya6gpwyiqepl477cdo7 and extract the `weather_global_*.parquet` files into **`src/data/interim/`** (~4.6 GB). This is the only large data not committed to git — everything else the models, notebooks, and widget read is already in the clone. It is technically possible to build without this step, but it will take a long time.
 
-3. Navigate to `src/build/` and run the command `python make_data.py`. Wait for it to finish.
+3. (optional) Navigate to `src/build/` and run
 
-You should now be setup!
+```
+python make_data.py
+```
+
+to ensure everything is there.
+
+You should now be set up! Run the app or notebooks below.
+
+> **Advanced — full rebuild from raw.** To regenerate all data from the original sources instead of using the committed + downloaded artifacts: download the raw sources into `src/data/raw/`, add `src/build/api-keys.toml` (a USGS token), then run `python -m src.build.make_data`. This is slow and network-heavy (re-fetches gridMET/IEM/CDL/etc.) — see [`src/README.md`](src/README.md)'s "Catastrophic rebuild". Most users never need this. **Note:** `weather_global` is a *built* table (gridMET + IEM interpolated onto the IEM grid), so it lives in `interim/`, not `raw/` — dropping it in `raw/weather/` will *not* be picked up, and the build will re-download.
 
 ## Running the app & notebooks
 

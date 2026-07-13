@@ -1,9 +1,0 @@
-# example file with api-keys for building data
-# rename this to `api-keys.toml` and then .gitignore it
-# only needed for rebuilding the data
-
-# USGS api key
-usgs = "blah_blah_USGS api key"
-
-# NASS Quickstats
-nass_quickstats = "blah blah NASS api key"

@@ -82,6 +82,7 @@ kmz = requests.get("https://iwqis.iowawis.org/app/inc/inc_get_object.php?id=<sta
 - *URL:* https://www.climatologylab.org/gridmet.html (served via the Northwest Knowledge Network THREDDS)
 - *Access Method:* `pygridmet` Python package (`get_bygeom`)
 - *Requires API-Key:* **False**
+- *Built to:* `src/data/interim/weather_global_{year}.parquet` — gridMET + IEM precip interpolated onto the canonical IEM grid, one row per `(date, global_node_id)`. This is a **built (interim)** table, not a raw snapshot; the raw gridMET NetCDF is cached under `src/data/raw/weather/gridMET_raw/`. (This is why the ~4.6 GB download goes in `interim/`, not `raw/`.)
 
 ```python
 import pygridmet
