@@ -60,7 +60,6 @@ MEMORY.md
 # never commit the zipped weather bundle (it is the Box download)
 src/data/interim.zip
 
-.DS_Store
 .vscode
 .claude
 MEMORY.md

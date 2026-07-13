@@ -10,6 +10,7 @@ dependencies:
   - scikit-learn
   - xgboost
   - statsmodels
+  - networkx            # basin-containment graph / LOFO split (src.splits.conflict_graph)
   # ── geospatial ──
   - geopandas
   - shapely
@@ -37,3 +38,4 @@ dependencies:
     # interactive widget
     - dash
     - dash-leaflet>=1.0
+    - dash-extensions       # widget map JS helpers (dash_extensions.javascript.assign)

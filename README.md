@@ -1,7 +1,12 @@
-# sustag — Iowa waterborne-nitrate prediction
+# sustag — Virtual Waterborne Nitrate Sensors in Iowa
 
-Project completed in the Erdos Summer 2026 Data Science Bootcamp. Predict waterborne nitrate concentration (regression) and 10 mg/L violation risk
-(classification) at Iowa monitoring sites — and at arbitrary *virtual* sites — from continuous weather and land-use data, using XGBoost over a leakage-aware (LOFO) CV design.
+Iowa grows a lot of corn and puts a lot of fertilizer in the ground (true). Nitrogen from that fertilizer becomes nitrate in Iowa's water and gives people cancer (bad). [Real time nitrate sensors exist](https://iwqis.iowawis.org/) but they break frequently and are currently being defunded thanks to Tyson lobbyists. **Question: Can dangerous nitrate levels be predicted from weather and land-use data at sites that have never been seen?** Said another way, using DATA and SCIENCE can we deploy *virtual sensors* in areas without any physical sensors?
+
+TLDR; We build an XGBoost model to identify nitrate violations (yes/no: does nitrate exceed the federal danger threshold of 10 mg/L?) which performs at 86% accuracy with a 59% false discovery rate. We think this is probably the best performance that can be expected with our current data stack. We provide a Dash widget to interact with our data and run forecasts, thought of as a redesign of the [IWQIS water quality app](https://iwqis.iowawis.org/app/?iwqis=/sensors-map).
+
+Project completed in the Erdos Summer 2026 Data Science Bootcamp.
+
+[Presentation Link](https://studio.youtube.com/video/O_ZCylQCXe8/edit)
 
 ## Quickstart
 
