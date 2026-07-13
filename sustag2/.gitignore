@@ -4,6 +4,7 @@ src/data/raw/basins
 src/data/raw/crops
 src/data/raw/surplus
 src/data/raw/weather
+src/data/raw/water
 src/data/interim/*
 src/data/processed/*
 src/data/cache/*
@@ -37,11 +38,11 @@ src/data/cache/*
 !src/data/processed/surplus/
 !src/data/processed/surplus/**
 
-# Serialized models / results can be large — keep the dirs, ignore heavy contents as needed.
-artifacts/*.json
-artifacts/*.joblib
-artifacts/*.pkl
-!artifacts/.gitkeep
+# EXCEPTION: the basin-containment graph (~4KB). Read at runtime by access.get_basin_graph ->
+# src/splits/conflict_graph.py (the LOFO family splitter), so the honest cross-validation would
+# FileNotFoundError on a fresh clone without it. Slow to regenerate (needs all 85 basins). Track it.
+!src/data/processed/aux/
+!src/data/processed/aux/**
 
 # Python / tooling
 __pycache__/
@@ -51,3 +52,7 @@ __pycache__/
 
 # Project memory (mirrors sustag/.gitignore)
 MEMORY.md
+
+# macOS Finder cruft (must win over the processed/** exceptions above)
+.DS_Store
+**/.DS_Store

@@ -28,6 +28,7 @@ slots.  This module owns their layout placement; other panels populate them:
 import base64
 import functools
 import json
+import random
 from pathlib import Path
 
 import pandas as pd
@@ -327,6 +328,44 @@ def make_iwqis_markers(selected_uids=None, visible_uids=None):
             bubblingMouseEvents=False,
         )
         for (site_uid, lat, lon) in sites
+    ]
+
+
+@functools.lru_cache(maxsize=1)
+def _fake_bad_site_points(n=77, seed=1234):
+    """`n` deterministic points sampled from Iowa river flowline vertices (so they sit ON rivers).
+    PRESENTATION-ONLY. Cached once (the geojson read is the only cost)."""
+    data = json.loads(_FLOWLINES_ASSET.read_text())
+    coords = []  # every vertex across all flowlines, as [lon, lat]
+    for feat in data.get("features", []):
+        geom = feat.get("geometry") or {}
+        if geom.get("type") == "LineString":
+            coords.extend(geom["coordinates"])
+        elif geom.get("type") == "MultiLineString":
+            for line in geom["coordinates"]:
+                coords.extend(line)
+    picks = random.Random(seed).sample(coords, min(n, len(coords)))
+    return tuple((lat, lon) for lon, lat in picks)  # -> (lat, lon) for Leaflet
+
+
+def make_fake_bad_site_markers(n=77, green_frac=0.6, seed=1234):
+    """PRESENTATION-ONLY fake sensor dots scattered along Iowa rivers: `n` circle markers, ~green_frac
+    green (SITE_DEFAULT) and the rest blue (SITE_USGS), styled to match the real IWQIS/USGS markers
+    but with NO id -> non-interactive (they never trigger the site-select callback). Deterministic."""
+    pts = _fake_bad_site_points(n, seed)
+    n_green = int(round(len(pts) * green_frac))  # 60% green, 40% blue by default
+    return [
+        dl.CircleMarker(
+            center=[lat, lon],
+            radius=5,
+            color=(colors.SITE_DEFAULT if i < n_green else colors.SITE_USGS)["stroke"],
+            fillColor=(colors.SITE_DEFAULT if i < n_green else colors.SITE_USGS)["fill"],
+            fillOpacity=0.8,
+            weight=1,
+            pane="sites-pane",
+            bubblingMouseEvents=False,
+        )
+        for i, (lat, lon) in enumerate(pts)
     ]
 
 

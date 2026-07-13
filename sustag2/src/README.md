@@ -51,11 +51,86 @@ to produce the necessary parquets.
 
 ## Data
 
+`src.data.access` is the read layer — everything is keyed by a `site_uid` (USGS-* or WQS*). `get_data` returns the whole `SiteData` bundle; the `get_*` accessors are cheap single-table reads.
+
+### Examples
+
+```python
+from src.data.access import get_site_ids, get_data, get_water, get_weather, aggregate_by_interval
+
+sites = get_site_ids()                 # all site UIDs
+uid = sites[0]
+
+data = get_data(uid)                   # SiteData: .water .weather .crops .surplus .grid .basin .basin_area ...
+water = get_water(uid)                 # per-timestamp nitrate_con / discharge / stage / temp
+weather = get_weather(uid)             # per-cell daily gridMET + IEM precip (precip_in_1d, max_temp, vpd, ...)
+
+# resample one water series to a calendar interval:
+weekly = aggregate_by_interval(site_uid=uid, value_col="nitrate_con", interval="1W", agg_func="mean")
+```
+
 ## Eval
+
+`src.eval.cook` is the cross-site CV harness. A *recipe* is a function `site_uid -> DataFrame` (feature columns + a target column). `compare_many` scores recipes under Leave-One-Site-Out (`loso_*`, optimistic) and Leave-One-Family-Out (`lofo_*`, honest transfer) CV.
+
+### Examples
+
+```python
+from src.eval.cook import compare_many, FAST_XGB
+from src.features.recipes import recipe_CLF
+
+scores = compare_many({"clf": recipe_CLF}, sites=None, target_col="violation", task="clf", **FAST_XGB)
+scores.T                                    # lofo_auc, lofo_prauc_lift, lofo_recall_at_far, brier, ...
+scores.attrs["importance"]["clf"].head()    # gain-ranked feature importances (free)
+```
+
+Also: `cook_one` (single-site chronological CV), `cook_fleet` / `compare_fleet` (per-site fleet summaries), and `fit_full` (train one deployable model on all rows).
 
 ## Features
 
+`src.features.recipes` holds the feature recipes. `recipe_REG` / `recipe_CLF` are the shipped best feature sets; each returns a model-ready frame (features + target) indexed by date. Investigate `src.features.recipes` source code to see examples for building new recipes from the features present in `src.features.features`.
+
+### Examples
+
+```python
+from src.features.recipes import recipe_CLF, recipe_REG, build_feature_frame
+
+clf_frame = recipe_CLF("USGS-05465500")     # features + the `violation` target
+reg_frame = recipe_REG("USGS-05465500")     # features + the `nitrate_con` target
+
+# just the features (no target) -- e.g. for a virtual / ungauged site:
+X = build_feature_frame("USGS-05465500", task="clf")
+```
+
 ## Models
 
+`src.models.train.build` runs the cross-site CV (logged to `logs/fulltrain_logs.json`), then fits a deployable model on ALL rows into `src/models/models/`. `tune_threshold` post-hoc tunes an already-trained classifier's β operating point (no retraining).
+
+### Examples
+
+```python
+from src.models.train import build, REAL_XGB_CLF
+from src.features.recipes import recipe_CLF
+
+build("my_CLF", recipe_CLF, target_col="violation", task="clf", xgb=REAL_XGB_CLF)
+```
+
+```bash
+# re-tune a deployed classifier's recall/precision cutoff table without retraining:
+python -m src.models.tune_threshold isaac_CLF2 --recipe recipe_CLF
+```
+
 ## Splits
+
+`src.splits.conflict_graph` builds leak-safe train/test groups: sites whose nitrate records overlap in time form a "basin family" that must never be split across train and test. `basin_groups` (in `cook`) maps each pooled row to its family for the LOFO holdouts.
+
+### Examples
+
+```python
+from src.splits.conflict_graph import split_groups, make_folds, audit_split
+
+groups = split_groups()                     # {site_uid -> family id}; same id = must stay together
+folds = make_folds(n_splits=5)              # a leak-safe fold assignment per site
+audit = audit_split(train_sites=[...], test_sites=[...])   # flag any cross-family leakage in a split
+```
 

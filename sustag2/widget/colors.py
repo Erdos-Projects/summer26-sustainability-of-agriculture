@@ -5,6 +5,12 @@ Surplus gradient is stored as (hue, saturation, lightness) HSL tuples so the
 interpolation in map_panel stays in the same color space.
 """
 
+# Lazy deployment safeguard. When True, the Debug tab's "confirm" button is INERT -- it makes no
+# changes and only flashes a brief, self-clearing "Debug Mode Off" message. Set to False to
+# re-enable the real basin-review confirm action (writes preferred_basin). Default True so a
+# deployed instance can't mutate the dataset from the UI.
+DEBUG_MODE_ON = True
+
 HYDRO = {"stroke": "#2563eb", "fill": "#3b82f6"}
 
 BASIN = {"stroke": "#0d9488", "fill": "#0d9488"}

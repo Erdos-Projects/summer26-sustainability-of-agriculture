@@ -1,0 +1,132 @@
+#+TITLE: 5-Minute Presentation — Final Transcript (rubric-structured)
+#+AUTHOR: sustag team
+#+OPTIONS: toc:nil num:nil ^:nil
+#+STARTUP: showall
+
+# Clean, numbers-filled version of the "SUB 5-MINUTE VERSION" draft. All figures in the [INSERT …]
+# placeholders are now filled with the deployed models' real cross-validated scores (recipe_CLF2 /
+# recipe_REG2, honest leave-one-basin-family-out CV; see logs/fulltrain_logs.json and the beta-table
+# in the classifier meta.json). Fixes to over-stated / imprecise claims from the draft are woven in
+# — see "Changes from your draft" at the bottom for the list.
+
+* TL;DR — headline (say this first, ~15s)
+
+#+begin_quote
+*We can flag nitrate-violation risk at locations with no sensor* — catching about *86% of true
+violation days* and ranking risk *~2.4× better than chance* on watersheds the model has never seen.
+That turns a sparse, shrinking sensor network into something closer to statewide coverage.
+#+end_quote
+
+* Problem Recap /(~45s)/
+
+Iowa grows about 2.5 billion bushels of corn a year — a commanding share of U.S. production. But
+Iowa's soil can't support that naturally; it takes heavy nitrogen fertilizer and manure, and much of
+that nitrogen leaches into streams as *nitrate*, which is *linked to elevated cancer risk* and, in
+infants, to "blue-baby syndrome." Iowa's water often exceeds *10 mg/L, the federal limit*, and
+research links levels above just *3 mg/L* to higher cancer risk. Not coincidentally, Iowa is *one of
+only a couple of states where cancer rates are still climbing.*
+
+Sensors track nitrate in real time, but coverage is spotty — expensive, breakable, and recently cut
+by budget decisions. That leaves water utilities, regulators, and farmers flying blind at the exact
+locations they most need information. Our unit of analysis is a *sensor site-day*, and our KPI is:
+/can we flag violation risk without a physical sensor there?/
+
+* Data Story /(~40s)/
+
+We started with 162 sensors, filtered to the *85 best*, spanning 4–15 years of records from
+2008–2025 — about *160,000 sensor site-days*. For each site we computed its drainage basin —
+*verified three independent ways* — then layered on satellite crop data, modeled soil-nitrogen
+surplus, and daily weather, all stitched onto a common grid.
+
+Key EDA insight: nitrate has strong *memory* (a persistence baseline beat linear regression), clear
+*seasonality* beyond what rain explains, and huge variation by location — some sites average *over
+30 mg/L*. Main limitation: sensor coverage is sparse, and annual crop/soil data misses within-season
+change.
+
+* Feature Engineering Story /(~40s)/
+
+We kept crop mix, recent rainfall, and — surprisingly — the sensor's raw *location*, which turned out
+to be one of the strongest predictors, likely proxying for unmeasured factors like nearby livestock
+operations. We engineered *flow-distance and basin-area features per grid cell* rather than using raw
+basin-wide weather, since proximity to the sensor mattered more than basin averages. And we dropped
+simple annual totals in favor of features that captured *lag* — rain from weeks ago mattered more
+than same-day rain, consistent with nitrate's slow movement through soil and tile drains.
+
+* Modeling Journey /(~40s)/
+
+We started with a persistence baseline, which beat basic linear regression outright — though
+persistence needs a /local/ sensor, which is exactly why the ungauged case is the hard problem. We
+moved to *XGBoost*, since the weather–fertilizer–nitrate relationship is highly nonlinear and the
+data is messy — trees beat the classical baselines we tried (persistence, linear models, and
+exponential smoothing).
+
+Validation was critical: sensors near each other on the same river report correlated values, so a
+naive split would leak information. We held out *entire families of overlapping basins* together, so
+every score reflects transfer to genuinely /new/ locations rather than memorizing site-to-site
+patterns.
+
+* Final Results /(~55s)/
+
+Our validation is deliberately honest — we hold out whole basin families, so these numbers reflect
+unseen watersheds.
+
+*Flagging violations* (the core KPI): across ~160,000 site-days the classifier reaches an *AUC of
+0.82* and a *PR-AUC of 0.63 against a 26% base rate — a 2.4× lift over chance*. Tuned to prioritize
+catching violations, it flags about *86% of true violation days*; at that setting roughly *60% of its
+alarms are false*, and a single recall-vs-precision knob dials that tradeoff. Within any given basin
+its *per-site AUC is 0.90* — it's excellent at telling you /when/ nitrate will spike. The
+probabilities are also meaningfully calibrated (*Brier 0.137* vs a 0.19 base-rate floor).
+
+*Predicting exact concentration* is harder, as expected: on unseen basins the regressor explains
+*about a third of the daily variance (R² ≈ 0.33), with typical error near 4 mg/L*. The decomposition
+is the real story — it's twice as good at tracking /movement within/ a basin (within-site R² ≈ 0.42)
+as at ranking the /absolute level/ of a brand-new basin (between-site R² ≈ 0.21). So it's a strong
+"when and roughly how bad," not a calibrated meter.
+
+/[Visual: spatial-CV precision–recall curve. Visual: predicted-vs-actual error band.]/
+
+The model's behavior is sensible: land near the sensor matters more than distant basin area, rain lag
+matters more than same-day rain, and there's a clear spring/early-summer spike. Both gain and
+permutation importance agree on the backbone — the *statewide nitrate level that day*, the sensor's
+*location and distance geometry*, and *near-field corn* — and permutation confirms the model leans on
+what's /immediately upstream/, exactly the riparian effect we engineered for.
+
+* Limitations & Next Steps /(~35s)/
+
+The model may fail at genuinely novel sites far from anything in training, since nitrate is so
+location-dependent. Our 85 sites, while curated, don't capture Iowa's full diversity, and annual data
+misses within-season shifts.
+
+The most promising addition is *point-source pollution data* — manure runoff from Iowa's livestock
+operations, which our location features are likely proxying for now. Soil composition, fertilizer
+timing, and tile-drainage data could also help. On modeling, we'd like to try *graph-based
+architectures* that explicitly capture the river network's physical connectivity.
+
+* Business / Decision Relevance /(~30s)/
+
+Nitrate predictions let three groups act sooner: *utilities* can start treatment before a spike hits,
+*agencies* can target scarce monitoring dollars toward high-risk unmonitored areas, and *farmers* can
+time fertilizer application around forecasted rain. It won't replace sensors for regulatory
+compliance — but where budget cuts mean the alternative is /no information at all/, even an imperfect
+prediction is a major upgrade.
+
+* Changes from your draft (for your awareness)
+
+Filled placeholders with real CV numbers:
+- *[INSERT ACCURACY]* → classifier AUC 0.82 · PR-AUC 0.63 vs 0.26 base (2.4× lift) · 86% recall at
+  the ~β=2~ operating point · per-site AUC 0.90 · Brier 0.137.
+- *[quantify]* (regression) → R² ≈ 0.33 on unseen basins · ~4 mg/L error · within-site 0.42 /
+  between-site 0.21.
+- Added a *TL;DR* headline line and a *feature-importance / interpretability* sentence.
+
+Corrected / softened claims that were risky or imprecise:
+- "nitrate — a carcinogen" → *"linked to elevated cancer risk"* (nitrate isn't classified as a direct
+  carcinogen).
+- "the only state where cancer rates are still rising" → *"one of only a couple of states"* ("only"
+  is easily challenged and likely false).
+- "enough to feed the entire US" → dropped (most Iowa corn is ethanol/feed, not human food).
+- "trees beat every classical time-series method we tried" → *"the classical baselines we tried
+  (persistence, linear, exponential smoothing)"* — ARIMA/SARIMA were never a full baseline.
+- "some sites average 35 mg/L" → *"over 30 mg/L"* — *VERIFY* the exact figure against your EDA
+  (~site_summary.mean_nitrate~) before quoting a hard number.
+- Added a one-clause pre-empt to the persistence line (it needs a local sensor).

@@ -1,14 +1,11 @@
 # sustag — Iowa waterborne-nitrate prediction
 
-Predict waterborne nitrate concentration (regression) and 10 mg/L violation risk
-(classification) at Iowa monitoring sites — and at arbitrary *virtual* sites — from
-continuous weather and land-use data, using XGBoost over a leakage-aware (LOFO) CV design.
+Project completed in the Erdos Summer 2026 Data Science Bootcamp. Predict waterborne nitrate concentration (regression) and 10 mg/L violation risk
+(classification) at Iowa monitoring sites — and at arbitrary *virtual* sites — from continuous weather and land-use data, using XGBoost over a leakage-aware (LOFO) CV design.
 
-> **⚠ This `sustag2/` tree is a staging area for an in-progress restructure.**
-> All new files/dirs from the re-grain + `src/` refactor land here. Once `sustag2/` is
-> verified to reproduce the current `sustag/` project, everything else in `sustag/` is
-> deleted and `sustag2/`'s contents move up one level to become the new repo root.
-> Until then, `sustag/` remains the source of truth.
+> **This `sustag2/` tree is the active, working project** — the re-grain + `src/` refactor.
+> It currently lives nested under the original `sustag/` repo and will move up to become the
+> repo root once the legacy `sustag/` tree is retired.
 
 ## Quickstart
 
@@ -27,73 +24,62 @@ conda activate sustag
 
 You should now be setup!
 
-## Architecture in one breath
+## Running the app & notebooks
 
-Two grains, one boundary:
+**Interactive widget** — drop a pin and get a predicted nitrate + violation-risk forecast at that ungauged point, with a β slider for the recall / false-alarm tradeoff:
 
-- **Global grain** — crops/surplus/weather are aggregated **once** over all ~23k Iowa IEM
-  cells (keyed by `global_node_id`), on **one canonical global Voronoi** (`grid_global`).
-- **Site grain** — a "site" is a **live view**: a thin membership table
-  (`node_id, global_node_id, dist_to_sensor, frac_cell_in_basin`) joined to the global tables.
-
-And the split that keeps the runtime read path lean:
-
-- **`src/build/`** — build-time ETL/geo (rasterio, geopandas overlay, Voronoi, API clients).
-  Runs occasionally; produces artifacts into `src/data/{raw,interim,processed}`.
-- **`src/data/`** — the runtime read path (parquet reads + joins). Imports **none** of the
-  build stack. Sorting rule: *if the read path imports a module, it lives on the data side;
-  if the read path only reads a file that module produced, that module lives in `build/`.*
-
-## Directory structure
-
-```
-sustag2/                        (staging; becomes repo root after verification)
-├── README.md                   this file
-├── data_inventory.md           the 8 sources (access / license / limits)
-├── kpis.md                     metric definitions (mirrors src/eval/metrics.py)
-├── schema.json                 SiteData + feature/target schema
-├── environment.yml             reproducible env (ported from widget/)
-├── Makefile                    raw → grid_global → features → models → figures
-│
-├── src/
-│   ├── data/                   ← runtime READ path (lean; geo deps only inside site_view)
-│   │   ├── raw/                immutable source snapshots        (gitignored)
-│   │   ├── interim/            grid_global, crops_global, surplus_global, weather_global
-│   │   ├── processed/          thin per-site views {node_id, global_node_id, dist, frac}
-│   │   ├── cache/              memoized cross-site features (state-daily, climatologies)
-│   │   ├── access.py           SINGLE read surface + SiteData + live joins; re-exports build_site_view
-│   │   ├── site_view.py        (basin, sensor) → membership; merges build_grid + build_grid_from_basin
-│   │   ├── crs.py              EQUAL_AREA_CRS = "EPSG:5070" + wgs84_to_albers
-│   │   └── cdl_legend.py       CDL code→class lookup (imported by access AND build)
-│   │
-│   ├── build/                  ← build-time ETL/geo (heavy deps quarantined)
-│   │   ├── make_data.py        orchestrator
-│   │   ├── _make_water.py  _make_basins.py  _make_grid.py  _make_weather.py
-│   │   ├── _make_crops.py  _make_surplus.py  _make_map_overlays.py  _make_aux.py
-│   │   ├── config.py           parses pipeline_config.toml (get_config, get_region_bbox)
-│   │   ├── pipeline_config.toml  build knobs (region, years, site filters, thresholds, agg_crops)
-│   │   └── util/               gen_surplus_statistics.py, clip_crops.py, build_source.py
-│   │
-│   ├── features/               transformers.py · recipes.py · preprocessing.py
-│   ├── splits/                 conflict_graph.py  (LOSO / LOFO-family splitter)
-│   ├── eval/                   metrics.py · stress_tests.py
-│   └── models/                 train.py · wrappers.py · tune.py
-│
-├── deploy/                     virtual-site inference (APP; imports src/data, not src/build)
-├── widget/                     Dash app (APP; imports src/data)
-│
-├── notebooks/                  eda · feature_selection · pipeline_demo · modeling_baselines ·
-│                               modeling_experiments · metric_evaluation · final_results
-├── results/                    eda/ interpretability/ stress_tests/ final/ + model_comparison.csv
-├── artifacts/                  final_model_{reg,clf}.json + .meta.json
-├── tests/                      test_pipeline · test_models · test_splits · test_parity
-├── presentation/               slides + summary.md
-├── logs/                       (optional) provenance
-└── experiments/                per-contributor scratch — promote keepers into src/
+```bash
+python widget/app.py        # Dash dev server -> http://127.0.0.1:8050
 ```
 
-## Migration status
+**Demo notebooks** — `notebooks/fulldemo.ipynb` is intended as a walkthrough of the pipeline (data access -> EDA -> feature engineering -> cross-site CV -> final models -> results & deployment). It is the only demo written retroactively.
 
-Skeleton scaffolded; modules are stubs pending port from `sustag/`. Guardrail before deleting
-anything in `sustag/`: assert the new `access` getters reproduce the current per-site outputs
-for all 85 sites (exact for crops/membership; float-tolerant for area-weighted surplus).
+It imports helpers from the sibling `demo_*.py` modules (`demo_eda`, `demo_model`, `demo_baselines`, `demo_recipes`).
+
+The following additional notebooks (all in `notebooks/`) were written as demos for other team members at various points in the project, and may be of use to someone going through the repo.
+
+- `clean-IWQIS-site-data.ipynb`: shows why and which of the 162 original sites were thrown away to arrive at the current 85 site list
+- `example_recipes.ipynb`: a file intended for showing how to use `src.features.features` to build recipes
+- `example_split.ipynb`: a file intended to show how to use `src.splits.conflict_graph` for generating CV splits
+- `examples_data_access.ipynb`: a file written for showcasing the original version of the data module pre-Erdos spec, 80% it has been fixed to work post-refactor
+
+## Repo Structure
+- `experiments/`: contains one directory for each team member, mostly a grave yard. CODE HERE NOT GUARANTEED TO RUN. It was not revised after the Erdos-spec refactor.
+- `logs/`: an underutilized log directory. Only `src.models.train` writes to it.
+- `notebooks/`: contains example notebooks and the `fulldemo.ipynb` notebook
+- `presentation/`: contains a copy of the presentation slides
+- `src/`: all reusable code lives here. Has submodules
+  - `src/build/`: for building data (main file `make_data.py`)
+  - `src/data/`: data access module, also where data is stored
+  - `src/eval/`: one file, `cook.py`, used for training and CV
+  - `src/features/`: used for building feature lists, used extensively during feature engineering phase of project
+  - `src/models/`: used for tuning and training models. Models stored to `src/models/models/` and manually moved to `{proj-root}/deploy/models` for deployment.
+  - `src/splits/`: contains `conflict_graph.py`, used for CV splits.
+  - `selftest.py`: a data consistency check, indended to be run from command line
+- `widget`: the browser-based widget used throughout this project for various things. Almost entirely vibe-coded, only exception being some parts of the Basin Editor tool.
+
+**Modifications from Erdos Spec**
+- `artifacts/` has been deleted, models live in `deploy/models/`
+- `tests/` has been deleted, `src/selftest.py` tests the data pipeline post construction, `make_data` runs its own tests as well.
+
+## What's committed vs. downloaded
+
+A fresh clone already contains most of the data: per-site **water/nitrate**, **basins**, the tiny cell-aggregated **crop / surplus / grid globals**, and the **surplus display assets**. The only large artifact not in git is **`weather_global` (~4.6 GB)** plus a few small `processed/` dirs — that's what the data download provides (extract it into `src/data/`). So everything runs against committed data except the weather layer until the bundle is in place.
+
+The trained **models** live in **`deploy/models/`** — the deployed boosters `isaac_REG2` / `isaac_CLF2` and their `.meta.json` sidecars, committed so the widget and deploy path work on a fresh clone. (This is the replacement for the former top-level `artifacts/` directory; new training runs also write a copy under `src/models/models/`.)
+
+A *full* rebuild from raw (`make_data.py`) additionally needs `src/build/api-keys.toml` (a USGS token) and the CDL / gTREND sources — see [`src/README.md`](src/README.md)'s "Catastrophic rebuild" for per-source steps.
+
+## Documentation
+
+- [`src/README.md`](src/README.md) — per-submodule (`data` / `eval` / `features` / `models` / `splits`) API, with runnable examples.
+- [`data_inventory.md`](data_inventory.md) — every external data source (URL, access method, API-key needs).
+- [`kpis.md`](kpis.md) — metric definitions for the CV scores.
+
+## Status
+
+The re-grain + `src/` refactor is functional end to end — data access, feature recipes, cross-site
+CV, model training, the deploy inference path, and the widget all run on the new `global_node_id`
+grain, and the raw-acquisition utilities (`clip_crops`, `build_source`, `gen_surplus_statistics`)
+are ported so the dataset can be rebuilt from source. Remaining: promote `sustag2/` up to the repo
+root once the legacy `sustag/` tree is retired.

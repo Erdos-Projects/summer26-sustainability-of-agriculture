@@ -328,10 +328,18 @@ def _build_forecast_section():
                         ],
                         type="default",
                     ),
+                    html.Div(
+                        html.Button("Download figure", id="download-forecast-button", n_clicks=0,
+                                    style={"fontSize": "12px"}),
+                        id="download-forecast-row",
+                        style={"display": "none"},
+                    ),
+                    dcc.Download(id="forecast-download"),
+                    dcc.Store(id="forecast-download-fig"),
                 ]
             ),
         ],
-        open=False,
+        open=True,
     )
     return _wrap_with_help(
         details,
@@ -346,6 +354,21 @@ def _build_forecast_section():
                 "delineates the upstream basin at that point and predicts the daily nitrate "
                 "concentration and violation probability there for the chosen year.",
                 style=_HP,
+            ),
+            html.Strong("Recall emphasis (β)", style={"fontSize": "11px"}),
+            html.P(
+                "Sets the alarm cutoff on the predicted violation probability via the F-beta operating "
+                "point. Higher β weights recall over precision (β=2 counts catching a violation "
+                "4× as much as avoiding a false alarm), which lowers the cutoff so more days are "
+                "flagged. Flagged (alarm) days are shaded on the P(violation) chart.",
+                style=_HP,
+            ),
+            html.Strong("Results readout", style={"fontSize": "11px"}),
+            html.P(
+                "For the chosen β, reports the alarm-day count plus the model's honest catch rate "
+                "(recall = % of real violations flagged) and false-alarm share (% of alarms that are "
+                "false) — estimated on held-out sites at ~the base-rate prevalence.",
+                style={**_HP, "margin": "2px 0 0 0"},
             ),
         ],
     )
@@ -511,6 +534,17 @@ def _build_map_display_section():
             html.Strong("Show site rain grid", style={"fontSize": "11px"}),
             html.P(
                 "Displays the IEM precipitation grid cell positions for the active graph site.",
+                style=_HP,
+            ),
+            html.Strong("Show Iowa heatmap", style={"fontSize": "11px"}),
+            html.P(
+                "Overlays the statewide nitrogen-surplus heatmap (kg N/ha) for the selected year.",
+                style=_HP,
+            ),
+            html.Strong("Year / Opacity", style={"fontSize": "11px"}),
+            html.P(
+                "Year picks which annual surplus layer (2000-2017) the heatmap shows; Opacity sets "
+                "how transparent it is.",
                 style={**_HP, "margin": "2px 0 0 0"},
             ),
         ],
@@ -532,6 +566,14 @@ def _build_presentation_section():
                 ],
                 value=colors.default("grid-color-mode"),
                 style={"fontSize": "13px", "marginTop": "4px"},
+            ),
+            html.Div("extra markers", style=_SUBSECTION_LABEL),
+            dcc.Checklist(
+                id="fake-sites-toggle",
+                options=[{"label": " Display bad sites", "value": "show"}],
+                value=[],  # presentation-only fake sensors; off by default
+                style={**_CHECKBOX_STYLE, "marginTop": "4px"},
+                labelStyle=_CHECKBOX_LABEL,
             ),
         ],
         open=True,
@@ -584,6 +626,26 @@ def _build_debugging_section():
                 options=[{"label": " Show IEM footprint", "value": "show"}],
                 value=colors.default("iem-bbox-toggle"),
                 style={"fontSize": "13px", "marginTop": "6px"},
+            ),
+            # live map-view readout (updates as you pan/zoom) -- handy for choosing IOWA_CENTER/ZOOM
+            html.Div(
+                id="map-view-readout",
+                style={"fontSize": "12px", "fontFamily": "monospace", "color": "#555", "marginTop": "8px"},
+            ),
+            # set the view directly: zoom + center (lat, lon) -> Apply flies the map there
+            html.Div(
+                [
+                    dcc.Input(
+                        id="map-zoom-input", type="number", min=1, max=18, step=1, placeholder="zoom",
+                        style={"width": "56px", "fontSize": "12px"},
+                    ),
+                    dcc.Input(
+                        id="map-center-input", type="text", placeholder="lat, lon",
+                        style={"width": "120px", "fontSize": "12px"},
+                    ),
+                    html.Button("Apply", id="map-view-apply", n_clicks=0, style={"fontSize": "12px"}),
+                ],
+                style={"display": "flex", "gap": "4px", "alignItems": "center", "marginTop": "6px"},
             ),
         ],
         open=False,
@@ -650,6 +712,7 @@ def layout():
                             dl.LayerGroup(id="pin-basin-layer"),
                             dl.LayerGroup(id="pin-basin-v3-layer"),
                             dl.LayerGroup(id="iwqis-layer"),
+                            dl.LayerGroup(id="fake-sites-layer"),  # presentation-only fake sensors
                             dl.LayerGroup(id="marker-layer"),
                             dl.FeatureGroup(
                                 [

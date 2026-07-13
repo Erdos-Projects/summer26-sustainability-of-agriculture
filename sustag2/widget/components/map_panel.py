@@ -9,6 +9,48 @@ from .map_layout import layout, _crop_legend, _surplus_legend  # noqa: F401
 def register_callbacks(app):
     _HIDDEN = {**_HELP_POPUP_STYLE, "display": "none"}
 
+    def _latlon(center):
+        # dash-leaflet reports center as [lat, lon] initially but {"lat":.., "lng":..} after a move.
+        if isinstance(center, dict):
+            return center.get("lat"), center.get("lng")
+        return center[0], center[1]
+
+    @app.callback(
+        Output("map-view-readout", "children"),
+        Input("map", "zoom"),
+        Input("map", "center"),
+    )
+    def show_map_view(zoom, center):
+        # Debug readout: current map zoom + center, live as the user pans/zooms.
+        if zoom is None or not center:
+            return "zoom —  ·  center —"
+        lat, lon = _latlon(center)
+        return f"zoom {zoom}  ·  center {lat:.4f}, {lon:.4f}"
+
+    @app.callback(
+        Output("map", "viewport"),
+        Input("map-view-apply", "n_clicks"),
+        State("map-zoom-input", "value"),
+        State("map-center-input", "value"),
+        State("map", "center"),
+        State("map", "zoom"),
+        prevent_initial_call=True,
+    )
+    def set_map_view(n_clicks, zoom_in, center_str, cur_center, cur_zoom):
+        # Debug: fly the map to a directly-typed zoom / center. Blank fields keep the current value;
+        # an unparseable center is ignored (no move).
+        center = list(_latlon(cur_center)) if cur_center else None
+        if center_str:
+            try:
+                lat, lon = (float(x) for x in center_str.replace(" ", "").split(","))
+                center = [lat, lon]
+            except (ValueError, TypeError):
+                return no_update
+        zoom = zoom_in if zoom_in is not None else cur_zoom
+        if center is None and zoom is None:
+            return no_update
+        return {"center": center, "zoom": zoom, "transition": "flyTo"}
+
     for _popup_id, _btn_id, _close_id in [
         ("selection-help-popup", "selection-help-btn", "selection-help-close-btn"),
         ("graph-help-popup", "graph-help-btn", "graph-help-close-btn"),
@@ -441,6 +483,14 @@ def register_callbacks(app):
             except FileNotFoundError:
                 pass
         return make_iwqis_markers(selected_uids or [], visible_uids=visible_uids)
+
+    @app.callback(
+        Output("fake-sites-layer", "children"),
+        Input("fake-sites-toggle", "value"),
+    )
+    def render_fake_bad_sites(toggle):
+        # PRESENTATION-ONLY: 77 fake sensor dots along rivers (60/40 green/blue). Off by default.
+        return make_fake_bad_site_markers() if "show" in (toggle or []) else []
 
     @app.callback(
         Output("area-tool-container", "style"),

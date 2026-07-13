@@ -12,6 +12,7 @@ from dash import Input, Output, State, html, dcc, no_update, ctx
 
 from src.data import access
 from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
+import colors
 
 # ── Style constants ───────────────────────────────────────────────────────────
 # Duplicated from map_panel to avoid a circular import.
@@ -164,7 +165,7 @@ def layout():
                             dcc.Checklist(
                                 id="pin-basin-v1-toggle",
                                 options=[{"label": " v1 pin", "value": "show"}],
-                                value=[],
+                                value=["show"],
                                 style=_CHECKBOX_STYLE,
                                 labelStyle=_CHECKBOX_LABEL,
                             ),
@@ -312,8 +313,14 @@ def register_callbacks(app):
         prevent_initial_call=True,
     )
     def confirm_basin_review(_, timer_n, site_uid, basin_type, region_geom, version):
+        # no-pin-timer also clears the status text, so the DEBUG "Debug Mode Off" flash auto-vanishes.
         if ctx.triggered_id == "no-pin-timer":
-            return no_update, no_update, _NO_PIN_POPUP_HIDDEN, True, no_update
+            return "", no_update, _NO_PIN_POPUP_HIDDEN, True, no_update
+
+        # Lazy deployment safeguard (colors.DEBUG_MODE_ON): the confirm button is inert -- flash a
+        # brief self-clearing message (via no-pin-timer, ~2s) and make no changes to the dataset.
+        if colors.DEBUG_MODE_ON:
+            return ["Debug Mode Off", html.Br(), "See 'colors.py'"], no_update, _NO_PIN_POPUP_HIDDEN, False, 0
 
         if not site_uid or not basin_type:
             return "Select a site and basin type first.", no_update, _NO_PIN_POPUP_HIDDEN, True, no_update

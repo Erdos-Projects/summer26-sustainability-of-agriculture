@@ -1,11 +1,9 @@
-"""VIBECODED TEST TO ENSURE REFACTOR WORKED CORRECTLY
-
-Replaces the migration-parity harness (whose job — proving sustag2 reproduces the old tree — is
-done). These verify the pipeline's INTERNAL coherence, reading only from within sustag2:
+"""
+The methods here verify the data pipelines internal coherence:
 
   * global_tables       -- the interim tables load with the expected schema.
   * water / basins      -- the read accessors + D8 raster load and are self-consistent.
-  * get_data            -- assembles every field; grid membership + joins are coherent.
+  * get_data            -- this assembles every field; grid membership + joins are coherent.
   * virtual_equals_real -- build_virtual_site_data(stored basin) reproduces get_data(uid) exactly
                            (the invariant that the virtual and real site paths are one code path).
 

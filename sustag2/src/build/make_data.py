@@ -7,8 +7,8 @@ Dependency order (only edges that matter):
     basins        <- water        (needs site coords)
     crops_global  <- grid_global  (rasterize CDL onto grid_global)
     surplus_global<- grid_global  (area-weight surplus onto grid_global)
-    aux           <- basins       (basin containment graph)   [TODO: not ported yet]
-    map_overlays                  (NHD flowlines/waterbodies)  [TODO: not ported yet]
+    aux           <- basins       (basin containment graph, used by the LOFO family splitter)
+    map_overlays                  (NHD flowlines/waterbodies, widget basemap overlays)
 
 ⚠ This is the FULL rebuild path and is HEAVY + NETWORK: water (IWQIS 3.1GB reassembly + USGS
 API), basins (NLDI/KMZ), weather (gridMET/IEM download), plus the crops/surplus aggregations.
