@@ -6,7 +6,7 @@ TLDR; We build an XGBoost model to identify nitrate violations (yes/no: does nit
 
 Project completed in the Erdos Summer 2026 Data Science Bootcamp.
 
-[Presentation Link](https://studio.youtube.com/video/O_ZCylQCXe8/edit)
+[Link to our beautiful presentation video (5 minutes long)](https://www.youtube.com/watch?v=O_ZCylQCXe8)
 
 ## Quickstart
 
