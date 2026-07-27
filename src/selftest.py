@@ -178,7 +178,8 @@ def test_features() -> Result:
                 len(fr) > 0
                 and {"date", "doy_sin", "doy_cos"} <= cols
                 and any(c.startswith("precip_in_1d") for c in cols)  # weather family
-                and any("Corn" in c for c in cols)  # crop family
+                and any("corn" in c.lower() for c in cols)  # crop family (pct_corn_b* since the
+                # crop block became a composition; case-insensitive so a raw agg_crops recipe passes too)
                 and any(c.startswith("rest_of_state_nitrate_lag") for c in cols)  # neighbour
             )
             if not has:

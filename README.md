@@ -1,6 +1,6 @@
 # sustag — Virtual Waterborne Nitrate Sensors in Iowa
 
-Iowa grows a lot of corn and puts a lot of fertilizer in the ground (true). Nitrogen from that fertilizer becomes nitrate in Iowa's water and gives people cancer (bad). [Real time nitrate sensors exist](https://iwqis.iowawis.org/) but they break frequently and are currently being defunded thanks to Tyson lobbyists. **Question: Can dangerous nitrate levels be predicted from weather and land-use data at sites that have never been seen?** Said another way, using DATA and SCIENCE can we deploy *virtual sensors* in areas without any physical sensors?
+Iowa grows a lot of corn and puts a lot of fertilizer in the ground. Nitrogen from that fertilizer becomes nitrate in Iowa's water and gives people cancer, which is bad. [Real time nitrate sensors exist](https://iwqis.iowawis.org/) to monitor the nitrate in the water supply, but they break frequently and are currently being hit by funding cuts. **Question: Can dangerous nitrate levels be predicted from weather and land-use data at sites that have never been seen?** Said another way, using DATA and SCIENCE can we deploy *virtual sensors* in areas without any physical sensors?
 
 TLDR; We build an XGBoost model to identify nitrate violations (yes/no: does nitrate exceed the federal danger threshold of 10 mg/L?) which performs at 86% accuracy with a 59% false discovery rate. We think this is probably the best performance that can be expected with our current data stack. We provide a Dash widget to interact with our data and run forecasts, thought of as a redesign of the [IWQIS water quality app](https://iwqis.iowawis.org/app/?iwqis=/sensors-map).
 
@@ -47,7 +47,7 @@ It imports helpers from the sibling `demo_*.py` modules (`demo_eda`, `demo_model
 
 The following additional notebooks (all in `notebooks/`) were written as demos for other team members at various points in the project, and may be of use to someone going through the repo.
 
-- `clean-IWQIS-site-data.ipynb`: shows why and which of the 162 original sites were thrown away to arrive at the current 85 site list
+- `clean-IWQIS-site-data.ipynb`: shows why and which of the 162 original sites were thrown away to arrive at the current 83 site list (the notebook itself stops at 85; two groundwater sites were dropped afterwards — see `[site_filters].groundwater` in `src/build/pipeline_config.toml`)
 - `example_recipes.ipynb`: a file intended for showing how to use `src.features.features` to build recipes
 - `example_split.ipynb`: a file intended to show how to use `src.splits.conflict_graph` for generating CV splits
 - `examples_data_access.ipynb`: a file written for showcasing the original version of the data module pre-Erdos spec, 80% it has been fixed to work post-refactor

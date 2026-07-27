@@ -14,6 +14,10 @@ Spatial covariate aggregates (per site, binned by each cell's distance to the se
   agg_weather_w_lag(site)          agg_weather with each bucket shifted back by its water travel-time lag.
   agg_site_to_buckets(site)        Convenience bundle: (crops, surplus, weather) bucketed for one site.
 
+Size-invariant covariate aggregates (what the shipped recipes use; see the section comment)
+  agg_crops_normalized(site)       Crop MIX: each class as a share of its bucket's total -> pct_<class>.
+  agg_surplus_normalized(site)     Membership-weighted MEAN surplus intensity (kg N/ha), not a sum.
+
 Antecedent-weather integrators (basin-wide rolling sums; capture catchment wetness)
   rolling_precip(site, windows)    Antecedent precipitation index: trailing rolling sum of basin-mean daily precip.
   water_balance(site, windows)     Trailing rolling sum of basin-mean (precip - PET) in mm: a PDSI-lite wetness/drought integrator.
@@ -126,6 +130,72 @@ def agg_site_to_buckets(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M
     sb = agg_surplus(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=True)
     wb = agg_weather(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=False)
     return cb, sb, wb
+
+
+# ── size-invariant covariate aggregations ─────────────────────────────────────
+# The agg_* functions above reduce each bucket with a SUM (optionally distance-decay weighted).
+# For crops that makes Corn_b0 mostly a statement about how big the basin is, not how corn-heavy
+# it is; for surplus it is worse, because surplus_kgha is already an intensity (kg N/ha) and
+# summing an intensity over cells is dimensionally meaningless. Both leave a residual basin-size
+# correlation in exactly the place the model is weakest: comparing one site to another. The two
+# functions below are the size-invariant forms -- a composition for crops, a weighted mean for
+# surplus -- and are what the shipped recipes consume.
+
+
+def _bucket_mean_intensity(site_uid, site_data, edges):
+    """Per-(year, bucket) basin-membership-weighted MEAN of surplus_kgha (kg N/ha): Sum(surplus_kgha *
+    frac) / Sum(frac) over the cells mapped to that bucket. surplus_kgha is already an intensity, so
+    its size-invariant aggregation is a weighted MEAN of it, NOT a sum (a sum scales with basin size).
+    Each cell is weighted by its basin-membership fraction (partial edge cells count partially).
+    Returns [year(, bucket), surplus_kgha]; a single bucket (edges=()) drops the bucket column to
+    match agg_surplus. Empty bucket -> NaN."""
+    d = _resolve_data(site_data=site_data, site_uid=site_uid)
+    mapping = _bucket_map(site_data=d, edges=edges)  # node_id -> bucket (categorical)
+    frac = pd.Series(d.grid.frac_cell_in_basin.values, index=d.grid.node_id)
+    s = d.surplus[["node_id", "year", "surplus_kgha"]]
+    nid = s["node_id"].to_numpy()
+    w = frac.loc[nid].to_numpy()  # basin-membership weight per (cell, year) row
+    agg = pd.DataFrame(
+        {
+            "year": s["year"].to_numpy(),
+            "_wsum": s["surplus_kgha"].to_numpy() * w,  # intensity weighted by membership
+            "_w": w,
+        }
+    )
+    keys = ["year"]
+    if mapping.cat.categories.size > 1:
+        agg["bucket"] = mapping.loc[nid].to_numpy()
+        keys = ["year", "bucket"]
+    g = agg.groupby(keys, observed=True)[["_wsum", "_w"]].sum()
+    g["surplus_kgha"] = g["_wsum"] / g["_w"].where(g["_w"] > 0)
+    return g.reset_index()[keys + ["surplus_kgha"]]
+
+
+def agg_crops_normalized(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M):
+    """agg_crops as land-cover COMPOSITION shares: each class divided by the total over all classes
+    in its (year, bucket), so every column becomes a fraction in [0, 1] (the classes sum to 1 per
+    bucket) -- a size-invariant crop MIX. Columns are renamed `pct_<class>` (lower-cased), so after
+    flatten_buckets they read pct_corn_b0, pct_soybeans_b2, ...  A bucket with no crop pixels -> NaN.
+    Always a plain pixel-count composition -- no exp/lam distance weighting."""
+    frame = agg_crops(site_uid, site_data, edges, exp=False)  # plain pixel-count sum, no exp weighting
+    val_cols = [c for c in frame.columns if c not in ("year", "bucket")]
+    total = frame[val_cols].sum(axis=1)
+    out = frame.copy()
+    out[val_cols] = frame[val_cols].div(total.where(total != 0), axis=0)  # NaN where the bucket is crop-empty
+    return out.rename(columns={c: f"pct_{c.lower()}" for c in val_cols})
+
+
+def agg_surplus_normalized(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M):
+    """Per-bucket basin-membership-weighted MEAN N-surplus intensity (kg N/ha).
+
+    surplus_kgha is an intensity, so its size-invariant aggregation is a MEAN of it, not a sum over
+    cells (which scales with basin size) and not a sum-over-cells / area (which mismatches units and
+    leaves a residual basin-size correlation). Cells are weighted by frac_cell_in_basin only -- see
+    _bucket_mean_intensity -- so this is a membership-weighted, not an area-weighted, mean; the grid
+    is a Voronoi over gridMET cells, so the two differ slightly where cell sizes vary.
+
+    Output column: surplus_kgha. No exp/lam distance weighting -- a mean is already scale-free."""
+    return _bucket_mean_intensity(site_uid, site_data, edges)
 
 
 # ── antecedent-weather integrators (basin-wide rolling sums) ──────────────────

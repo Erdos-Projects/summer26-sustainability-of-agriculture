@@ -18,7 +18,7 @@ access details (URLs, keys, code) are in the *Access Points* section below.
 |---|---|---|---|---|
 | IWQIS | Iowa nitrate sensor time series (`WQS*`) | bulk CSV, by request | `_make_water.py` | By request (IWQIS / U. Iowa IIHR); not an open API |
 | USGS-NWIS | USGS nitrate gauges (`USGS-*`) | REST API | `_make_water.py` | public domain |
-| NLDI | Drainage-basin delineation (v1/v2) | REST API | `_make_basins.py`, `site_view.py` | public |
+| NLDI | Drainage-basin delineation (basin0/1/2) | REST API | `_make_basins.py`, `site_view.py` | public |
 | IEM | ~4 km precip Voronoi grid (reference-day geometry) | zip download | `_make_grid.py` | Public (Iowa State U. / IEM); free |
 | gridMET | Daily weather (temp, ET, humidity, solar…) | download | `_make_weather.py` | Public domain (Climatology Lab, U. Idaho) |
 | USDA CDL | Cropland Data Layer (crop classification raster) | CropScape API | `util/clip_crops.py`, `_make_crops.py` | public |
@@ -53,29 +53,29 @@ import pandas as pd
 df = pd.read_csv("src/data/raw/water/chunks/iwqis_alldata_chunk1.csv")
 ```
 
-### USGS NLDI — Network-Linked Data Index (basin delineation, USGS sites)
-- *Description:* Upstream drainage-basin polygon for a point, via USGS hydrologic network navigation (used to form the basin1 basins).
+### USGS NLDI — Network-Linked Data Index (basin delineation)
+- *Description:* Upstream drainage-basin polygon for a COMID, via USGS hydrologic network navigation. Source for three of the four delineations `_make_basins.py` computes:
+  - **basin0** — `nwissite/{uid}/basin`, the authority's own delineation. USGS sites only; the preferred basin wherever it exists (23 of 83 sites).
+  - **basin1** — **the default for everything else.** The sensor is snapped to its *nearest NHD reach* (`snap_comid`, using the `_make_map_overlays.py` flowlines) and that COMID's upstream basin is fetched. Not `/comid/position`: that returns the catchment *containing* the point, and NHDPlus mainstem reaches through divergences carry `AreaSqKM = 0`, so a mainstem sensor silently lands in a neighbouring tributary's catchment. `WQS0061` is the worked case — 1057 km² (Soldier River) by the snap vs 15.6 km² by containment.
+  - **basin2** — `/comid/position` containing catchment, retained as a cross-check only (`flag_area_mismatch_v2`), never auto-selected.
 - *URL:* https://api.water.usgs.gov/nldi/linked-data
 - *Access Method:* HTTP REST (GeoJSON)
 - *Requires API-Key:* **False**
 
 ```python
 import requests
-lat, lon = 42.03, -93.62
-url = f"https://api.water.usgs.gov/nldi/linked-data/comid/position?coords=POINT({lon} {lat})"
-basin = requests.get(f"{url}/navigation/UT/basin", timeout=60).json()
+comid = 5093446  # from snap_comid(lat, lon, flowlines); see src/build/_make_basins.py
+url = f"https://api.water.usgs.gov/nldi/linked-data/comid/{comid}/basin"
+basin = requests.get(url, params={"f": "json", "simplified": "true"}, timeout=60).json()
 ```
 
-### IWQIS basin layers (basin delineation, WQS sites)
-- *Description:* Authoritative delineated basin polygons (KMZ) for Iowa WQS stations; used for basin2 when a site is a WQS site.
-- *URL:* https://iowawis.org/layers/basins
-- *Access Method:* HTTP download of KMZ, parsed to geometry
-- *Requires API-Key:* **False**
+Every basin parquet carries the outlet `comid` it was delineated from. basin3 (the D8 raster
+flood-fill, from the IWQIS 500 m direction raster) is the fourth delineation and the only one that
+touches no NLDI service; it is a cross-check too, and carries no COMID.
 
-```python
-import requests
-kmz = requests.get("https://iwqis.iowawis.org/app/inc/inc_get_object.php?id=<station_id>&subid=0", timeout=30).content
-```
+The IWQIS KMZ basin layer (`iowawis.org/layers/basins`) is **no longer used**. It supplied the old
+"authoritative" basin for WQS sites by scraping a PHP endpoint and score-matching candidate KMZs
+against the D8 area; the nearest-flowline snap supersedes it and gives a real COMID.
 
 ### gridMET (additional daily weather data)
 - *Description:* Daily gridded weather at 4 km resolution. Includes max/min temp, humidity, VPD, solar radiation, ET, and 1000-hr fuel moisture. Used for all non-precipitation weather features.
@@ -147,13 +147,13 @@ Here's a writeup documenting our thought process as we identified and consolidat
 
 ## Target
 
-The two main targets are derived from a collection of 162 water-borne nitrate sensors spread out across Iowa's hydrological network recording nitrate (NO2 + NO3) concentration measurements (mg/L) in 5-15 minute intervals. Each of these sensors began reporting at a different date between 2008 and 2025, and many sensors were decommissioned. There are also significant data gaps in most of the nitrate timeseries in which a sensor was turned off for a time (or malfunctioned and was replaced) before being turned back on again. This means the quality of these timeseries vary significantly from sensor to sensor -- some are mostly nan, some span time periods of 1 year. To standardize and clean the data we filtered out sites that had a NaN reporting rate above 50% or a total lifespan of under 3.92 years (3.92 was chosen because there was one sensor with high quality data we liked a lot). We then manually scanned through the timeseries plots of the remaining sensors and threw away the ones which were clearly garbage (those reporting a perfectly linear nitrate concentration over their entire lifespan, for instance). This left us with 85 sensors.
+The two main targets are derived from a collection of 162 water-borne nitrate sensors spread out across Iowa's hydrological network recording nitrate (NO2 + NO3) concentration measurements (mg/L) in 5-15 minute intervals. Each of these sensors began reporting at a different date between 2008 and 2025, and many sensors were decommissioned. There are also significant data gaps in most of the nitrate timeseries in which a sensor was turned off for a time (or malfunctioned and was replaced) before being turned back on again. This means the quality of these timeseries vary significantly from sensor to sensor -- some are mostly nan, some span time periods of 1 year. To standardize and clean the data we filtered out sites that had a NaN reporting rate above 50% or a total lifespan of under 3.92 years (3.92 was chosen because there was one sensor with high quality data we liked a lot). We then manually scanned through the timeseries plots of the remaining sensors and threw away the ones which were clearly garbage (those reporting a perfectly linear nitrate concentration over their entire lifespan, for instance). This left us with 85 sensors. We later dropped two more — `USGS-415959091441301` (an NWIS well) and `WQS0031` (Big Spring, whose IWQIS `river` field reads "Groundwater / Spring") — because they are groundwater sites with no surface drainage basin, so the basin delineation, the distance-bucketed covariate aggregation and the surface travel-time lags are all meaningless for them. **83 sensors** is the working set.
 
 From these nitrate timeseries, we define two targets: a regression target given by the daily max nitrate value observed by a sensor and a classification target given by the violation category of a sensor. A "violation" is defined by the EPA as a nitrate concentration above 10 mg/L (though in reality levels far below this are still unsafe for human consumption), so in the latter case the target is "1" if the daily maximum nitrate level rose above 10 mg/L and is "0" otherwise.
 
 Sensor data came from two different sources depending on whether the sensors were state or federally operated:
-- IWQIS (Iowa Water Quality Information System) sensors: Jerry from the IWQIS gave us a 3.3 GB csv containing the sensor timeseries for 61/85 of our final sites.
-- USGS NWIS (National Water Information System) sensors: 24/85 final sensors come from federally operated sites, and were downloaded via API requests.
+- IWQIS (Iowa Water Quality Information System) sensors: Jerry from the IWQIS gave us a 3.3 GB csv containing the sensor timeseries for 60/83 of our final sites.
+- USGS NWIS (National Water Information System) sensors: 23/83 final sensors come from federally operated sites, and were downloaded via API requests.
 
 
 ## Covariates
@@ -175,7 +175,7 @@ Other features we considered but decided against:
 
 ## Organization of the Data
 
-Two peculiarities drove our data organization. First, the only pollutants which can possibly contribute to the reading of nitrate sensors deployed in water are those directly upstream of the sensor. This means that the area relevant to a given sensor is the *drainage basin* of the sensor, defined as the set of points directly upstream from the sensor. Second, our crop, surplus and weather data exist on rectangular grids at resolutions of 30m, 250m and 4km respectively. Part of our data cleaning necessarily included, therefore, the calculation of the drainage basins for each sensor and the reconciliation of these three different grids (details on this in the following two subsections). After this process we had, associated to each of our 85 deployed monitoring sites,
+Two peculiarities drove our data organization. First, the only pollutants which can possibly contribute to the reading of nitrate sensors deployed in water are those directly upstream of the sensor. This means that the area relevant to a given sensor is the *drainage basin* of the sensor, defined as the set of points directly upstream from the sensor. Second, our crop, surplus and weather data exist on rectangular grids at resolutions of 30m, 250m and 4km respectively. Part of our data cleaning necessarily included, therefore, the calculation of the drainage basins for each sensor and the reconciliation of these three different grids (details on this in the following two subsections). After this process we had, associated to each of our 83 deployed monitoring sites,
 
 - a *basin* parquet, encoding the geometry of the sensor's drainage basin geometry
 - a *grid* parquet, data concerning the portion of the weather grid falling inside the sensor's basin, used for joining crop, surplus and weather datasets within a site as well as joining individual basin datasets together

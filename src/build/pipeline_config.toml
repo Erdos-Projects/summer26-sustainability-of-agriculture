@@ -66,3 +66,13 @@ big_basin = [
     "WQS0020",
     "USGS-05420500",
 ]
+# Groundwater / karst sites: no surface drainage basin, so nothing downstream (basin delineation,
+# the distance-bucketed covariate aggregation, the surface travel-time lags) means anything for
+# them. USGS-415959091441301 is an NWIS well; WQS0031 is Big Spring (IWQIS river = "Groundwater /
+# Spring", nickname 31gwBSFH). Excluded from the fetch AND pruned from the built artifacts by
+# _make_water.prune_filtered_sites -- the raw sources are not present here, so the fetch-time
+# filter alone would be a no-op.
+groundwater = [
+    "USGS-415959091441301",
+    "WQS0031",
+]

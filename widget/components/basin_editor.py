@@ -208,7 +208,9 @@ def register_callbacks(app):
             return [], no_update
 
         df = meta.copy()
-        flag_cols = ["flag_area", "flag_river", "flag_not_contained", "flag_basin1_over_basin2"]
+        # Derived from the column prefix rather than hard-coded, so adding a flag in
+        # _make_basins.FLAG_COLS is enough -- nothing here needs to change with it.
+        flag_cols = [c for c in df.columns if c.startswith("flag_")]
         if "on" in (flagged_only or []):
             flag_df = df[flag_cols].fillna(False)
             df = df[flag_df.any(axis=1)]
@@ -240,8 +242,9 @@ def register_callbacks(app):
     )
     def update_basin_review_info(site_uid):
         default_opts = [
-            {"label": " v1 (NLDI)", "value": "1"},
-            {"label": " v2 (auth)", "value": "2"},
+            {"label": " v0 (auth)", "value": "0"},
+            {"label": " v1 (snap)", "value": "1"},
+            {"label": " v2 (catch)", "value": "2"},
             {"label": " v3 (D8)", "value": "3"},
             {"label": " Custom v1", "value": "custom_v1"},
             {"label": " Custom v3", "value": "custom_v3"},
@@ -264,7 +267,9 @@ def register_callbacks(app):
             "flag_area": "large area",
             "flag_river": "near river",
             "flag_not_contained": "not contained",
-            "flag_basin1_over_basin2": "v1 over v2",
+            "flag_basin1_over_basin0": "snap over auth",
+            "flag_area_mismatch_v2": "v1 vs v2 area",
+            "flag_area_mismatch_v3": "v1 vs v3 area",
         }
         active_flags = [
             flag_labels[c]
@@ -288,10 +293,13 @@ def register_callbacks(app):
             ),
         ])
 
-        has_v2 = pd.notna(r.get("dist_to_2")) and r.get("dist_to_2") != ""
+        # v0 = NWIS authoritative (USGS only), v1 = nearest-flowline snap (the default),
+        # v2 = containing catchment, v3 = D8 raster. See src/build/_make_basins.py.
+        has_v0 = pd.notna(r.get("dist_to_0")) and r.get("dist_to_0") != ""
         opts = [
-            {"label": " v1 (NLDI)", "value": "1"},
-            {"label": " v2 (auth)", "value": "2", "disabled": not has_v2},
+            {"label": " v0 (auth)", "value": "0", "disabled": not has_v0},
+            {"label": " v1 (snap)", "value": "1"},
+            {"label": " v2 (catch)", "value": "2"},
             {"label": " v3 (D8)", "value": "3"},
             {"label": " Custom v1", "value": "custom_v1"},
             {"label": " Custom v3", "value": "custom_v3"},

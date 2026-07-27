@@ -4,11 +4,11 @@ Dependency order (only edges that matter):
     water                         (foundational: site list, coords, target)
     grid_global                   (independent: one Voronoi over all IEM cells)
     weather_global                (independent: IEM + gridMET, keyed by global_node_id)
-    basins        <- water        (needs site coords)
+    map_overlays                  (NHD flowlines/waterbodies; basin1 snaps against the flowlines)
+    basins        <- water, map_overlays
     crops_global  <- grid_global  (rasterize CDL onto grid_global)
     surplus_global<- grid_global  (area-weight surplus onto grid_global)
     aux           <- basins       (basin containment graph, used by the LOFO family splitter)
-    map_overlays                  (NHD flowlines/waterbodies, widget basemap overlays)
 
 ⚠ This is the FULL rebuild path and is HEAVY + NETWORK: water (IWQIS 3.1GB reassembly + USGS
 API), basins (NLDI/KMZ), weather (gridMET/IEM download), plus the crops/surplus aggregations.
@@ -50,6 +50,12 @@ def main(force: bool = False, api_keys=None) -> None:
     print("\n── weather_global ──")
     _make_weather.main(force=force)
 
+    # map_overlays BEFORE basins: basin1 snaps each sensor to its nearest NHD reach, so the
+    # flowlines layer is a hard prerequisite (the builder raises without it, rather than falling
+    # back to the weaker containing-catchment method).
+    print("\n── map_overlays (NHD flowlines/waterbodies) ──")
+    _make_map_overlays.main(force=force)
+
     print("\n── basins ──")
     _make_basins.main(api_keys=api_keys, force=force)
 
@@ -61,9 +67,6 @@ def main(force: bool = False, api_keys=None) -> None:
 
     print("\n── aux (basin containment graph) ──")
     _make_aux.main(force=force)
-
-    print("\n── map_overlays (NHD flowlines/waterbodies) ──")
-    _make_map_overlays.main(force=force)
 
 
 if __name__ == "__main__":

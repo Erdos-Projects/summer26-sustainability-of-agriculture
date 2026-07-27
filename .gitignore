@@ -4,10 +4,11 @@ src/data/raw/basins
 src/data/raw/crops
 src/data/raw/surplus
 src/data/raw/weather
-src/data/raw/water
+src/data/raw/water/USGS_QA_DUMP
 src/data/interim/*
 src/data/processed/*
 src/data/cache/*
+src/build/api-keys.toml
 !src/data/**/.gitkeep
 
 # EXCEPTION: the annual, cell-aggregated crop/surplus globals + the static grid are TINY (~6MB each)
@@ -24,7 +25,7 @@ src/data/cache/*
 !src/data/processed/water/
 !src/data/processed/water/**
 
-# EXCEPTION: basins are small (~7MB parquets) and slow to re-fetch (NLDI/KMZ for 85 sites), and
+# EXCEPTION: basins are small (~7MB parquets) and slow to re-fetch (NLDI/KMZ for 83 sites), and
 # the 552KB D8 direction raster is a runtime asset site_view needs. Track both.
 !src/data/processed/basins/
 !src/data/processed/basins/**

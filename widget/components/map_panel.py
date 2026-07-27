@@ -473,7 +473,7 @@ def register_callbacks(app):
             try:
                 meta = access.get_basin_metadata()
                 df = meta.copy()
-                flag_cols = ["flag_area", "flag_river", "flag_not_contained", "flag_basin1_over_basin2"]
+                flag_cols = [c for c in df.columns if c.startswith("flag_")]
                 if "on" in (flagged_only or []):
                     flag_df = df[flag_cols].fillna(False)
                     df = df[flag_df.any(axis=1)]

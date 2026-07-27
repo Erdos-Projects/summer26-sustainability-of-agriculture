@@ -1,6 +1,8 @@
 from src.features.features import (
     agg_crops,
+    agg_crops_normalized,
     agg_surplus,
+    agg_surplus_normalized,
     agg_weather_w_lag,
     daily_nitrate,
     nitrate_avg_except_this,
@@ -75,17 +77,47 @@ def _rolling_weather(wb, windows):
     return frames
 
 
+def _tag_values(frame, suffix, keep=None):
+    """Rename an aggregated frame's value columns (all but year/bucket) by appending `suffix`, so a
+    variant coexists with its siblings under distinct names. `keep`, if given, first restricts the
+    value columns to that list (used to drop total_kg_N, keeping only surplus_kgha)."""
+    struct = [c for c in ("year", "bucket") if c in frame.columns]
+    val = [c for c in frame.columns if c not in struct]
+    if keep is not None:
+        val = [c for c in val if c in keep]
+        frame = frame[struct + val]
+    return frame.rename(columns={c: f"{c}{suffix}" for c in val})
+
+
 def _agg_block_compute(site, edges, vel, lam):
-    """The expensive, window-INDEPENDENT spatial aggregations (weather-with-lag, exp-decay crop,
-    exp-decay surplus) for a site_uid OR a SiteData (via _site_kwargs). `edges` is a tuple of
+    """The expensive, window-INDEPENDENT spatial aggregations (weather-with-lag, crop composition,
+    two surplus encodings) for a site_uid OR a SiteData (via _site_kwargs). `edges` is a tuple of
     bucket boundaries (m). Returned frames are READ-ONLY -- callers copy (_rolling_weather,
     merge_on_date never mutate their inputs)."""
     kw = _site_kwargs(site)
     e = list(edges)
+    KGHA = ["surplus_kgha"]
+
     wb = flatten_buckets(agg_weather_w_lag(**kw, edges=e, exp=False, water_velocity=vel))
-    cb = flatten_buckets(agg_crops(**kw, edges=e, lam=lam, exp=True))
-    sb = flatten_buckets(agg_surplus(**kw, edges=e, lam=lam, exp=True))
-    return wb, cb, sb
+
+    # Crops as a COMPOSITION (pct_corn_b0, ...), not a pixel-count sum: the sum encodes basin size
+    # more than land use, which is exactly the between-site confound the model struggles with.
+    cb = flatten_buckets(agg_crops_normalized(**kw, edges=e))
+
+    # Two surplus encodings, kept side by side because they answer different questions: the
+    # membership-weighted mean is the size-invariant intensity, the exp-decay sum retains the
+    # near-field weighting. total_kg_N is dropped (via keep=) rather than carried: it is
+    # surplus_kgha x area summed over the basin, i.e. a pure basin-size proxy -- reintroducing it
+    # would undo the normalization.
+    #
+    # The two MUST carry different tags. They are distinct aggregations emitting the same base
+    # column name, so a shared tag collides in merge_on_date and pandas silently renames both to
+    # _x/_y -- two near-collinear copies under names nothing can select. (Upstream shipped exactly
+    # that bug; see recipe_REG4.json.meta.json in the sustag repo.)
+    sb = flatten_buckets(_tag_values(agg_surplus_normalized(**kw, edges=e), "_norm", keep=KGHA))
+    sb_exp = flatten_buckets(_tag_values(agg_surplus(**kw, edges=e, lam=lam, exp=True), "_expT", keep=KGHA))
+
+    return wb, cb, sb, sb_exp
 
 
 @lru_cache(maxsize=None)
@@ -130,9 +162,9 @@ def _cross_site_nitrate(site):
 
 
 def _covariate_block(site, n, edges, vel, lam, window, roll_nitrate_windows=(7, 14, 30, 60)):
-    """The feature scaffold: lagged whole-basin weather, exp-decay crop and surplus aggregations
-    (memoized via _agg_block), the pure calendar signal, the cross-site nitrate lags, and the
-    window-scaled rolling weather (see ROLL_WEATHER_LADDER). Returns a fresh list each call.
+    """The feature scaffold: lagged whole-basin weather, the crop composition and both surplus
+    aggregations (memoized via _agg_block), the pure calendar signal, the cross-site nitrate lags,
+    and the window-scaled rolling weather (see ROLL_WEATHER_LADDER). Returns a fresh list each call.
 
     `site` may be a site_uid (str, cached path) or a SiteData (virtual/ungauged, cache bypassed).
     `n` is a bare date-carrier -- only n.index feeds doy (and, upstream, the merge spine); no
@@ -142,10 +174,10 @@ def _covariate_block(site, n, edges, vel, lam, window, roll_nitrate_windows=(7, 
     the cached 7/14/30/60d set; () to omit them). Per the experiment audit these help REG -- with
     the gain concentrated in 7d -- but HURT CLF (recipe_CLF1 without 0.824 > recipe_CLF1.1 with
     0.817), so REG keeps {7} and CLF omits them."""
-    wb, cb, sb = _agg_block(site, edges, vel, lam)
+    wb, cb, sb, sb_exp = _agg_block(site, edges, vel, lam)
     lagged_avgs, roll_n_all = _cross_site_nitrate(site)
     doy = doy_climatology_pure_signal(n)
-    feats = [wb, cb, sb, doy, *lagged_avgs]
+    feats = [wb, cb, sb, sb_exp, doy, *lagged_avgs]
     if roll_nitrate_windows:
         feats.append(roll_n_all[[f"roll_n_avg_except_this{w}d" for w in roll_nitrate_windows]])
     feats += _rolling_weather(wb, _weather_windows(window))
