@@ -9,8 +9,7 @@ clean:
     top_features(cv, n=15)                   # gain-ranked feature importances
     run_full_train("demo_CLF", recipe_CLF, task="clf")   # CV + fit on ALL rows + log + save booster
 
-`run_cv` uses the quick FAST_XGB config by default (snappy for a live demo); `run_full_train` uses
-the tuned REAL_XGB config and produces the actual deployable model + a fulltrain_logs.json entry.
+`run_cv` uses the quick FAST_XGB config below by default (snappy for a live demo); `run_full_train` produces the actual deployable model + a fulltrain_logs.json entry, and needs a tuning run first -- src/models/train.py reads the tree count from models/lofo_tune.csv and raises UntunedRecipe without one.
 """
 
 import sys
@@ -22,7 +21,7 @@ import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from src.eval.cook import compare_many, FAST_XGB, _pool, _features, _target, _grouped_models, basin_groups
+from src.eval.cook import compare_many, _pool, _features, _target, _grouped_models, basin_groups
 from src.features.recipes import recipe_REG, recipe_CLF  # noqa: F401  (re-exported for the notebook)
 from src.features.recipes import _rolling_weather, _weather_windows
 from src.data.access import get_site_ids
@@ -40,6 +39,13 @@ import src.models.train as train
 from demo_recipes import preet_recipe
 
 _TARGET = {"reg": "nitrate_con", "clf": "violation"}
+
+# Quick config for a live demo -- fewer, larger trees so a cross-site CV finishes while someone is
+# watching. Lives here rather than in cook.py because "fast enough to demo" is a notebook concern,
+# and a shared constant invites it being mistaken for a config anything ships with. Deliberately no
+# early_stopping_rounds: the CV path fits on 100% of each fold's training rows and a non-None value
+# raises (see src/eval/cook.py). Tree counts for real models come from src/models/tune.py.
+FAST_XGB = dict(n_estimators=800, learning_rate=0.05, max_depth=4)
 
 
 def demo_sites(min_obs: int = 1500) -> list:

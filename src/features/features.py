@@ -124,7 +124,9 @@ def agg_weather_w_lag(
     return wb
 
 
-def agg_site_to_buckets(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, mixed=True):
+def agg_site_to_buckets(
+    site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGES_M, lam=10_000, normalize=False, mixed=True
+):
     """The default site-to-bucket aggregation. Crops and surplus are aggregated with exponential decay, weather is aggregated without decay."""
     cb = agg_crops(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=True)
     sb = agg_surplus(site_uid, site_data=site_data, edges=edges, lam=lam, normalize=normalize, exp=True)
@@ -305,7 +307,9 @@ def nitrate_daily_rolling(site_uid="", site_data=None, window=7, min_obs=1, agg_
     keeps the most rows but trusts a single day to stand in for the whole window; raise it
     (e.g. 3-4 of 7) for max estimates backed by more coverage.
     """
-    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq(
+        "D"
+    )  # contiguous daily index
     n_obs = daily.notna().rolling(window, min_periods=1).sum()
     rolled = daily.rolling(window, min_periods=1).max()  # max skips NaN days
     rolled[n_obs < min_obs] = np.nan  # too few observed days -> undecidable
@@ -345,7 +349,9 @@ def nitrate_violations_rolling(site_uid="", site_data=None, window=7, threshold=
     Note: (daily >= threshold) maps NaN days to False, so missing days are masked via
     notna() and never silently counted as non-violations.
     """
-    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq("D")  # contiguous daily index
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq(
+        "D"
+    )  # contiguous daily index
     obs = daily.notna()
     viol_day = (daily >= threshold) & obs  # True only on OBSERVED violation days
     n_obs = obs.rolling(window, min_periods=1).sum()
@@ -369,7 +375,9 @@ def nitrate_anomaly_z(site_uid="", site_data=None, window=21, min_obs=5, agg_met
     baseline std is 0 (a flat baseline -> no scale to standardize against); those rows drop before
     training like the other targets. Continuous -> the regression spike target; threshold it for
     the classification one (see nitrate_spike)."""
-    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq("D")  # contiguous daily grid
+    daily = daily_nitrate(site_uid=site_uid, site_data=site_data, agg_meth=agg_meth).asfreq(
+        "D"
+    )  # contiguous daily grid
     prev = daily.shift(1)  # baseline ends yesterday -> today never enters its own baseline
     mean = prev.rolling(window, min_periods=min_obs).mean()
     std = prev.rolling(window, min_periods=min_obs).std()
@@ -600,10 +608,13 @@ def doy_climatology_pure_signal(s):
     shape from these two features itself.
     """
     doy = s.index.dayofyear
+    ang = 2 * np.pi * doy / 365.25
     return pd.DataFrame(
         {
-            "doy_sin": np.sin(2 * np.pi * doy / 365.25),
-            "doy_cos": np.cos(2 * np.pi * doy / 365.25),
+            "doy_sin": np.sin(ang),
+            "doy_cos": np.cos(ang),
+            "doy_sin2": np.sin(2 * ang),  # first harmonic (2x frequency)
+            "doy_cos2": np.cos(2 * ang),
         },
         index=s.index,
     )

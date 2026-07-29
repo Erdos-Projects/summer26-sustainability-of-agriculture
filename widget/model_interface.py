@@ -40,20 +40,22 @@ class VirtualForecast:
     base_rate: float = None     # pooled violation prevalence (the FDR is quoted "at ~this prevalence")
 
 
-def forecast_virtual_site(lat: float, lon: float, target_year: int, beta: float = 2.0) -> VirtualForecast:
+def forecast_virtual_site(lat: float, lon: float, target_year: int, beta: float = 2.0, light: bool = True) -> VirtualForecast:
     """Delineate the basin at (lat, lon), build its features for `target_year`, score both models,
     and apply the β operating point to the classifier: alarm days = P(violation) >= tau(β), where
     tau and its honest recall/FDR come from the deployed model's tuned beta_table (see
     src.models.tune_threshold). The NLDI call + build makes this a several-second operation; wrap
     callers in dcc.Loading.
+
+    `light` defaults to True: the light pair is what the STATIC build can score, since the browser can only assemble that feature set, and running the same pair locally is what keeps the two from diverging. Pass light=False to compare against the full recipe models.
     """
     sd = build_virtual_basin(lat=lat, lon=lon, target_year=target_year)
-    reg = _predict(load_model(task="reg"), virtual_recipe(sd, task="reg", target_year=target_year))
-    clf = _predict(load_model(task="clf"), virtual_recipe(sd, task="clf", target_year=target_year))
+    reg = _predict(load_model(task="reg", light=light), virtual_recipe(sd, task="reg", target_year=target_year, light=light))
+    clf = _predict(load_model(task="clf", light=light), virtual_recipe(sd, task="clf", target_year=target_year, light=light))
     precip = _basin_daily_weather(site_data=sd)["precip_in_1d"].reindex(reg.index)
     basin_geojson = json.loads(sd.basin.to_crs("EPSG:4326").to_json())
 
-    op = threshold_for_beta(load_meta(task="clf"), beta)  # None if the clf model has no beta_table
+    op = threshold_for_beta(load_meta(task="clf", light=light), beta)  # None if the clf model has no beta_table
     tau = alarms = recall = fdr = base_rate = None
     if op is not None:
         tau = op["tau"]

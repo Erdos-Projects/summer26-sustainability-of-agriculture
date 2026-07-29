@@ -18,9 +18,20 @@ purely descriptive.
 
 import pandas as pd
 import plotly.graph_objects as go
-from dash import Input, Output, html, dash_table, no_update
+from dash import ClientsideFunction, Input, Output, State, html, dcc, dash_table
 
 from src.data import access
+import bundle
+
+
+def _bundle_aggs(interval):
+    """(nitrate_agg, precip_agg) the bundle stored this interval's series with.
+
+    Kept as a lookup rather than constants so the figure always reduces the way the shipped series were reduced; if build_bundle.SERIES_INTERVALS changes, the chart follows without a second edit."""
+    for i, nit, pre in bundle.series_intervals():
+        if i == interval:
+            return nit, pre
+    return "max", "mean"
 
 
 def _render_tables(pairs):
@@ -156,60 +167,48 @@ def _build_timeseries_figure(
     return fig
 
 
+_POINT_ROW_VISIBLE = {"marginBottom": "12px"}
+_POINT_ROW_HIDDEN = {**_POINT_ROW_VISIBLE, "display": "none"}
+
+
 def region_info_layout():
-    return html.Div(id="region-info-panel", style={"padding": "16px 0"})
+    """The pin-drop readout, pre-rendered and hidden.
+
+    This used to be built in a callback, which on the static site meant a control that renders and never updates. The shape never varied though -- a label and a coordinate pair -- so the skeleton is rendered here and the callback writes only the coordinate string and the row's visibility. The Polygon branch it also handled went with the polygon selector.
+    """
+    return html.Div(
+        id="region-info-panel",
+        style={"padding": "16px 0"},
+        children=[
+            dcc.Store(id="region-info-consts", data={"point_row_visible": _POINT_ROW_VISIBLE, "point_row_hidden": _POINT_ROW_HIDDEN}),
+            html.Div(
+                [html.Strong("Selected point: "), html.Code(id="region-point-coords")],
+                id="region-point-row",
+                style=_POINT_ROW_HIDDEN,
+            ),
+        ],
+    )
 
 
 def register_callbacks(app):
-    @app.callback(
+    # Built clientside from series/{uid}_{interval}.bin. _build_timeseries_figure above stays as
+    # the reference implementation and is what the parity spot-check compares against; it is also
+    # what the local Python path would use if the clientside function were ever removed.
+    app.clientside_callback(
+        ClientsideFunction(namespace="panels", function_name="timeseries"),
         Output("timeseries-graph", "figure"),
         Input("active-graph-site", "data"),
         Input("aggregate-interval", "value"),
-        Input("agg-func-water", "value"),
-        Input("agg-func-rain", "value"),
         Input("graph-toggle", "value"),
         prevent_initial_call=True,
     )
-    def update_timeseries(active_uid, interval, agg_func_water, agg_func_rain, graph_toggle):
-        if not active_uid:
-            return go.Figure()
-        return _build_timeseries_figure(
-            active_uid,
-            interval=interval or "1D",
-            agg_func_water=agg_func_water or "mean",
-            agg_func_rain=agg_func_rain or "sum",
-            show_seasons="seasons" in (graph_toggle or []),
-        )
 
-    @app.callback(
-        Output("mapunit-layer", "children"),
-        Output("region-info-panel", "children"),
+    # The mapunit-layer output went with this callback: it only ever returned [], and nothing else writes that LayerGroup -- it is the "reserved for future use" slot map_common documents.
+    app.clientside_callback(
+        ClientsideFunction(namespace="panels", function_name="regionInfo"),
+        Output("region-point-coords", "children"),
+        Output("region-point-row", "style"),
         Input("region-geom", "data"),
+        State("region-info-consts", "data"),
         prevent_initial_call=True,
     )
-    def update_region_info(region_geom):
-        if not region_geom:
-            return no_update, no_update
-
-        geom_type = region_geom.get("type")
-
-        if geom_type == "Point":
-            lng, lat = region_geom["coordinates"]
-
-            coord_row = html.Div(
-                [html.Strong("Selected point: "), html.Code(f"{lat:.6f}, {lng:.6f}")],
-                style={"marginBottom": "12px"},
-            )
-
-            return [], html.Div([coord_row])
-
-        # Area selection (Polygon/MultiPolygon from rectangle or polygon draw)
-        coord_row = html.Div(
-            [html.Strong("Selected area")],
-            style={"marginBottom": "12px"},
-        )
-        placeholder = html.P(
-            "Area-based information is not yet implemented.",
-            style={"color": "#888"},
-        )
-        return [], html.Div([coord_row, placeholder])

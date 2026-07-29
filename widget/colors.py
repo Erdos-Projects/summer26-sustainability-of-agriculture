@@ -5,11 +5,9 @@ Surplus gradient is stored as (hue, saturation, lightness) HSL tuples so the
 interpolation in map_panel stays in the same color space.
 """
 
-# Lazy deployment safeguard. When True, the Debug tab's "confirm" button is INERT -- it makes no
-# changes and only flashes a brief, self-clearing "Debug Mode Off" message. Set to False to
-# re-enable the real basin-review confirm action (writes preferred_basin). Default True so a
-# deployed instance can't mutate the dataset from the UI.
-DEBUG_MODE_ON = True
+# (DEBUG_MODE_ON was the safeguard that kept the Basin Editor's "confirm" button inert so a
+# deployed instance could not mutate preferred_basin.csv from the UI. The button itself is now
+# gone -- the editor is read-only -- so the flag has nothing left to guard.)
 
 HYDRO = {"stroke": "#2563eb", "fill": "#3b82f6"}
 
@@ -87,17 +85,13 @@ EXPLORE_DEFAULTS = {
     "selection-mode": "point",
     # graph display
     "graph-toggle": ["show"],
-    "aggregate-interval": "1D",
-    "agg-func-water": "mean",
-    "agg-func-rain": "sum",
+    "aggregate-interval": "1D",  # must be one of bundle.series_intervals()
     # map display overlays
     "hydro-toggle": ["show"],
     "basin-preferred-toggle": [],
     "basin-all-toggle": [],
     "rain-grid-toggle": [],
-    "iowa-surplus-heatmap-toggle": [],
-    "surplus-year-slider": 2017,
-    "surplus-opacity-slider": 0.8,
+    "surplus-year-slider": 2017,  # shared: picks the crop/surplus year the rain-grid cells show
     # presentation display options
     "grid-color-mode": "surplus",
     # map layers / debug

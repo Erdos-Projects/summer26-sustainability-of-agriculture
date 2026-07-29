@@ -1,0 +1,7 @@
+# go to https://api.waterdata.usgs.gov/signup/
+# follow the instructions there to obtain an USGS api key
+# paste it below
+# rename this file to api-keys.toml
+
+# USGS api key
+usgs = "your-key-here"

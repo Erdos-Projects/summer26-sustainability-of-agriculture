@@ -165,7 +165,7 @@ def test_features() -> Result:
     Asserts the expected feature FAMILIES are present (column *count* varies legitimately with
     basin size -- a compact basin has only the near `_b0` distance bucket, which predict NaN-fills).
     """
-    from src.features.recipes import build_feature_frame
+    from src.features.recipes import build_feature_frame, WEATHER_KEEP
 
     bad = []
     sample = _sample_sites(3)
@@ -177,7 +177,10 @@ def test_features() -> Result:
             has = (
                 len(fr) > 0
                 and {"date", "doy_sin", "doy_cos"} <= cols
-                and any(c.startswith("precip_in_1d") for c in cols)  # weather family
+                # weather family, keyed on WEATHER_KEEP rather than a literal: the recipes cut every
+                # variable but fuel_moisture_1000h, so a hardcoded precip_in_1d asserts a column the
+                # recipe deliberately drops.
+                and any(c.startswith(tuple(WEATHER_KEEP)) for c in cols)
                 and any("corn" in c.lower() for c in cols)  # crop family (pct_corn_b* since the
                 # crop block became a composition; case-insensitive so a raw agg_crops recipe passes too)
                 and any(c.startswith("rest_of_state_nitrate_lag") for c in cols)  # neighbour

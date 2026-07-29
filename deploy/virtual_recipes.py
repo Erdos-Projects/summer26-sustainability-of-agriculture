@@ -29,13 +29,16 @@ def target_year_spine(site_data, target_year: int = TARGET_YEAR) -> pd.DatetimeI
     return wd[(wd >= ystart) & (wd <= yend)]
 
 
-def virtual_recipe(site_data, task: str = "reg", target_year: int = TARGET_YEAR) -> pd.DataFrame:
+def virtual_recipe(site_data, task: str = "reg", target_year: int = TARGET_YEAR, light: bool = False) -> pd.DataFrame:
     """Feature frame (no target) for a virtual SiteData, task 'reg' or 'clf'.
 
-    Columns match _best_features_REG / _best_features_CLF (recipe_REG/_CLF minus the target).
-    Align to a trained model's feature_names before scoring (see predict).
+    Columns match _best_features_REG / _best_features_CLF (recipe_REG/_CLF minus the target), or
+    _light_features when `light` is set. Align to a trained model's feature_names before scoring
+    (see predict).
+
+    `light` must agree with the model you are about to score: the two column sets differ, and predict() now raises on the mismatch rather than NaN-filling it. It is also what the STATIC widget scores with -- the browser can only assemble the light set -- so the local app passes light=True too, on the same principle as the clientside callbacks: ship the implementation you develop against.
     """
     spine = target_year_spine(site_data, target_year)
     if len(spine) == 0:
         raise ValueError(f"No weather dates fall in {target_year}; the SiteData weather window does not cover it.")
-    return build_feature_frame(site_data, task=task, spine=spine)
+    return build_feature_frame(site_data, task=task, spine=spine, light=light)

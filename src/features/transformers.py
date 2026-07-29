@@ -71,28 +71,62 @@ def lag_buckets(weather_b, lags, cols=None, date_col="date", bucket_col="bucket"
     return pd.concat(parts, ignore_index=True)
 
 
+def _weighted_group_agg(x, gkeys, cols, weights, kind):
+    """Weighted sum (`kind="wsum"`) or weighted mean (`"wmean"`) of `cols`, per `gkeys` group, vectorized.
+
+    Both reductions are LINEAR in the values -- Sum(v*w), and Sum(v*w)/Sum(w) -- so scaling each row by its cell's weight once turns them into a plain groupby sum that runs in Cython. Doing it per group in Python instead costs one call per (group, column): 15,657 x 9 = 141k calls for a single site's weather, which is where essentially all of the pool build's time went.
+
+    NaN propagates as the per-group aggregators did (`np.dot` / `np.average` return NaN if any input is NaN), which a bare groupby sum would not do -- it skips NaN -- so groups containing one are masked back to NaN explicitly.
+    """
+    w = weights.reindex(x.index).to_numpy(dtype=float)
+    num = x[cols].mul(w, axis=0)
+    keyframe = x[gkeys]
+
+    grouped = pd.concat([num, keyframe], axis=1).groupby(gkeys, observed=True)[cols]
+    total = grouped.sum()
+    saw_nan = pd.concat([num.isna(), keyframe], axis=1).groupby(gkeys, observed=True)[cols].sum() > 0
+
+    if kind == "wmean":
+        denom = pd.concat([pd.Series(w, index=x.index, name="_w"), keyframe], axis=1)
+        total = total.div(denom.groupby(gkeys, observed=True)["_w"].sum(), axis=0)
+    return total.mask(saw_nan)
+
+
 def agg_grid_to_buckets(df, mapping, keys, col_agg):
     """Aggregate per-cell `df` to one row per (`keys`[, bucket]) via `col_agg` {col: how}.
 
-    `mapping` is node_id -> bucket. The frame is indexed by node_id so weighted
-    aggregators can pull per-cell weights via ``values.index``; the bucket grouping is
-    dropped when the mapping defines a single bucket (edges=[]).
+    `mapping` is node_id -> bucket. The frame is indexed by node_id so weighted aggregators can pull per-cell weights via ``values.index``; the bucket grouping is dropped when the mapping defines a single bucket (edges=[]).
+
+    A `how` carrying `.agg_kind`/`.cell_weights` (the curried weighted aggregators below) is routed through _weighted_group_agg and computed vectorized; every other `how` -- the plain builtin `sum` the land-use dicts use, or any callable a caller passes in -- still goes through groupby.agg unchanged. Tagging is OPT-IN because the vectorized form is only valid for reductions LINEAR in the values: a median or a quantile tagged this way would not raise, it would silently return wrong numbers.
     """
     # index by node_id so each group's value Series carries node_id as its index;
     # that lets a weighted aggregator (_area_mean_curry) pull the matching per-cell
     # weights via values.index.
     x = df.set_index("node_id")
+    gkeys = list(keys)
     if mapping.cat.categories.size > 1:
         x["bucket"] = x.index.map(mapping)
-        g = x.groupby([*keys, "bucket"], observed=True)
-
-    else:
-        g = x.groupby([*keys], observed=True)
+        gkeys = [*keys, "bucket"]
 
     out = {}
+    vectorizable, per_group = {}, {}
     for col, how in col_agg.items():
-        out[col] = g[col].agg(how)
-    return pd.DataFrame(out).reset_index()
+        (vectorizable if getattr(how, "agg_kind", None) else per_group)[col] = how
+
+    if per_group:
+        g = x.groupby(gkeys, observed=True)
+        for col, how in per_group.items():
+            out[col] = g[col].agg(how)
+
+    # batch the vectorized columns by the weights+kind they share, so each batch is ONE groupby
+    batches = {}
+    for col, how in vectorizable.items():
+        batches.setdefault((how.agg_kind, id(how.cell_weights)), (how, []))[1].append(col)
+    for (kind, _), (how, cols) in batches.items():
+        agg = _weighted_group_agg(x, gkeys, cols, how.cell_weights, kind)
+        out.update({c: agg[c] for c in cols})
+
+    return pd.DataFrame({c: out[c] for c in col_agg}).reset_index()
 
 
 def _agg_dicts(land_use_func, weather_func):
@@ -138,6 +172,9 @@ def _area_mean_curry(site_uid="", site_data=None):
         # values is one group's Series indexed by node_id -> weight by those cells
         return float(np.average(values, weights=area_ha.loc[values.index]))
 
+    # Same reduction, declared so agg_grid_to_buckets can do it vectorized instead of calling _func
+    # once per (group, column). _func stays the reference definition and the fallback.
+    _func.cell_weights, _func.agg_kind = area_ha, "wmean"
     return _func
 
 
@@ -154,6 +191,7 @@ def _exp_curry(site_data, lam):
     def _exp_decay_weighting(values):
         return float(np.dot(values, cell_w.loc[values.index]))
 
+    _exp_decay_weighting.cell_weights, _exp_decay_weighting.agg_kind = cell_w, "wsum"
     return _exp_decay_weighting
 
 
@@ -168,6 +206,7 @@ def _exp_curry_norm(site_data, lam):
     def _exp_decay_weighting(values):
         return float(np.average(values, weights=cell_w.loc[values.index]))
 
+    _exp_decay_weighting.cell_weights, _exp_decay_weighting.agg_kind = cell_w, "wmean"
     return _exp_decay_weighting
 
 

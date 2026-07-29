@@ -8,6 +8,8 @@ Project completed in the Erdos Summer 2026 Data Science Bootcamp.
 
 [Link to our beautiful presentation video (5 minutes long)](https://www.youtube.com/watch?v=O_ZCylQCXe8)
 
+## Results and demo
+
 ## Quickstart
 
 1. Clone the repo and obtain the dependencies.
@@ -27,7 +29,7 @@ conda activate sustag
 python make_data.py
 ```
 
-to ensure everything is there.
+to ensure everything is there. (NOTE: Running this will download weather data from the USGS, and if it exceeds a certain amount, you will need to obtain an API key to proceed. See the instructions in `src/build/api-key-example.toml` if this occurs.)
 
 You should now be set up! Run the app or notebooks below.
 
@@ -75,7 +77,7 @@ The following additional notebooks (all in `notebooks/`) were written as demos f
 
 A fresh clone already contains most of the data: per-site **water/nitrate**, **basins**, the tiny cell-aggregated **crop / surplus / grid globals**, and the **surplus display assets**. The only large artifact not in git is **`weather_global` (~4.6 GB)** plus a few small `processed/` dirs — that's what the data download provides (extract it into `src/data/`). So everything runs against committed data except the weather layer until the bundle is in place.
 
-The trained **models** live in **`deploy/models/`** — the deployed boosters `isaac_REG2` / `isaac_CLF2` and their `.meta.json` sidecars, committed so the widget and deploy path work on a fresh clone. (This is the replacement for the former top-level `artifacts/` directory; new training runs also write a copy under `src/models/models/`.)
+The **trained models** live in **`deploy/models/`** — the deployed boosters `isaac_REG2` / `isaac_CLF2` and their `.meta.json` sidecars, committed so the widget and deploy path work on a fresh clone. (This is the replacement for the former top-level `artifacts/` directory; new training runs also write a copy under `src/models/models/`.)
 
 A *full* rebuild from raw (`make_data.py`) additionally needs `src/build/api-keys.toml` (a USGS token) and the CDL / gTREND sources — see [`src/README.md`](src/README.md)'s "Catastrophic rebuild" for per-source steps.
 
@@ -87,7 +89,4 @@ A *full* rebuild from raw (`make_data.py`) additionally needs `src/build/api-key
 
 ## Status
 
-Functional end to end — data access, feature recipes, cross-site CV, model training, the deploy
-inference path, and the widget all run on the `global_node_id` grain, and the raw-acquisition
-utilities (`clip_crops`, `build_source`, `gen_surplus_statistics`) are ported so the dataset can be
-rebuilt from source.
+Functional end to end — data access, feature recipes, cross-site CV, model training, the deploy inference path, and the widget all run on the `global_node_id` grain, and the raw-acquisition utilities (`clip_crops`, `build_source`, `gen_surplus_statistics`) are ported so the dataset can be rebuilt from source.

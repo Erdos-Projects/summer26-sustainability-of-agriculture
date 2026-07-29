@@ -21,15 +21,17 @@ import geopandas as gpd
 import numpy as np
 import pandas as pd
 
-_DATA = Path(__file__).resolve().parent               # src/data
+_DATA = Path(__file__).resolve().parent  # src/data
 _INTERIM = _DATA / "interim"
 _PROC_WATER = _DATA / "processed" / "water"
 _PROC_BASINS = _DATA / "processed" / "basins"
 _PROC_AUX = _DATA / "processed" / "aux"
 _PROC_MAP = _DATA / "processed" / "map_overlays"
+_PROC_GRIDS = _DATA / "processed" / "grids"
 
 
 # ── water: dirs (new processed/ layout, else legacy) ──────────────────────────
+
 
 def _water_data_dir() -> Path:
     """Per-site nitrate parquets."""
@@ -42,6 +44,7 @@ def _water_meta_dir() -> Path:
 
 
 # ── water: metadata + site list ───────────────────────────────────────────────
+
 
 @lru_cache(maxsize=1)
 def get_metadata() -> pd.DataFrame:
@@ -61,6 +64,7 @@ def get_location(site_uid: str) -> list:
 
 
 # ── water: nitrate time series ────────────────────────────────────────────────
+
 
 def get_water(site_uid: str) -> pd.DataFrame:
     """The site's full nitrate time series (datetime-indexed, UTC-aware)."""
@@ -85,6 +89,7 @@ def aggregate_by_interval(site_uid=None, df=None, value_col="nitrate_con", inter
 
 # ── water: statistics ─────────────────────────────────────────────────────────
 
+
 @lru_cache(maxsize=1)
 def _stats_df() -> pd.DataFrame:
     path = _water_meta_dir() / "site_statistics.csv"
@@ -105,6 +110,7 @@ def get_stats(site_uid: str) -> pd.DataFrame:
 
 # ── basins: dirs (new processed/ layout, else legacy) ─────────────────────────
 
+
 def _basins_data_dir() -> Path:
     return _PROC_BASINS / "data"
 
@@ -114,6 +120,7 @@ def _basins_meta_dir() -> Path:
 
 
 # ── basins: read ──────────────────────────────────────────────────────────────
+
 
 @lru_cache(maxsize=1)
 def get_basin_metadata() -> pd.DataFrame:
@@ -187,6 +194,7 @@ def update_basin(site_uid: str, params: dict = None, basin_geom=None) -> None:
                 gdf = gpd.GeoDataFrame.from_features(basin_geom["features"], crs="EPSG:4326")
             else:
                 from shapely.geometry import shape
+
                 gdf = gpd.GeoDataFrame(geometry=[shape(basin_geom)], crs="EPSG:4326")
         else:
             gdf = basin_geom
@@ -203,9 +211,20 @@ def update_basin(site_uid: str, params: dict = None, basin_geom=None) -> None:
     get_basin_metadata.cache_clear()
     get_all_basins.cache_clear()
     get_all_basins_union.cache_clear()
+    clear_site_caches()
+
+
+def clear_site_caches() -> None:
+    """Drop every per-site view cached in this process. A new basin changes the site's cell membership, so the grid and everything sliced from it (crops, surplus, weather) are all stale -- clearing only the basin caches left get_grid serving the superseded geometry.
+
+    get_crops / get_surplus are not memoized themselves; they slice get_grid's result, so clearing that is enough.
+    """
+    get_grid.cache_clear()
+    _weather_for_uid.cache_clear()
 
 
 # ── aux: basin-containment graph ──────────────────────────────────────────────
+
 
 def get_basin_graph(immediate_only: bool = False):
     """Basin-containment DiGraph: edge child -> parent means child's sensor lies inside parent's
@@ -213,6 +232,7 @@ def get_basin_graph(immediate_only: bool = False):
     processed/aux/basin_containment_graph.parquet. immediate_only keeps only each child's smallest
     enclosing parent (an immediate-parent forest)."""
     import networkx as nx
+
     edges = pd.read_parquet(_PROC_AUX / "basin_containment_graph.parquet")
     if immediate_only and not edges.empty:
         edges = edges.loc[edges.groupby("child")["parent_area"].idxmin()]
@@ -224,6 +244,7 @@ def get_basin_graph(immediate_only: bool = False):
 
 
 # ── map_overlays: NHD flowlines + waterbodies (widget) ────────────────────────
+
 
 @lru_cache(maxsize=1)
 def get_flowlines() -> gpd.GeoDataFrame:
@@ -239,6 +260,7 @@ def get_waterbodies() -> gpd.GeoDataFrame:
 
 # ── global-grain tables (interim, cached) ─────────────────────────────────────
 
+
 @lru_cache(maxsize=1)
 def _crops_global() -> pd.DataFrame:
     return pd.read_parquet(_INTERIM / "crops_global.parquet")
@@ -251,6 +273,7 @@ def _surplus_global() -> pd.DataFrame:
 
 def _weather_global_files() -> dict:
     import re
+
     out = {}
     for p in _INTERIM.glob("weather_global_*.parquet"):
         m = re.search(r"weather_global_(\d{4})\.parquet$", p.name)
@@ -261,13 +284,55 @@ def _weather_global_files() -> dict:
 
 # ── per-site live views (grid_global + global tables joined to a site_view) ────
 
-@lru_cache(maxsize=128)
-def get_grid(site_uid: str) -> gpd.GeoDataFrame:
-    """The site's grid, built live over grid_global (node_id, global_node_id, x, y, lat, lon,
-    cell_area, dist_to_sensor, frac_cell_in_basin, geometry). Cached; treat as read-only."""
+
+def preferred_basin_path(site_uid: str) -> Path:
+    """Filesystem path of the site's PREFERRED basin parquet (the file get_basin(uid) would read). Exposed so the grid builder can compare mtimes without re-reading the polygon."""
+    row = get_basin_metadata()
+    row = row[row["site_uid"] == site_uid]
+    if row.empty:
+        raise KeyError(f"No preferred basin entry for {site_uid}.")
+    return _basins_data_dir() / row.iloc[0]["basin_name"]
+
+
+def site_grid_path(site_uid: str) -> Path:
+    """Where the build-time per-site grid for site_uid lives."""
+    return _PROC_GRIDS / f"{site_uid}_grid.parquet"
+
+
+def site_grid_is_current(site_uid: str) -> bool:
+    """True when a persisted grid exists and is newer than both inputs it derives from: the site's preferred basin polygon and grid_global (whose global_node_id numbering is renumbered whenever the covariate bbox grows). Any missing file means "not current", so a fresh clone simply builds live."""
+    cached = site_grid_path(site_uid)
+    if not cached.exists():
+        return False
+    try:
+        inputs = [preferred_basin_path(site_uid), _INTERIM / "grid_global.parquet"]
+    except KeyError:
+        return False
+    if not all(p.exists() for p in inputs):
+        return False
+    return cached.stat().st_mtime_ns >= max(p.stat().st_mtime_ns for p in inputs)
+
+
+def build_grid_live(site_uid: str) -> gpd.GeoDataFrame:
+    """Compute the site's grid from scratch (basin + sensor over grid_global). The build path and the fallback path in get_grid both go through here, so there is exactly one definition of what a site's grid is."""
     from src.data import site_view
+
     lon, lat = get_location(site_uid)
     return site_view.build_site_view(get_basin(site_uid), lat, lon, label=site_uid)
+
+
+@lru_cache(maxsize=128)
+def get_grid(site_uid: str) -> gpd.GeoDataFrame:
+    """The site's grid over grid_global (node_id, global_node_id, x, y, lat, lon, cell_area, dist_to_sensor, frac_cell_in_basin, geometry). Cached; treat as read-only.
+
+    Served from the build artifact written by src/build/_make_site_grids.py when one exists and is newer than its inputs, otherwise computed live. dist_to_sensor requires a D8 breadth-first walk of the upstream network -- seconds for a large basin, and preceded by a flow-accumulation pass on a cold process -- so reading it back is worth the round trip. Falling back rather than raising keeps a fresh clone (and any site added since the last build) working untouched.
+    """
+    if site_grid_is_current(site_uid):
+        try:
+            return gpd.read_parquet(site_grid_path(site_uid))
+        except Exception as e:
+            print(f"  [warn] {site_uid}: unreadable cached grid ({e}); rebuilding live.")
+    return build_grid_live(site_uid)
 
 
 def get_basin_area(site_uid: str) -> float:
@@ -279,8 +344,11 @@ def get_basin_area(site_uid: str) -> float:
 def _crops_for_grid(grid) -> pd.DataFrame:
     """crops_global sliced to a grid's cells (+ node_id). Grid-taking core shared by the real
     (get_crops) and virtual (build_virtual_site_data) paths."""
-    return grid[["node_id", "global_node_id"]].merge(_crops_global(), on="global_node_id").sort_values(
-        ["year", "node_id"], ignore_index=True)
+    return (
+        grid[["node_id", "global_node_id"]]
+        .merge(_crops_global(), on="global_node_id")
+        .sort_values(["year", "node_id"], ignore_index=True)
+    )
 
 
 def get_crops(site_uid: str) -> pd.DataFrame:
@@ -290,8 +358,11 @@ def get_crops(site_uid: str) -> pd.DataFrame:
 
 def _surplus_for_grid(grid) -> pd.DataFrame:
     """surplus_global sliced to a grid's cells (+ node_id). Grid-taking core."""
-    return grid[["node_id", "global_node_id"]].merge(_surplus_global(), on="global_node_id").sort_values(
-        ["year", "node_id"], ignore_index=True)
+    return (
+        grid[["node_id", "global_node_id"]]
+        .merge(_surplus_global(), on="global_node_id")
+        .sort_values(["year", "node_id"], ignore_index=True)
+    )
 
 
 def get_surplus(site_uid: str) -> pd.DataFrame:
@@ -301,8 +372,18 @@ def get_surplus(site_uid: str) -> pd.DataFrame:
 
 _WEATHER_PAD = pd.Timedelta(days=60)  # legacy per-site weather padded the nitrate span by 60d
 _WEATHER_COLS = [
-    "date", "node_id", "global_node_id", "precip_in_1d", "max_temp", "min_temp",
-    "max_rel_humidity", "min_rel_humidity", "vpd", "solar_rad", "evapotranspiration", "fuel_moisture_1000h",
+    "date",
+    "node_id",
+    "global_node_id",
+    "precip_in_1d",
+    "max_temp",
+    "min_temp",
+    "max_rel_humidity",
+    "min_rel_humidity",
+    "vpd",
+    "solar_rad",
+    "evapotranspiration",
+    "fuel_moisture_1000h",
 ]
 
 
@@ -331,11 +412,16 @@ def _weather_for_grid(grid, start=None, end=None) -> pd.DataFrame:
     return w[_WEATHER_COLS].sort_values(["date", "node_id"], ignore_index=True)
 
 
+@lru_cache(maxsize=4)
+def _weather_for_uid(site_uid: str, start, end) -> pd.DataFrame:
+    """get_weather's cached core, keyed on the RESOLVED window so the default-argument call and an explicit-window call for the same span share one entry. maxsize is deliberately small: a slice can run to millions of rows, and both the pooling loop and a hyperparameter sweep visit one site at a time, so a deep cache would cost gigabytes to buy nothing."""
+    return _weather_for_grid(get_grid(site_uid), start, end)
+
+
 def get_weather(site_uid: str, start=None, end=None) -> pd.DataFrame:
     """Daily weather for the site: weather_global sliced to its cells (+ node_id).
 
-    Default date window = the site's nitrate span ±60 days (matching the legacy per-site weather);
-    pass start/end to override.
+    Default date window = the site's nitrate span ±60 days (matching the legacy per-site weather); pass start/end to override. Cached; treat the result as read-only.
     """
     if start is None or end is None:
         try:
@@ -344,14 +430,16 @@ def get_weather(site_uid: str, start=None, end=None) -> pd.DataFrame:
             end = end or pd.to_datetime(st["last_date"]).tz_localize(None).normalize() + _WEATHER_PAD
         except (IndexError, KeyError):
             pass
-    return _weather_for_grid(get_grid(site_uid), start, end)
+    return _weather_for_uid(site_uid, start, end)
 
 
 # ── SiteData + get_data ───────────────────────────────────────────────────────
 
+
 @dataclass
 class SiteData:
     """All available data for a site, same schema as the legacy get_data() result."""
+
     site_uid: str
     basin: object = None
     crops: object = None
@@ -372,6 +460,7 @@ class SiteData:
 def get_data(site_uid: str) -> SiteData:
     """Assemble a SiteData for a real site: live views joined to the global tables. Fields that
     fail to build (missing basin, no water, etc.) come back None rather than raising."""
+
     def _try(fn, *a):
         try:
             return fn(*a)
@@ -392,14 +481,21 @@ def get_data(site_uid: str) -> SiteData:
     )
 
 
-def build_virtual_site_data(basin, sensor_lat, sensor_lon, *, weather_start=None, weather_end=None,
-                            site_uid="VIRTUAL") -> SiteData:
+def build_virtual_site_data(
+    basin, sensor_lat, sensor_lon, *, weather_start=None, weather_end=None, site_uid="VIRTUAL", with_weather=True
+) -> SiteData:
     """Assemble a SiteData for a virtual (ungauged) site from an in-memory basin + pin location.
 
     The re-grained build_virtual_basin: build_site_view over grid_global, then join the SAME global
     tables (crops/surplus/weather) a real site uses -- an intersection + joins, no per-pin raster or
     overlay. water is None (ungauged). Pass weather_start/end for the target window (e.g. TARGET_YEAR
     ±2 months). Identical to get_data for a real site when handed that site's stored basin + sensor.
+
+    `with_weather=False` leaves .weather as None, skipping the one expensive join: _weather_for_grid
+    predicate-scans ~270 MB per year file per basin. The static-site reach pass sets it, because it
+    builds thousands of these and reconstructs the single weather column it needs from a shared
+    low-rank basis instead (see widget/static/build_forecast.py). Anything that then asks for a
+    weather-derived feature will get None and fail loudly, which is the intended behaviour.
     """
     grid = build_site_view(basin, sensor_lat, sensor_lon, label=site_uid)
     if grid.empty:
@@ -412,7 +508,7 @@ def build_virtual_site_data(basin, sensor_lat, sensor_lon, *, weather_start=None
         grid=grid,
         surplus=_surplus_for_grid(grid),
         water=None,
-        weather=_weather_for_grid(grid, weather_start, weather_end),
+        weather=_weather_for_grid(grid, weather_start, weather_end) if with_weather else None,
         basin_area=basin_area,
         sensor_location=(sensor_lon, sensor_lat),
     )

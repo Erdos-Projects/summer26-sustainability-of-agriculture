@@ -8,6 +8,7 @@ Dependency order (only edges that matter):
     basins        <- water, map_overlays
     crops_global  <- grid_global  (rasterize CDL onto grid_global)
     surplus_global<- grid_global  (area-weight surplus onto grid_global)
+    site_grids    <- basins, grid_global   (per-site cell membership + D8 dist_to_sensor)
     aux           <- basins       (basin containment graph, used by the LOFO family splitter)
 
 ⚠ This is the FULL rebuild path and is HEAVY + NETWORK: water (IWQIS 3.1GB reassembly + USGS
@@ -34,6 +35,7 @@ from src.build import (
     _make_crops,
     _make_grid,
     _make_map_overlays,
+    _make_site_grids,
     _make_surplus,
     _make_water,
     _make_weather,
@@ -64,6 +66,11 @@ def main(force: bool = False, api_keys=None) -> None:
 
     print("\n── surplus_global ──")
     _make_surplus.main(force=force)
+
+    # Needs both a preferred basin and grid_global. Purely an optimization -- access.get_grid falls
+    # back to computing live -- so a failure here costs time, never correctness.
+    print("\n── site grids (per-site cells + D8 dist_to_sensor) ──")
+    _make_site_grids.main(force=force)
 
     print("\n── aux (basin containment graph) ──")
     _make_aux.main(force=force)

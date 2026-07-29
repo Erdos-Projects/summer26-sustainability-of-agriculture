@@ -12,13 +12,18 @@ byte-for-byte unchanged. The widget reads the table and lets the user dial beta 
 FDR is prevalence-dependent, so we also store the pooled base_rate -- the widget reports FDR as
 "expected at ~base-rate prevalence".
 
-This is deliberately self-contained (NOT wired into cook.py's CV / metrics path): it reuses cook's
-OOF helpers read-only and rebuilds the honest LOFO OOF for the recipe, so it can be re-run against a
-deployed model any time to change its operating point without retraining a single tree.
+NORMALLY YOU DO NOT NEED THIS. src/models/train.py now derives the same table from the LOFO
+out-of-fold vector its cross-validation already produced, and writes it into both the run log and
+the model sidecar -- so a freshly trained classifier ships with its thresholds already attached.
+This script exists for the case it was built for: re-tuning an ALREADY-DEPLOYED, frozen booster to
+a different operating point without retraining. That costs a full grouped CV here (to rebuild the
+OOF that training had and discarded), which is precisely why the training path stopped relying on
+it.
 
 Usage
 -----
     python -m src.models.tune_threshold isaac_CLF2                    # recipe_CLF, patch deploy meta
+    python -m src.models.tune_threshold light_CLF --recipe light_CLF  # the static widget's pair
     python -m src.models.tune_threshold isaac_CLF2 --recipe recipe_CLF --n-splits 5
 """
 
@@ -29,62 +34,30 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import precision_recall_curve
 
 _ROOT = Path(__file__).resolve().parents[2]  # repo root/
 sys.path.insert(0, str(_ROOT))
 
-from src.eval.cook import _pool, _features, _target, basin_groups, _grouped_oof
-from src.features.recipes import recipe_CLF
+from src.eval.cook import _pool, _features, _target, basin_groups, _grouped_oof, BETA_GRID, beta_operating_points
+from src.features.recipes import recipe_CLF, light_CLF
 from src.data.access import get_site_ids
-from src.models.train import REAL_XGB_CLF
+from src.models.train import xgb_for
 
-# beta grid == the widget slider values (0.5..4.0 step 0.5); the slider snaps to these, so the
-# widget looks each up exactly -- no interpolation.
-BETA = [0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0]
+# Re-exported for callers that used to import these from here. The definitions live in cook.py now,
+# beside the rest of the scoring, because src/models/train.py derives the same table from the CV's
+# own LOFO out-of-fold vector -- and two copies of "the operating point at beta" would eventually
+# disagree about which one a shipped model was tuned under.
+BETA = list(BETA_GRID)
+_beta_operating_points = beta_operating_points
 
-_RECIPES = {"recipe_CLF": recipe_CLF}
-
-
-def _beta_operating_points(y, oof, betas=BETA) -> list[dict]:
-    """For each beta, the threshold tau maximising F_beta on (y, oof), with the honest operating
-    point at that tau: recall (TP/(TP+FN)), precision (TP/(TP+FP)), and fdr (= 1 - precision, the
-    share of alarms that are false). One precision_recall_curve sweep drives all betas."""
-    y = np.asarray(y, dtype=float)
-    oof = np.asarray(oof, dtype=float)
-    ok = ~(np.isnan(y) | np.isnan(oof))
-    y, oof = y[ok], oof[ok]
-    if len(np.unique(y)) < 2:
-        raise ValueError("Need both classes present in the OOF predictions to tune a threshold.")
-
-    # precision_recall_curve returns prec/rec of length n+1; the final point (recall 0, precision 1)
-    # has no threshold, so drop it to align prec/rec with the n thresholds (cf. cook._best_f1).
-    prec, rec, thr = precision_recall_curve(y, oof)
-    P, R = prec[:-1], rec[:-1]
-
-    rows = []
-    for b in betas:
-        b2 = b * b
-        den = b2 * P + R
-        fbeta = np.divide((1 + b2) * P * R, den, out=np.zeros_like(P), where=den > 0)
-        i = int(np.nanargmax(fbeta))
-        rows.append(
-            {
-                "beta": float(b),
-                "tau": float(thr[i]),
-                "recall": float(R[i]),
-                "precision": float(P[i]),
-                "fdr": float(1.0 - P[i]),  # false-discovery rate = share of our alarms that are false
-            }
-        )
-    return rows
+_RECIPES = {"recipe_CLF": recipe_CLF, "light_CLF": light_CLF}
 
 
 def build_beta_table(recipe, sites=None, n_splits: int = 5, min_rows: int = 500, xgb: dict = None):
     """Rebuild the honest LOFO out-of-fold predictions for `recipe` (same pooling + grouping the CV
-    used) and return (beta_table, base_rate). xgb defaults to REAL_XGB_CLF so the OOF probability
-    scale matches the deployed model."""
-    xgb = REAL_XGB_CLF if xgb is None else xgb
+    used) and return (beta_table, base_rate). xgb defaults to the recipe's own effective config so
+    the OOF probability scale matches the deployed model."""
+    xgb = xgb_for(recipe, "clf") if xgb is None else xgb
     target = "violation"
     pool = _pool(recipe, sites or get_site_ids(), target, min_rows=min_rows, progress_label=getattr(recipe, "__name__", "recipe"))
     feat = _features(pool, target)

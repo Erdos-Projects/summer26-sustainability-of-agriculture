@@ -25,33 +25,28 @@ slots.  This module owns their layout placement; other panels populate them:
   forecast-layer : populated by forecast_panel
 """
 
-import base64
 import functools
 import json
-import random
 from pathlib import Path
 
 import pandas as pd
-import geopandas as gpd
 import plotly.graph_objects as go
 import dash_leaflet as dl
-from dash import Input, Output, State, html, dcc, no_update, ALL, ctx
+# Re-exported through `from map_common import *` (see __all__): map_panel and map_layout use these without importing dash themselves. no_update and ctx left with the last server callback.
+from dash import ClientsideFunction, Input, Output, State, html, dcc, ALL
 from dash_extensions.javascript import assign
-from shapely.geometry import shape, Point
 
 from src.data import access, surplus_viz
 from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
 from components import basin_editor
+import bundle
 import colors
 
 IOWA_CENTER = [42.0, -93.5]
 IOWA_ZOOM = 7
 
-# 1×1 transparent PNG used as the placeholder url for hidden ImageOverlays
-_TRANSPARENT_PNG = (
-    "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVQI12NgAAIABQAABjE+ibYAAAAASUVORK5CYII="
-)
-_IOWA_BOUNDS = [[40.3, -96.7], [43.5, -90.1]]
+# (_TRANSPARENT_PNG / _IOWA_BOUNDS were the placeholder url + extent for the statewide surplus
+# ImageOverlay, retired with the heatmap.)
 
 # Inverted mask: world polygon with Iowa bounding box (+ padding) cut as a hole.
 # Dims everything outside the box at 50% opacity while leaving data layers on top unaffected.
@@ -67,98 +62,40 @@ _IOWA_MASK = {
     "properties": {},
 }
 
-_NHD_MIN_ORDER = 5
-_NHD_SIMPLIFY_TOLERANCE = 0.005  # degrees; ~50% vertex reduction at state zoom
-
+# The NHD filter/tolerance that produced the display GeoJSONs now live in
+# widget/static/build_bundle.py (NHD_MIN_ORDER / NHD_SIMPLIFY_DEG); this module only consumes them.
 _ASSETS_DIR = Path(__file__).resolve().parents[1] / "assets"
 _FLOWLINES_ASSET = _ASSETS_DIR / "iowa_flowlines.geojson"
 _WATERBODIES_ASSET = _ASSETS_DIR / "iowa_waterbodies.geojson"
 
 
-def _ensure_nhd_assets():
-    """Write simplified NHD GeoJSON to assets/ at startup if not already present."""
-    if _FLOWLINES_ASSET.exists() and _WATERBODIES_ASSET.exists():
-        return
-    _ASSETS_DIR.mkdir(exist_ok=True)
-    if not _FLOWLINES_ASSET.exists():
-        fl = access.get_flowlines()
-        fl = fl[fl["StreamOrde"] >= _NHD_MIN_ORDER][["geometry"]]
-        fl["geometry"] = fl.geometry.simplify(_NHD_SIMPLIFY_TOLERANCE)
-        _FLOWLINES_ASSET.write_text(fl.to_json())
-    if not _WATERBODIES_ASSET.exists():
-        wb = access.get_waterbodies()[["geometry"]]
-        wb["geometry"] = wb.geometry.simplify(_NHD_SIMPLIFY_TOLERANCE)
-        _WATERBODIES_ASSET.write_text(wb.to_json())
+def _require_nhd_assets():
+    """Fail fast if the NHD display GeoJSONs are missing.
+
+    These used to be BUILT here at import time, which meant importing the app could read 58 MB of
+    parquet (and, with the Census fetch below, hit the network). Generation moved to
+    widget/static/build_bundle.py so that importing the app is pure -- a hard requirement for the
+    dash2html snapshot, which imports the module to render the layout.
+    """
+    missing = [p.name for p in (_FLOWLINES_ASSET, _WATERBODIES_ASSET) if not p.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Missing widget assets: {', '.join(missing)}.\n"
+            "Run `python -m widget.static.build_bundle --only hydro` to generate them."
+        )
 
 
-_ensure_nhd_assets()
+_require_nhd_assets()
 
 
+# Watercolor (Stadia/Stamen) is deliberately absent: it requires an API key for production traffic,
+# so it would break on a public static build. The remaining three are keyless.
 TILE_URLS = {
     "street": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     "satellite": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
     "humanitarian": "https://{s}.tile.openstreetmap.fr/hot/{z}/{x}/{y}.png",
-    "watercolor": "https://tiles.stadiamaps.com/tiles/stamen_watercolor/{z}/{x}/{y}.jpg",
 }
 
-# dl.EditControl's `draw` prop is only read once, at mount (dash-leaflet does
-# not react to later changes to it), so the set of enabled draw tools is fixed
-# here. Both rectangle and polygon are always available as separate buttons in
-# the Leaflet draw toolbar (bottom-left of the map).
-DRAW_TOOLS = {
-    "rectangle": True,
-    "polygon": True,
-    "polyline": False,
-    "circle": False,
-    "circlemarker": False,
-    "marker": False,
-}
-
-
-def _svg_img(inner):
-    svg = '<svg viewBox="0 0 16 16" width="16" height="16"' ' xmlns="http://www.w3.org/2000/svg">' + inner + "</svg>"
-    src = "data:image/svg+xml;base64," + base64.b64encode(svg.encode()).decode()
-    return html.Img(src=src, width=16, height=16, style={"display": "block"})
-
-
-def _draw_btn(icon, btn_id, title):
-    return html.Button(
-        icon,
-        id=btn_id,
-        n_clicks=0,
-        title=title,
-        style={
-            "background": "white",
-            "border": "1px solid #bbb",
-            "borderRadius": "3px",
-            "padding": "5px",
-            "cursor": "pointer",
-            "display": "flex",
-            "alignItems": "center",
-            "justifyContent": "center",
-            "width": "30px",
-            "height": "30px",
-            "boxSizing": "border-box",
-        },
-    )
-
-
-def _rect_icon():
-    return _svg_img('<rect x="1" y="4" width="14" height="8"' ' fill="none" stroke="#555" stroke-width="1.5"/>')
-
-
-def _poly_icon():
-    return _svg_img('<path d="M8,1 L15,6 L12,14 L4,14 L1,6 Z"' ' fill="none" stroke="#555" stroke-width="1.5"/>')
-
-
-def _trash_icon():
-    return _svg_img(
-        '<line x1="1" y1="4" x2="15" y2="4" stroke="#555" stroke-width="1.5"/>'
-        '<path d="M6 4V2H10V4" fill="none" stroke="#555" stroke-width="1.5"/>'
-        '<path d="M3 4L4 14H12L13 4" fill="none" stroke="#555" stroke-width="1.5"/>'
-        '<line x1="6" y1="7" x2="6" y2="11" stroke="#555" stroke-width="1.5"/>'
-        '<line x1="10" y1="7" x2="10" y2="11" stroke="#555" stroke-width="1.5"/>'
-    )
 
 
 _SECTION_LABEL = {
@@ -198,22 +135,6 @@ _PANEL_STYLE = {
     "boxSizing": "border-box",
 }
 
-# Area-select draw button styles
-_DRAW_BTN_BASE = {
-    "borderRadius": "3px",
-    "padding": "5px",
-    "cursor": "pointer",
-    "display": "flex",
-    "alignItems": "center",
-    "justifyContent": "center",
-    "width": "30px",
-    "height": "30px",
-    "boxSizing": "border-box",
-}
-_DRAW_BTN_INACTIVE = {**_DRAW_BTN_BASE, "background": "white", "border": "1px solid #bbb"}
-_DRAW_BTN_ACTIVE = {**_DRAW_BTN_BASE, "background": "#dbeafe", "border": "1.5px solid #3b82f6"}
-
-# Menu selector tab styles
 _MENU_TAB_ACTIVE = {
     "flex": "1",
     "padding": "8px 0",
@@ -275,22 +196,127 @@ _HELP_POPUP_STYLE = {
 }
 _HP = {"margin": "2px 0 8px 0", "color": "#555", "fontSize": "11px"}
 
+# Sites Selected table. These used to live inside map_panel.register_callbacks, which stopped working when the table went clientside: the JS builds the rows, so the styles have to reach the browser through the ui-consts Store, and a style defined in a callback body never leaves Python.
+_SITES_TABLE_COLUMNS = ["Site", "Sparsity (%)", "Start", "End", "Lifespan", "Basin Area (km²)"]
+_TH = {
+    "fontSize": "11px",
+    "fontWeight": "600",
+    "color": "#888",
+    "textTransform": "uppercase",
+    "letterSpacing": "0.05em",
+    "padding": "2px 4px 5px 4px",
+    "borderBottom": "2px dashed #ddd",
+    "whiteSpace": "nowrap",
+}
+_TD = {"fontSize": "12px", "padding": "3px 4px", "verticalAlign": "middle"}
+_CLEAR_BTN_VISIBLE = {
+    "fontSize": "11px",
+    "color": "#aaa",
+    "cursor": "pointer",
+    "textDecoration": "underline",
+    "marginTop": "6px",
+    "display": "block",
+}
+_CLEAR_BTN_HIDDEN = {**_CLEAR_BTN_VISIBLE, "display": "none"}
+# fontWeight is set per row (bold for the active graph site), so it is deliberately absent here.
+_UID_CELL = {
+    "cursor": "pointer",
+    "overflow": "hidden",
+    "textOverflow": "ellipsis",
+    "whiteSpace": "nowrap",
+    "display": "block",
+    "maxWidth": "90px",
+}
+_REMOVE_CELL = {"cursor": "pointer", "color": "#bbb", "fontWeight": "bold", "fontSize": "14px"}
+
+
+# The Iowa outline is a baked asset now; see load_iowa_geojson.
+_IOWA_OUTLINE_ASSET = _ASSETS_DIR / "data" / "iowa_outline.geojson"
+
+
+# Style constants the clientside callbacks need, gathered into one dict the layout ships to the
+# browser as a dcc.Store. Passing them as State rather than restating them in JS keeps Python the
+# single definition -- a tweak here changes the live app and the static build together.
+def clientside_consts():
+    return {
+        "help_visible": _HELP_POPUP_STYLE,
+        "help_hidden": {**_HELP_POPUP_STYLE, "display": "none"},
+        "overlay_visible": _GRAPH_OVERLAY_VISIBLE,
+        "overlay_hidden": _GRAPH_OVERLAY_HIDDEN,
+        "tab_active": _MENU_TAB_ACTIVE,
+        "tab_inactive": _MENU_TAB_INACTIVE,
+        # Leaflet styles for the basin layers, keyed the way colors.basin_style() keys them so the
+        # palette stays defined once in colors.py.
+        "basin_style_preferred": colors.basin_style("preferred"),
+        "basin_style_1": colors.basin_style(1),
+        "basin_style_2": colors.basin_style(2),
+        "basin_style_3": colors.basin_style(3),
+        "hydro": {
+            "urls": {
+                "waterbodies": bundle.asset_url("iowa_waterbodies.geojson"),
+                "flowlines": bundle.asset_url("iowa_flowlines.geojson"),
+            },
+            "styles": {
+                "waterbodies": {
+                    "color": colors.HYDRO["stroke"], "weight": 0.8,
+                    "fillColor": colors.HYDRO["fill"], "fillOpacity": 0.45, "interactive": False,
+                },
+                "flowlines": {"color": colors.HYDRO["stroke"], "weight": 1.2, "interactive": False},
+            },
+        },
+        "iem_bbox": {
+            "bounds": [[38.8, -97.7], [45.3, -87.4]],
+            "pathOptions": {"color": colors.IEM_BBOX["stroke"], "weight": 2, "dashArray": "6 4", "fillOpacity": 0},
+        },
+        # Site marker appearance by kind. The selected marker is drawn larger as well as recoloured, which is why the radius travels with the colours rather than being a constant in JS.
+        "site_markers": {
+            "selected": {"color": colors.SITE_SELECTED["stroke"], "fillColor": colors.SITE_SELECTED["fill"], "radius": 7},
+            "usgs": {"color": colors.SITE_USGS["stroke"], "fillColor": colors.SITE_USGS["fill"], "radius": 5},
+            "default": {"color": colors.SITE_DEFAULT["stroke"], "fillColor": colors.SITE_DEFAULT["fill"], "radius": 5},
+        },
+        "sites_table": {
+            "columns": _SITES_TABLE_COLUMNS,
+            "table": {"width": "100%", "borderCollapse": "collapse"},
+            "th_left": {**_TH, "textAlign": "left", "paddingLeft": "0"},
+            "th_center": {**_TH, "textAlign": "center"},
+            "th_last": {**_TH, "borderBottom": "1px solid #ddd"},
+            "td_left": {**_TD, "textAlign": "left", "paddingLeft": "0"},
+            "td_center": {**_TD, "textAlign": "center"},
+            "td_right": {**_TD, "textAlign": "right", "paddingRight": "0"},
+            "uid": _UID_CELL,
+            "remove": _REMOVE_CELL,
+            "clear_visible": _CLEAR_BTN_VISIBLE,
+            "clear_hidden": _CLEAR_BTN_HIDDEN,
+        },
+        # The pin. A forecast is computed at a REACH OUTLET, which stream-order-3 snapping puts a median 1.5 km from the click, so the marker moves there and these draw the journey: a dashed line back to the click and a small hollow dot marking it.
+        "snap_connector": {"color": colors.SITE_SELECTED["stroke"], "weight": 1.5, "dashArray": "4 4", "opacity": 0.8},
+        "snap_click": {"color": "#888", "weight": 1.5, "fillOpacity": 0, "opacity": 0.9},
+        # The three dash_extensions.assign() handles serialise to {"variable": "dashExtensions.default.functionN"}, which the browser resolves against assets/dashExtensions_default.js. Passing them through means the hover/popup behaviour is still written once, in Python, at the top of this module.
+        "rain_grid": {
+            "style": _GRID_STYLE_JS,
+            "hoverStyle": _GRID_HOVER_JS,
+            "onEachFeature": _GRID_ONEACH_JS,
+            "nodata": _GRID_NODATA_COLOR,
+        },
+    }
+
 
 def load_iowa_geojson():
-    states = gpd.read_file("https://www2.census.gov/geo/tiger/GENZ2022/shp/cb_2022_us_state_20m.zip")
-    return states[states["NAME"] == "Iowa"].__geo_interface__
+    """The Iowa state outline, read from the baked asset.
+
+    This used to download the Census TIGER zip on every module import, which made the app
+    un-importable offline and un-snapshottable. build_bundle.py bakes it instead.
+    """
+    if not _IOWA_OUTLINE_ASSET.exists():
+        raise FileNotFoundError(
+            f"Missing {_IOWA_OUTLINE_ASSET.name}.\n"
+            "Run `python -m widget.static.build_bundle --only iowa_outline` to generate it."
+        )
+    return json.loads(_IOWA_OUTLINE_ASSET.read_text())
 
 
 iowa_geojson = load_iowa_geojson()
 IWQIS_SITES = access.get_metadata()[["site_uid", "latitude", "longitude"]]
-
-
-def _sites_in_polygon(geojson_geom):
-    """Return site_uids whose location falls inside a GeoJSON geometry."""
-    poly = shape(geojson_geom)
-    return [
-        row.site_uid for row in IWQIS_SITES.itertuples(index=False) if poly.contains(Point(row.longitude, row.latitude))
-    ]
 
 
 def make_iwqis_markers(selected_uids=None, visible_uids=None):
@@ -331,42 +357,9 @@ def make_iwqis_markers(selected_uids=None, visible_uids=None):
     ]
 
 
-@functools.lru_cache(maxsize=1)
-def _fake_bad_site_points(n=77, seed=1234):
-    """`n` deterministic points sampled from Iowa river flowline vertices (so they sit ON rivers).
-    PRESENTATION-ONLY. Cached once (the geojson read is the only cost)."""
-    data = json.loads(_FLOWLINES_ASSET.read_text())
-    coords = []  # every vertex across all flowlines, as [lon, lat]
-    for feat in data.get("features", []):
-        geom = feat.get("geometry") or {}
-        if geom.get("type") == "LineString":
-            coords.extend(geom["coordinates"])
-        elif geom.get("type") == "MultiLineString":
-            for line in geom["coordinates"]:
-                coords.extend(line)
-    picks = random.Random(seed).sample(coords, min(n, len(coords)))
-    return tuple((lat, lon) for lon, lat in picks)  # -> (lat, lon) for Leaflet
-
-
-def make_fake_bad_site_markers(n=77, green_frac=0.6, seed=1234):
-    """PRESENTATION-ONLY fake sensor dots scattered along Iowa rivers: `n` circle markers, ~green_frac
-    green (SITE_DEFAULT) and the rest blue (SITE_USGS), styled to match the real IWQIS/USGS markers
-    but with NO id -> non-interactive (they never trigger the site-select callback). Deterministic."""
-    pts = _fake_bad_site_points(n, seed)
-    n_green = int(round(len(pts) * green_frac))  # 60% green, 40% blue by default
-    return [
-        dl.CircleMarker(
-            center=[lat, lon],
-            radius=5,
-            color=(colors.SITE_DEFAULT if i < n_green else colors.SITE_USGS)["stroke"],
-            fillColor=(colors.SITE_DEFAULT if i < n_green else colors.SITE_USGS)["fill"],
-            fillOpacity=0.8,
-            weight=1,
-            pane="sites-pane",
-            bubblingMouseEvents=False,
-        )
-        for i, (lat, lon) in enumerate(pts)
-    ]
+# The PRESENTATION-ONLY "bad sites" markers (_fake_bad_site_points / make_fake_bad_site_markers)
+# were removed for the static build: 77 decorative dots sampled from river vertices with no data
+# behind them, whose only purpose was to make the map look fully covered in a screen recording.
 
 
 def _hr():

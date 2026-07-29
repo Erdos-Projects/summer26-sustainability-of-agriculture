@@ -4,10 +4,15 @@ The saved models (deploy/models/*.json) are XGBoost boosters. A feature frame fr
 / recipes.build_feature_frame is aligned to the booster's feature_names before scoring: columns
 are selected + ordered to match, missing columns are NaN-filled (XGBoost handles NaN natively --
 e.g. a small basin lacking the far `_b1` distance bucket), and extra recipe columns are dropped.
-feature_mismatch() surfaces both sets so a recipe<->model version skew is explicit.
+
+That NaN-fill is right for an absent distance ring and disastrous for anything else, so predict()
+now checks before it scores: a model column the recipe does not produce is forgiven only when its
+base name appears under some other bucket, and any other skew raises. feature_mismatch() still
+reports both sets for callers that want to inspect rather than fail.
 """
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -26,16 +31,26 @@ from virtual_recipes import virtual_recipe
 DEFAULT_REG_NAME = "isaac_REG2.json"
 DEFAULT_CLF_NAME = "isaac_CLF2.json"
 
+# The light pair the widget scores with -- deployed under a STABLE name rather than the dated
+# training name, so promoting a retrain is a copy into deploy/models/ and nothing else changes.
+LIGHT_REG_NAME = "light_REG.json"
+LIGHT_CLF_NAME = "light_CLF.json"
 
-def load_model(*, task: str = None, name: str = None) -> xgb.Booster:
-    """Load a saved XGBoost booster by file name, e.g. 'isaac_REG2.json'."""
+
+def _resolve_name(task: str, light: bool) -> str:
+    if task == "clf":
+        return LIGHT_CLF_NAME if light else DEFAULT_CLF_NAME
+    if task == "reg":
+        return LIGHT_REG_NAME if light else DEFAULT_REG_NAME
+    raise ValueError("You must either specify a task ('clf' or 'reg') or pass a model name!")
+
+
+def load_model(*, task: str = None, name: str = None, light: bool = False) -> xgb.Booster:
+    """Load a saved XGBoost booster by file name, e.g. 'isaac_REG2.json'.
+
+    `light` selects the light pair; pair it with virtual_recipe(..., light=True)."""
     if name is None:
-        if task == "clf":
-            name = DEFAULT_CLF_NAME
-        elif task == "reg":
-            name = DEFAULT_REG_NAME
-        else:
-            raise ValueError("You must either specify a task ('clf' or 'reg') or pass a model name!")
+        name = _resolve_name(task, light)
 
     path = _MODELS / f"{name}"
     if not path.exists():
@@ -46,13 +61,11 @@ def load_model(*, task: str = None, name: str = None) -> xgb.Booster:
     return booster
 
 
-def load_meta(*, task: str = None, name: str = None) -> dict:
+def load_meta(*, task: str = None, name: str = None, light: bool = False) -> dict:
     """The <model>.json.meta.json sidecar (feat / task / target, plus any beta_table + base_rate
     written by tune_threshold.py). Resolves the same name as load_model. Empty dict if absent."""
     if name is None:
-        name = DEFAULT_CLF_NAME if task == "clf" else DEFAULT_REG_NAME if task == "reg" else None
-        if name is None:
-            raise ValueError("You must either specify a task ('clf' or 'reg') or pass a model name!")
+        name = _resolve_name(task, light)
     path = _MODELS / f"{name}.meta.json"
     return json.loads(path.read_text()) if path.exists() else {}
 
@@ -77,10 +90,37 @@ def feature_mismatch(booster: xgb.Booster, features: pd.DataFrame) -> dict:
     return {"model_only": sorted(fn - cols), "recipe_only": sorted(cols - fn)}
 
 
-def predict(booster: xgb.Booster, features: pd.DataFrame) -> pd.Series:
+def _assert_no_skew(booster: xgb.Booster, features: pd.DataFrame) -> None:
+    """Raise if the frame is missing model columns for any reason OTHER than an absent distance bucket.
+
+    The NaN-fill in predict() is deliberate for buckets -- a compact basin genuinely has no far ring, and XGBoost routes the missing value down the default branch. It is a silent catastrophe for anything else: a recipe whose column NAMES have moved (a retuned exp-decay lambda tags Corn_expT2000 where the model wants Corn_expT, a newly bucketed block emits pct_corn_b0 where the model wants pct_corn) reindexes to an all-NaN column per feature and still returns confident-looking numbers. That is how a 30-feature model ends up scoring on 11 of them with no error anywhere.
+
+    A missing column is forgiven only when its base name is present under some other bucket, which is exactly the absent-ring case.
+    """
+    skew = feature_mismatch(booster, features)
+    present_bases = {re.sub(r"_b\d+$", "", c) for c in features.columns}
+    unexplained = [c for c in skew["model_only"] if re.sub(r"_b\d+$", "", c) not in present_bases]
+    if unexplained:
+        raise ValueError(
+            f"recipe<->model feature skew: the model wants {len(unexplained)} column(s) the recipe does not "
+            f"produce, and they are not absent distance buckets: {unexplained[:12]}"
+            f"{' ...' if len(unexplained) > 12 else ''}. "
+            f"The recipe additionally produces {len(skew['recipe_only'])} column(s) the model has never seen: "
+            f"{skew['recipe_only'][:12]}{' ...' if len(skew['recipe_only']) > 12 else ''}. "
+            "Retrain against the current recipe, or load a model that matches it. "
+            "Pass check=False to score anyway (the unmatched features will be NaN)."
+        )
+
+
+def predict(booster: xgb.Booster, features: pd.DataFrame, check: bool = True) -> pd.Series:
     """Score `features`, aligning columns to the model's feature_names (reindex: select + order,
     NaN-fill missing). Returns a Series indexed by the frame's `date` (positive-class probability
-    for a classifier, the predicted target for a regressor)."""
+    for a classifier, the predicted target for a regressor).
+
+    `check` raises on a recipe<->model skew that is not just an absent distance bucket; see
+    _assert_no_skew for why that case is worth failing loudly over."""
+    if check:
+        _assert_no_skew(booster, features)
     fn = booster.feature_names
     date = pd.DatetimeIndex(pd.to_datetime(features["date"])) if "date" in features.columns else None
     X = features.reindex(columns=fn)

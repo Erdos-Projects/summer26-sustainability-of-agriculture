@@ -88,21 +88,11 @@ def _build_selection_section():
                         options=[
                             {"label": " Pin Drop", "value": "pin"},
                             {"label": " Point", "value": "point"},
-                            {"label": " Area", "value": "area"},
                         ],
                         value=colors.default("selection-mode"),
                         style={"display": "flex", "gap": "10px"},
                         labelStyle={"fontSize": "13px", "display": "flex", "alignItems": "center", "cursor": "pointer"},
                         inputStyle={"marginRight": "3px"},
-                    ),
-                    html.Div(
-                        id="area-tool-container",
-                        style={"display": "none"},
-                        children=[
-                            _draw_btn(_rect_icon(), "draw-rect-btn", "Draw rectangle"),
-                            _draw_btn(_poly_icon(), "draw-poly-btn", "Draw polygon"),
-                            _draw_btn(_trash_icon(), "draw-delete-btn", "Clear drawn area"),
-                        ],
                     ),
                 ],
             ),
@@ -130,7 +120,6 @@ def _build_selection_section():
             html.Strong("Tool Select", style={"fontSize": "11px"}),
             html.P("Pin Drop -- click on the map to drop a coordinate pin.", style=_HP),
             html.P("Point -- (default) select a monitoring site by clicking its marker.", style=_HP),
-            html.P("Area -- draw a rectangle or polygon to bulk select monitoring sites inside it.", style=_HP),
             html.Strong("Sites Selected", style={"fontSize": "11px"}),
             html.P("List of selected sites. Click the site name to display its timeseries.", style=_HP),
             html.P("Site -- the unique site identifier", style=_HP),
@@ -140,6 +129,21 @@ def _build_selection_section():
             html.P("Lifespan -- difference in years between start and end", style={**_HP, "margin": "2px 0 0 0"}),
         ],
     )
+
+
+def _agg_readout():
+    """Static label naming the aggregations the stored series were built with.
+
+    They used to be user-selectable (4 water x 4 rain), but the bundle stores one series pair per interval at fixed aggregations, so the choice is made at build time now. Showing it keeps the chart self-describing rather than leaving the reader to guess how a point was reduced."""
+    intervals = bundle.series_intervals()
+    nit, pre = (intervals[0][1], intervals[0][2]) if intervals else ("max", "mean")
+    return [
+        html.Label("Aggregation", style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"}),
+        html.Div(
+            f"nitrate: {nit} · precip: {pre}",
+            style={"fontSize": "12px", "color": "#888", "padding": "5px 0"},
+        ),
+    ]
 
 
 def _build_graph_display_section():
@@ -156,6 +160,10 @@ def _build_graph_display_section():
                 style={**_CHECKBOX_STYLE, **_CHECKBOX_ROW, "marginTop": "6px"},
                 labelStyle=_CHECKBOX_LABEL,
             ),
+            # Interval options come from the BUNDLE, not a hard-coded list: build_bundle ships one
+            # series pair per (site, interval) at fixed aggregations, so offering an interval it did
+            # not build gives a control that changes nothing. The two Agg Method dropdowns are gone
+            # for the same reason -- the aggregations are baked into the stored series.
             html.Div(
                 [
                     html.Div(
@@ -166,15 +174,7 @@ def _build_graph_display_section():
                             ),
                             dcc.Dropdown(
                                 id="aggregate-interval",
-                                options=[
-                                    {"label": "1D", "value": "1D"},
-                                    {"label": "3D", "value": "3D"},
-                                    {"label": "1W", "value": "1W"},
-                                    {"label": "2W", "value": "2W"},
-                                    {"label": "1MS", "value": "1MS"},
-                                    {"label": "3MS", "value": "3MS"},
-                                    {"label": "1YS", "value": "1YS"},
-                                ],
+                                options=[{"label": i, "value": i} for i, _, _ in bundle.series_intervals()],
                                 value=colors.default("aggregate-interval"),
                                 clearable=False,
                                 style={"fontSize": "13px"},
@@ -183,45 +183,7 @@ def _build_graph_display_section():
                         style={"flex": "1", "minWidth": "0", "display": "flex", "flexDirection": "column"},
                     ),
                     html.Div(
-                        [
-                            html.Label(
-                                "Agg Method (Water)",
-                                style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"},
-                            ),
-                            dcc.Dropdown(
-                                id="agg-func-water",
-                                options=[
-                                    {"label": "sum", "value": "sum"},
-                                    {"label": "mean", "value": "mean"},
-                                    {"label": "max", "value": "max"},
-                                    {"label": "min", "value": "min"},
-                                ],
-                                value=colors.default("agg-func-water"),
-                                clearable=False,
-                                style={"fontSize": "13px"},
-                            ),
-                        ],
-                        style={"flex": "1", "minWidth": "0", "display": "flex", "flexDirection": "column"},
-                    ),
-                    html.Div(
-                        [
-                            html.Label(
-                                "Agg Method (Rain)",
-                                style={"fontSize": "11px", "color": "#555", "marginBottom": "2px"},
-                            ),
-                            dcc.Dropdown(
-                                id="agg-func-rain",
-                                options=[
-                                    {"label": "sum", "value": "sum"},
-                                    {"label": "mean", "value": "mean"},
-                                    {"label": "max", "value": "max"},
-                                    {"label": "min", "value": "min"},
-                                ],
-                                value=colors.default("agg-func-rain"),
-                                clearable=False,
-                                style={"fontSize": "13px"},
-                            ),
-                        ],
+                        _agg_readout(),
                         style={"flex": "1", "minWidth": "0", "display": "flex", "flexDirection": "column"},
                     ),
                 ],
@@ -271,10 +233,13 @@ def _build_graph_display_section():
 
 
 def _forecast_years():
-    """Weather years available for a virtual-site forecast (trimmed so target_year keeps its
-    ±2-month lookback buffer)."""
-    yrs = sorted(access._weather_global_files())
-    return yrs[1:-1] if len(yrs) > 2 else yrs
+    """Forecast target years, read from the bundle manifest.
+
+    This used to glob src/data/interim/weather_global_*.parquet, which meant building the layout
+    touched the 4.6 GB weather store -- one of the import-time dependencies that made the app
+    impossible to snapshot. The manifest declares the range instead (build_bundle.FORECAST_YEARS).
+    """
+    return bundle.forecast_years()
 
 
 def _build_forecast_section():
@@ -420,95 +385,30 @@ def _build_map_display_section():
                 ],
                 style=_CHECKBOX_ROW,
             ),
-            # ── nitrogen surplus ──────────────────────────────────────────────
-            html.Div("nitrogen surplus", style=_SUBSECTION_LABEL),
+            # The statewide "nitrogen surplus" block (Show Iowa heatmap + Year + Opacity) was
+            # retired for the static build -- 18 pre-rendered PNGs, 31 MB, for one overlay. The YEAR
+            # slider survived the cull because it is shared: it also picks which annual surplus /
+            # crop layer colours the rain-grid cells above. It now lives with the rain grid, which
+            # is its only remaining consumer. Opacity was heatmap-only and is gone with it.
             html.Div(
-                style={"display": "flex", "gap": "10px", "marginTop": "4px"},
+                style={"display": "flex", "alignItems": "center", "gap": "6px", "marginTop": "4px"},
                 children=[
-                    # Left column — checkboxes
-                    html.Div(
-                        style={
-                            "flex": "1",
-                            "minWidth": "0",
-                            "display": "flex",
-                            "flexDirection": "column",
-                            "gap": "4px",
-                        },
-                        children=[
-                            dcc.Checklist(
-                                id="iowa-surplus-heatmap-toggle",
-                                options=[{"label": " Show Iowa heatmap", "value": "show"}],
-                                value=colors.default("iowa-surplus-heatmap-toggle"),
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
-                        ],
+                    html.Label(
+                        "Year",
+                        style={"fontSize": "11px", "color": "#555", "whiteSpace": "nowrap", "width": "40px"},
                     ),
-                    # Right column — sliders
                     html.Div(
-                        style={
-                            "flex": "1",
-                            "minWidth": "0",
-                            "display": "flex",
-                            "flexDirection": "column",
-                            "gap": "4px",
-                        },
-                        children=[
-                            html.Div(
-                                style={"display": "flex", "alignItems": "center", "gap": "6px"},
-                                children=[
-                                    html.Label(
-                                        "Year",
-                                        style={
-                                            "fontSize": "11px",
-                                            "color": "#555",
-                                            "whiteSpace": "nowrap",
-                                            "width": "40px",
-                                        },
-                                    ),
-                                    html.Div(
-                                        dcc.Slider(
-                                            id="surplus-year-slider",
-                                            min=2000,
-                                            max=2017,
-                                            step=1,
-                                            value=colors.default("surplus-year-slider"),
-                                            marks=None,
-                                            tooltip={"placement": "bottom", "always_visible": True},
-                                            updatemode="mouseup",
-                                        ),
-                                        style={"flex": "1", "marginTop": "-8px", "marginBottom": "-8px"},
-                                    ),
-                                ],
-                            ),
-                            html.Div(
-                                style={"display": "flex", "alignItems": "center", "gap": "6px"},
-                                children=[
-                                    html.Label(
-                                        "Opacity",
-                                        style={
-                                            "fontSize": "11px",
-                                            "color": "#555",
-                                            "whiteSpace": "nowrap",
-                                            "width": "40px",
-                                        },
-                                    ),
-                                    html.Div(
-                                        dcc.Slider(
-                                            id="surplus-opacity-slider",
-                                            min=0.0,
-                                            max=1.0,
-                                            step=0.05,
-                                            value=colors.default("surplus-opacity-slider"),
-                                            marks=None,
-                                            tooltip={"placement": "bottom", "always_visible": True},
-                                            updatemode="mouseup",
-                                        ),
-                                        style={"flex": "1", "marginTop": "-8px", "marginBottom": "-8px"},
-                                    ),
-                                ],
-                            ),
-                        ],
+                        dcc.Slider(
+                            id="surplus-year-slider",
+                            min=2000,
+                            max=2017,
+                            step=1,
+                            value=colors.default("surplus-year-slider"),
+                            marks=None,
+                            tooltip={"placement": "bottom", "always_visible": True},
+                            updatemode="mouseup",
+                        ),
+                        style={"flex": "1", "marginTop": "-8px", "marginBottom": "-8px"},
                     ),
                 ],
             ),
@@ -534,11 +434,6 @@ def _build_map_display_section():
             html.Strong("Show site rain grid", style={"fontSize": "11px"}),
             html.P(
                 "Displays the IEM precipitation grid cell positions for the active graph site.",
-                style=_HP,
-            ),
-            html.Strong("Show Iowa heatmap", style={"fontSize": "11px"}),
-            html.P(
-                "Overlays the statewide nitrogen-surplus heatmap (kg N/ha) for the selected year.",
                 style=_HP,
             ),
             html.Strong("Year / Opacity", style={"fontSize": "11px"}),
@@ -567,14 +462,6 @@ def _build_presentation_section():
                 value=colors.default("grid-color-mode"),
                 style={"fontSize": "13px", "marginTop": "4px"},
             ),
-            html.Div("extra markers", style=_SUBSECTION_LABEL),
-            dcc.Checklist(
-                id="fake-sites-toggle",
-                options=[{"label": " Display bad sites", "value": "show"}],
-                value=[],  # presentation-only fake sensors; off by default
-                style={**_CHECKBOX_STYLE, "marginTop": "4px"},
-                labelStyle=_CHECKBOX_LABEL,
-            ),
         ],
         open=True,
     )
@@ -590,7 +477,6 @@ def _build_map_layers_section():
                     {"label": " Street", "value": "street"},
                     {"label": " Satellite", "value": "satellite"},
                     {"label": " Humanitarian", "value": "humanitarian"},
-                    {"label": " Watercolor", "value": "watercolor"},
                 ],
                 value=colors.default("tile-selector"),
                 style={"fontSize": "13px", "marginTop": "6px"},
@@ -610,9 +496,10 @@ def _build_map_layers_section():
             html.Strong("Satellite", style={"fontSize": "11px"}),
             html.P("ESRI World Imagery satellite tiles.", style=_HP),
             html.Strong("Humanitarian", style={"fontSize": "11px"}),
-            html.P("OpenStreetMap Humanitarian style — high contrast, designed for crisis mapping.", style=_HP),
-            html.Strong("Watercolor", style={"fontSize": "11px"}),
-            html.P("Stadia/Stamen watercolor tiles — artistic style.", style={**_HP, "margin": "2px 0 0 0"}),
+            html.P(
+                "OpenStreetMap Humanitarian style — high contrast, designed for crisis mapping.",
+                style={**_HP, "margin": "2px 0 0 0"},
+            ),
         ],
     )
 
@@ -657,8 +544,12 @@ def layout():
     return html.Div(
         style={"display": "flex", "height": "100vh", "overflow": "hidden"},
         children=[
-            dcc.Store(id="active-area-tool", data=None),
             dcc.Store(id="active-menu", data="explore"),
+            # Constants the clientside callbacks read, shipped from Python so there is exactly one
+            # definition of each. See widget/assets/clientside/.
+            dcc.Store(id="tile-urls", data=TILE_URLS),
+            dcc.Store(id="ui-consts", data=clientside_consts()),
+            *[dcc.Store(id=f"basin-type-{b}", data=b) for b in (1, 2, 3)],
             dcc.Store(id="preferred-basin-version", data=0),
             # ── Map (80 %) ─────────────────────────────────────────────────
             html.Div(
@@ -691,19 +582,11 @@ def layout():
                             ),
                             dl.LayerGroup(id="iem-bbox-layer"),
                             dl.Pane(name="hydro-pane", style={"zIndex": 410}),
-                            dl.Pane(name="surplus-pane", style={"zIndex": 413}),
                             dl.Pane(name="rain-grid-pane", style={"zIndex": 415}),
                             dl.Pane(name="basin-pane", style={"zIndex": 420}),
                             dl.Pane(name="sites-pane", style={"zIndex": 430}),
                             dl.LayerGroup(id="mapunit-layer"),
                             dl.LayerGroup(id="hydro-layer"),
-                            dl.ImageOverlay(
-                                id="iowa-surplus-image-overlay",
-                                url=_TRANSPARENT_PNG,
-                                bounds=_IOWA_BOUNDS,
-                                opacity=0,
-                                pane="surplus-pane",
-                            ),
                             dl.LayerGroup(id="rain-grid-layer"),
                             dl.LayerGroup(id="upstream-layer"),
                             dl.LayerGroup(id="basin1-layer"),
@@ -712,18 +595,7 @@ def layout():
                             dl.LayerGroup(id="pin-basin-layer"),
                             dl.LayerGroup(id="pin-basin-v3-layer"),
                             dl.LayerGroup(id="iwqis-layer"),
-                            dl.LayerGroup(id="fake-sites-layer"),  # presentation-only fake sensors
                             dl.LayerGroup(id="marker-layer"),
-                            dl.FeatureGroup(
-                                [
-                                    dl.EditControl(
-                                        id="edit-control",
-                                        position="bottomleft",
-                                        draw=DRAW_TOOLS,
-                                        edit={"edit": False, "remove": True},
-                                    )
-                                ]
-                            ),
                             dl.LayerGroup(id="forecast-layer"),
                         ],
                         style={"height": "100vh", "width": "100%"},
@@ -764,7 +636,12 @@ def layout():
                             "display": "flex", "flexDirection": "column", "gap": "6px", "alignItems": "flex-start",
                         },
                         children=[
-                            html.Div(id="grid-color-legend"),  # crop/surplus scale, populated when the rain grid shows
+                            # Both legends are rendered up front and hidden; the clientside callback
+                            # flips `style` rather than building a tree in JS. The output space here
+                            # is exactly two variants plus "off", so pre-rendering is strictly
+                            # simpler than constructing either one in JavaScript.
+                            html.Div(_crop_legend(), id="grid-color-legend-crop", style={"display": "none"}),
+                            html.Div(_surplus_legend(), id="grid-color-legend-surplus", style={"display": "none"}),
                             _build_legend(),
                         ],
                     ),
@@ -813,7 +690,6 @@ def layout():
                         id="debug-menu-content",
                         style={"display": "none"},
                         children=[
-                            html.Div(id="debug-sites-table", style={"marginBottom": "8px"}),
                             _hr(),
                             basin_editor.layout(),
                             _hr(),

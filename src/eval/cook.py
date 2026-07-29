@@ -2,28 +2,23 @@
 cook.py -- reusable harness for comparing nitrate "recipes".
 ============================================================
 
-A *recipe* is a function  site_uid -> DataFrame  containing a target column, a `date`
-column, and feature columns (what recipe_A/B/C produce). Recipes stay pure
-(site -> frame) and know nothing about CV; this module supplies the evaluation.
+A *recipe* is a function  site_uid -> DataFrame  containing a target column, a `date` column, and feature columns (what recipe_REG/recipe_CLF and the light pair produce). Recipes stay pure (site -> frame) and know nothing about CV; this module supplies the evaluation.
 
-Tell cook which column is the target by passing `target_col=`. Default "nitrate_con".
-Tell cook which task (regression or classification) by passing `task=`, either "reg" or "clf". Default "reg".
+Tell cook which column is the target with `target_col=` (default "nitrate_con") and which task with `task=` ("reg" or "clf", default "reg").
 
-Two evaluation modes, differing only in their LEAKAGE AXIS:
+    cook_many(recipe, sites)      one recipe, pooling included
+    compare_many({...}, sites)    many recipes, one row each
 
-  cook_one(recipe, site)     INDIVIDUAL site modelling. Leakage axis = TIME.
-  cook_many(recipe, sites)   CROSS-SITE modelling. Leakage axis = SPACE and TIME.
-  cook_fleet(recipe, sites)  bonus: run cook_one on each site, summarise the distribution.
+Two holdouts, run over the same pooled rows:
+    LOSO = Leave One Site Out    -- optimistic; nested basins leak
+    LOFO = Leave One Family Out  -- the honest number, and what everything is aggregated from
 
-Cross-site performance is reported as a DECOMPOSITION rather than one number:
-  between_r2  predicted vs actual per-site means -- does it rank site levels?
-  within_r2   after removing each site's mean    -- does it track daily movement?
-  macro_r2    median per-site R2 (equal weight per site, vs row-weighted overall)
-  loso_r2 / lofo_r2  the leakage bracket (lofo <= real generalisation <= loso)
+EVERY reported aggregate comes from the LOFO out-of-fold vector. They used to come from LOSO, which made every diagnostic optimistic; one `loso_` column per task survives solely to report the leakage gap. Cross-site performance is a DECOMPOSITION rather than one number:
+    lofo_between_r2   predicted vs actual per-site means -- does it rank site levels?
+    lofo_within_r2    after removing each site's mean    -- does it track daily movement?
+    lofo_macro_r2     median per-site R2 (equal weight per site, vs row-weighted overall)
 
-Two different holdout strategies:
-    LOSO = Leave One Site Out.
-    LOFO = Leave One Family Out.
+NO EARLY STOPPING (2026-07-28). Each fold fits on 100% of its training rows with no eval_set, so a non-None `early_stopping_rounds` raises from XGBoost -- deliberately, because nothing here can honour it. The rule it replaces carved a random 15% of ROWS as its stopping slice, so the slice held the same sites as the training data: it was validated in-distribution while the score is out-of-family. It never fired (mean_best_iter sat at the ceiling in all 7 configs of the REG sweep), and measured on one LOFO fold the watched RMSE was still falling at tree 1498/1500 while out-of-family R2 PEAKED AT TREE 175 and gave back 0.0324 R2 -- about 4x the REG noise floor. The tree count is now an explicit tuned hyperparameter: src/models/tune.py resolves it per config by a prefix scan, and src/models/train.py refuses to fit a deployable model without one. See notes/early-stopping-report.md in the sustag repo.
 """
 
 # this makes all type annotations lazy, so no runtime cost for annotations
@@ -39,7 +34,7 @@ from typing import Any, Callable, Literal, Sequence, TypeAlias
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))  # repo root/
 import numpy as np, pandas as pd
 import xgboost as xgb
-from sklearn.model_selection import TimeSeriesSplit, GroupKFold
+from sklearn.model_selection import GroupKFold
 from sklearn.metrics import (
     mean_squared_error,
     mean_absolute_error,
@@ -50,7 +45,6 @@ from sklearn.metrics import (
     roc_curve,
     brier_score_loss,
 )
-from sklearn.inspection import permutation_importance
 
 from src.splits.conflict_graph import split_groups
 from src.data.access import get_site_ids
@@ -63,9 +57,11 @@ Model: TypeAlias = "xgb.XGBClassifier | xgb.XGBRegressor"  # fitted estimator
 TARGET = "nitrate_con"  # default target column if the caller doesn't pass target_col=
 _STRUCTURAL = {"site_uid", "site", "date", "year", "datetime"}  # bookkeeping cols, never features
 
-# fixed, somewhat regularized model config
+# Fixed, somewhat regularized model config. `n_estimators` here is a fallback for exploratory calls
+# only -- it is a REAL tree count now, not a ceiling early stopping would cut short, so anything
+# being scored seriously should pass the count tune.py resolved for that recipe.
 _DEFAULT_XGB = dict(
-    n_estimators=3000,
+    n_estimators=1500,
     learning_rate=0.02,
     max_depth=3,
     min_child_weight=10,
@@ -73,19 +69,18 @@ _DEFAULT_XGB = dict(
     colsample_bytree=0.7,
     reg_lambda=5.0,
     random_state=42,
-    early_stopping_rounds=50,
+    early_stopping_rounds=None,
 )
 
-# fast configuration
-# intended use: cook_many(sites, **FAST_XGB)
-FAST_XGB = dict(n_estimators=800, learning_rate=0.05, max_depth=4)
+_PERM_REPEATS = 5  # shuffles per feature per fold for the permutation-importance test
+_FAR_BUDGET = 0.10  # false-alarm-rate budget for _imbalance_suite's recall_at_far (not a reported column)
 
 # lazy {site : conflict-graph component id} loader
 # maps a site to its group in the conflict-graph from data.splits
 _BASINGRPS = None
 
 
-# ── shared helpers ─────────────────────────
+# ── POOL -- sites in, one long frame out ──────────────────────────────────────
 def _check_target(recipe: Recipe, df: pd.DataFrame, target: str) -> None:
     """Fail quickly if a recipe didn't actually produce the requested target.
     One more way to avoid spending an hour on training for a crash at the end
@@ -100,7 +95,7 @@ def _check_target(recipe: Recipe, df: pd.DataFrame, target: str) -> None:
     if target not in df.columns:
         raise KeyError(
             f"recipe {name!r} produced columns {list(df.columns)} -- no target {target!r}; "
-            f"pass the right target_col= to cook_one/cook_many."
+            f"pass the right target_col= to cook_many."
         )
 
 
@@ -115,8 +110,67 @@ def _target(df: pd.DataFrame, target: str, task: Task) -> pd.Series:
     return y.astype("int64") if task == "clf" else y
 
 
+def _pool(
+    recipe: Recipe, sites: Sequence[str], target: str, min_rows: int = 500, progress_label: str | None = None
+) -> pd.DataFrame:
+    """Build the mega dataframe. Stack many recipe frames into one long dataframe, tagged with `site`.
+
+    Use `sites` to pass an explicit site list (REQUIRED: but if used via cook_many or compare_many, it'll pass all valid sites.)
+    Use `target` to specify the target column in the dataframe (REQUIRED)
+    Use `min_rows` to specify the minimum number of non-nan rows a site must have to make it into the dataframe
+
+    If `progress_label` is given, a self-overwriting status line reports cooking progress (sites cooked so far / total, and how many produced a usable frame).
+    """
+    sites = list(sites)
+    total = len(sites)
+    frames, skipped = [], []
+    for i, s in enumerate(sites, 1):
+        if progress_label is not None:
+            print(
+                f"\r  pooling {progress_label}: site {i}/{total} ({len(frames)} usable so far)",
+                end="",
+                flush=True,
+            )
+        try:
+            d = recipe(s)
+        except Exception as e:
+            skipped.append((s, f"{type(e).__name__}: {e}"))  # build failure; reported in the end-summary
+            continue
+
+        _check_target(recipe, d, target)  # a missing target is a bug -> raise, never skip
+        d = d.dropna(subset=[target])  # drop any rows missing the target
+        if len(d) < min_rows:
+            skipped.append((s, f"only {len(d)} usable rows (< {min_rows})"))
+            continue
+        d = d.copy()
+        d["site"] = s
+        frames.append(d)
+    if progress_label is not None:
+        # overwrite the last heartbeat with the accurate completed total (trailing spaces
+        # clear leftovers from the longer in-progress line), then newline to keep it
+        print(
+            f"\r  cooked {progress_label}: {len(frames)}/{total} sites usable (min_rows >= {min_rows})" + " " * 20,
+            flush=True,
+        )
+        # list dropped sites AFTER the heartbeat line -- an inline print mid-loop gets clobbered by
+        # the next \r heartbeat, so both build failures AND the <min_rows drops were invisible.
+        for s, reason in skipped:
+            print(f"    [skipped] {s}: {reason}")
+    if not frames:
+        from collections import Counter
+
+        # if there aren't ANY frames, builds a human-readable error message explaining
+        # (hopefully) why the sites got skipped.
+        reasons = "; ".join(f"{n}x {r}" for r, n in Counter(r for _, r in skipped).most_common(3))
+        raise ValueError(f"no sites produced a usable frame ({len(skipped)} sites skipped) -- {reasons}")
+    return pd.concat(frames, ignore_index=True)
+
+
+# ── FIT -- frame + folds in, fitted models out ────────────────────────────────
+
+
 def _model(task: Task, **overrides: Any) -> Model:
-    """Wrapper for returning the appropriate model, Classifier vs Regressor
+    """Wrapper for returning the appropriate model, Classifier vs Regressor.
     Pass a different model configuration, for instance, as an unwrapped dictionary.
     It will override the defaults.
     """
@@ -126,31 +180,119 @@ def _model(task: Task, **overrides: Any) -> Model:
     return xgb.XGBRegressor(eval_metric="rmse", **cfg)
 
 
-def _fit(
-    task: Task,
-    Xtr: pd.DataFrame,
-    ytr: pd.Series,
-    Xval: pd.DataFrame,
-    yval: pd.Series,
-    **xgb_kw: Any,
-) -> Model:
-    """Fitter helper. Basically exists only so extra model keywords can be handed off"""
-    m = _model(task, **xgb_kw)
-    m.fit(Xtr, ytr, eval_set=[(Xval, yval)], verbose=False)
-    return m
-
-
 def _oof_predict(model: Model, X: pd.DataFrame, task: Task) -> np.ndarray:
-    """Just an 'Out Of Fold' prediction wrapper. Used soley to differentiate between
-    The two primary tasks.
-    """
+    """Just an 'Out Of Fold' prediction wrapper. Used solely to differentiate between the two primary tasks."""
     return model.predict_proba(X)[:, 1] if task == "clf" else model.predict(X)
+
+
+def basin_groups(sites_mega_series: pd.Series) -> pd.Series:
+    """Take in the mega multi-site dataframe but only the sites_uid column.
+
+    Return a mapping from index of sites_mega_series to conflict graph id. Example with fake conflict_graph_id numbers:
+    site_mega_series         output pd.Series
+    index site_uid        index conflict_graph_id
+    0     WQS0039         0            4
+    1     WQS0039    ->   1            4
+    2     WQS0115         2            7
+    3     WQS0003         3            2
+
+    """
+
+    # lazily load the basin conflict graph
+    global _BASINGRPS
+    if _BASINGRPS is None:
+        _BASINGRPS = split_groups()
+
+    # this is the max integer not already assigned
+    nxt = max(_BASINGRPS.values(), default=-1) + 1
+
+    # build a mapping from site_uid to conflict graph conn comp id
+    mapping = {}
+    for s in pd.unique(sites_mega_series):
+        # if site s is in the basin graph, use its component id
+        mapping[s] = _BASINGRPS.get(s, nxt)
+        # otherwise, add 1 to the counter
+        nxt += s not in _BASINGRPS
+    return sites_mega_series.map(mapping)
+
+
+def folds_true_lofo(families, max_holdout_pct: float = 0.2):
+    """(train_idx, test_idx) pairs for TRUE leave-one-family-out: one fold per basin family.
+
+    _grouped_models runs GroupKFold(min(n_splits, n_groups)), so at n_splits=5 each fold holds out roughly a FIFTH of the families at once and a family shares its fold with several others. This holds out EXACTLY ONE family and trains on every other site -- the honest leave-one-out, and the regime deployment actually operates in (every known site trained on, one unseen basin predicted).
+
+    `max_holdout_pct` caps how much of the pool a single held-out family may be, as a fraction of total rows. A family above the cap is never held out: its fold would score a large slice of the data against a model trained on what is left, so that one fold dominates the pooled OOF and its idiosyncrasies become the headline number. Such a family is still TRAINED ON in every fold -- it is barred from being the test set, not dropped from the data. Its rows simply never receive an OOF prediction, which is what the coverage line reports.
+
+    Families are visited in sorted order so folds are deterministic. A family that is the whole pool yields no fold (no training rows would be left).
+    """
+    fam = np.asarray(families)
+    total = len(fam)
+    counts = pd.Series(fam).value_counts()
+    for f in sorted(counts.index):
+        if total and counts[f] / total > max_holdout_pct:
+            continue
+        test = np.flatnonzero(fam == f)
+        train = np.flatnonzero(fam != f)
+        if len(test) and len(train):
+            yield train, test
+
+
+def _fold_models(X, y, folds, task, **xgb_kw):
+    """Fit one model per (train_idx, test_idx) fold; yield (test_idx, model).
+
+    `folds` = any iterable of index pairs: _grouped_models' GroupKFold for LOSO/LOFO, folds_true_lofo for one-family-at-a-time. Fits on ALL of a fold's training rows -- no validation slice, no eval_set, no early stopping. A non-None `early_stopping_rounds` therefore raises from XGBoost, deliberately: nothing here can honour it, and the tree count is tune.py's job (see the module docstring).
+    """
+    for train, test in folds:
+        m = _model(task, **xgb_kw)
+        m.fit(X.iloc[np.asarray(train)], y.iloc[np.asarray(train)], verbose=False)
+        yield test, m
+
+
+def _grouped_models(X, y, groups, task, n_splits, **xgb_kw):
+    """Fit one model per GroupKFold split. "Rows with the same group class must be kept together."
+
+    The two main kinds of group identities:
+        a. groups = site_uid col of X: then one SITE is left out, LOSO
+        b. groups = conflict graph id: then one FAMILY of basins is left out, LOFO
+
+    min(n_splits, n_groups) folds, NOT leave-one-out -- see folds_true_lofo for the literal one. The fold/split logic lives here so both OOF prediction and feature importance consume the SAME models: no duplicated splitting, and importance is free (the models already exist).
+    """
+    folds = min(n_splits, pd.Series(groups).nunique())
+    if folds < 2:
+        return  # <2 groups -> grouped CV undefined (e.g. LOFO with one basin); caller gets all-NaN OOF
+    yield from _fold_models(X, y, GroupKFold(folds).split(X, y, groups=groups), task, **xgb_kw)
+
+
+def _fold_oof(models, X, task: Task, n: int) -> np.ndarray:
+    """Out-of-fold prediction vector from already-fitted (model, test_idx) pairs. Split from fitting so the same fits also serve gain and permutation importance."""
+    oof = np.full(n, np.nan)
+    for m, te in models:
+        oof[te] = _oof_predict(m, X.iloc[te], task)
+    return oof
+
+
+def _grouped_oof(
+    X: pd.DataFrame,
+    y: pd.Series,
+    groups: pd.Series,
+    task: Task,
+    n_splits: int,
+    **xgb_kw: Any,
+) -> np.ndarray:
+    """OOF predictions under GroupKFold (groups held out intact). A wrapper around _grouped_models for callers that want only the predictions, not the models or their importances."""
+    oof = np.full(len(y), np.nan)
+    for te, m in _grouped_models(X, y, groups, task, n_splits, **xgb_kw):
+        oof[te] = _oof_predict(m, X.iloc[te], task)
+    return oof
+
+
+# ── SCORE -- predictions in, metrics out ──────────────────────────────────────
 
 
 def _best_f1(y: np.ndarray, pred: np.ndarray) -> tuple[float, float]:
     """Best achievable F1 over the probability-threshold sweep, with the threshold that hits it.
 
-    The 0/1 violation target is rare, so a fixed 0.5 cutoff on a calibrated P(violation) scores F1~=0 and tells you nothing; the max-F1 operating point is the honest 'how good is the exceedance *decision* if you pick a sensible cutoff'. The threshold is tuned on these same OOF rows, so read it as mildly optimistic and always alongside prauc (which is threshold-free).
+    The 0/1 violation target is rare, so a fixed 0.5 cutoff on a calibrated P(violation) scores F1~=0 and tells you nothing; the max-F1 operating point is the honest 'how good is the exceedance *decision* if you pick a sensible cutoff'. The threshold is tuned on these same OOF rows, so read it as mildly optimistic and always alongside prauc (which is threshold-free). Not a reported column -- _cross_metrics dropped it because max-F1 cherry-picks a threshold AND weights precision == recall, contradicting the beta=2 deployment; kept here because _score is also the tuner's per-prefix scorer.
     """
     if len(np.unique(y)) < 2:
         return float("nan"), float("nan")
@@ -161,21 +303,20 @@ def _best_f1(y: np.ndarray, pred: np.ndarray) -> tuple[float, float]:
     return float(f1[i]), float(thr[i]) if i < len(thr) else float("nan")
 
 
-_FAR_BUDGET = 0.10  # false-alarm-rate budget for recall_at_far
-
-
 def _imbalance_suite(
     y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, far: float | None = None
 ) -> dict[str, float]:
-    """Class-imbalance-robust metrics for a set of (y, P(positive))    threshold-free prauc_lift, which never cherry-picks an operating point.
+    """Class-imbalance-robust metrics for a set of (y, P(positive)).
 
-    prauc_lift    average precision / base rate -- >1 beats a random ranker; imbalance-normalised
-    f2            best F2 (recall weighted 2x precision)
-    mcc           best Matthews correlation
+    prauc_lift    average precision / base rate -- >1 beats a random ranker; imbalance-normalised.
+                  The ONLY one of the four that is threshold-free, and the only one _cross_metrics
+                  reports. Bounded above by 1/base_rate, so it is not comparable across cohorts of
+                  different prevalence.
+    f2            best F2 over the PR sweep (beta=2 -> recall weighted beta^2 = 4x precision)
+    mcc           best Matthews correlation over the ROC sweep
     recall_at_far recall achievable at a false-alarm rate (FPR) <= `far`
 
-    `far` defaults to the module-level `_FAR_BUDGET`, resolved at CALL time so a runtime override
-    (e.g. train.py's --false-alarm-rate reassigning cook._FAR_BUDGET) is honoured.
+    The last three are MAXIMA over a threshold sweep tuned on the same rows they are scored on, so they answer "best achievable with a perfect hindsight cutoff", not "what you will get". That is why only prauc_lift survives into the reported set; the honest operating points come from _beta_point and beta_operating_points, which commit to a threshold per beta.
     """
     far = _FAR_BUDGET if far is None else far
     y = np.asarray(y, dtype=float)
@@ -210,9 +351,95 @@ def _imbalance_suite(
     )
 
 
+# The widget's beta slider values (0.5..4.0 step 0.5). The slider snaps to these, so it looks each
+# up exactly rather than interpolating -- keep the two in step.
+BETA_GRID = (0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0)
+_PR_CURVE_POINTS = 256  # downsample width for the stored curve; see operating_points()
+_BETA = 2.0  # recall emphasis of the deployed operating point (recall weighted beta^2 = 4x precision)
+
+
+def beta_operating_points(y, pred, betas=BETA_GRID) -> list[dict]:
+    """For each beta, the threshold tau maximising F_beta, with the operating point there.
+
+    Returns recall (TP/(TP+FN)), precision (TP/(TP+FP)) and fdr (= 1 - precision, the share of
+    alarms that are false). One precision_recall_curve sweep drives every beta.
+
+    Everything a caller might want follows from these plus the base rate: given (p, recall,
+    precision), TP = recall*p, FP = TP*(1-precision)/precision, FN = p - TP, TN = (1-p) - FP, so
+    accuracy, FPR and F1 are all derivable without storing another curve.
+    """
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    ok = ~(np.isnan(y) | np.isnan(pred))
+    y, pred = y[ok], pred[ok]
+    if len(np.unique(y)) < 2:
+        raise ValueError("Need both classes present in the predictions to tune a threshold.")
+
+    # precision_recall_curve returns prec/rec of length n+1; the final point (recall 0, precision 1)
+    # has no threshold, so drop it to align prec/rec with the n thresholds (cf. _best_f1).
+    prec, rec, thr = precision_recall_curve(y, pred)
+    P, R = prec[:-1], rec[:-1]
+
+    rows = []
+    for b in betas:
+        b2 = b * b
+        den = b2 * P + R
+        fbeta = np.divide((1 + b2) * P * R, den, out=np.zeros_like(P), where=den > 0)
+        i = int(np.nanargmax(fbeta))
+        rows.append({
+            "beta": float(b),
+            "tau": float(thr[i]),
+            "recall": float(R[i]),
+            "precision": float(P[i]),
+            "fdr": float(1.0 - P[i]),  # false-discovery rate = share of our alarms that are false
+        })
+    return rows
+
+
+def operating_points(y, pred, betas=BETA_GRID) -> dict:
+    """Everything needed to reconstruct any decision threshold, from one PR sweep.
+
+    Returned as three parts, because they answer different questions and only one of them is exact:
+
+      beta_table  the EXACT operating point at each beta in the grid. The widget snaps its slider to
+                  these, so they must not be reconstructed from the downsampled curve below.
+      pr_curve    (recall, precision, tau) resampled to a fixed grid, for any beta or tau asked for
+                  later. Downsampled because the full curve has one point per distinct predicted
+                  value -- ~10^5 of them -- and this has to fit in a JSON log.
+      base_rate   prevalence IN THE SCORED ROWS, which is not the pooled prevalence when the OOF
+                  covers only part of the pool (a --true-lofo run with a cap). FDR is
+                  prevalence-dependent, so quoting it against the wrong base rate misstates it.
+    """
+    y = np.asarray(y, dtype=float)
+    pred = np.asarray(pred, dtype=float)
+    ok = ~(np.isnan(y) | np.isnan(pred))
+    ys, ps = y[ok], pred[ok]
+
+    prec, rec, thr = precision_recall_curve(ys, ps)
+    P, R, T = prec[:-1], rec[:-1], thr
+    # Resample on a monotone recall grid: precision_recall_curve returns recall DESCENDING, and
+    # np.interp needs its x ascending, hence the reversal.
+    grid = np.linspace(R.min(), R.max(), min(_PR_CURVE_POINTS, len(R)))
+    order = np.argsort(R)
+    return {
+        "beta_table": beta_operating_points(ys, ps, betas),
+        "base_rate": float(ys.mean()),
+        "coverage": float(ok.mean()),  # share of pooled rows that received a prediction at all
+        "n_scored": int(ok.sum()),
+        "pr_curve": {
+            "recall": [float(v) for v in grid],
+            "precision": [float(v) for v in np.interp(grid, R[order], P[order])],
+            "tau": [float(v) for v in np.interp(grid, R[order], T[order])],
+        },
+    }
+
+
 def _score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, task: Task) -> dict[str, float]:
     """Pooled metrics for a set of (y, prediction). NaN predictions are dropped (e.g. an
-    all-NaN OOF from a grouped split with too few groups -> all metrics NaN)."""
+    all-NaN OOF from a grouped split with too few groups -> all metrics NaN).
+
+    Emits BARE metric names (r2, prauc, auc, rmse); the loso_/lofo_ prefixes are attached by _cross_metrics. tune.py's tree-count scan calls this directly -- one metric, thousands of times -- so it needs the unprefixed form.
+    """
     y = np.asarray(y, dtype=float)
     pred = np.asarray(pred, dtype=float)
     ok = ~(np.isnan(y) | np.isnan(pred))
@@ -247,234 +474,91 @@ def _per_site_score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, tas
     return r2_score(y, pred) if (len(y) > 1 and np.std(y) > 0) else np.nan
 
 
-def _persistence_pred(site: np.ndarray, date: np.ndarray, y: np.ndarray) -> np.ndarray:
-    """Per-site 'predict yesterday's target', aligned to (site, date, y) on a daily grid so the
-    prediction at t is that site's value at t-1 (NaN where the prior calendar day is absent). The
-    reference baseline -- it 'cheats' by using the site's own history, but it's the standard strong
-    baseline to score against, and normalising by it is comparable across target definitions."""
-    df = pd.DataFrame({"date": pd.to_datetime(np.asarray(date)), "y": np.asarray(y, dtype=float)})
-    df["site"] = np.asarray(site)
-    out = np.full(len(df), np.nan)
-    for _, g in df.groupby("site", sort=False):
-        g = g.sort_values("date")
-        s = pd.Series(g["y"].to_numpy(), index=g["date"])
-        out[g.index.to_numpy()] = s.asfreq("D").shift(1).reindex(g["date"]).to_numpy()
-    return out
-
-
-def _persistence_skill(y: np.ndarray, pred: np.ndarray, persist: np.ndarray) -> float:
-    """1 - MSE(model)/MSE(persistence) over rows where all three are defined (squared error for
-    both tasks -> a Brier skill score for the 0/1 clf target). >0 beats 'predict yesterday', 0
-    ties it, <0 is worse. Because it normalises by each target's OWN persistence difficulty, it is
-    comparable ACROSS different target definitions, unlike raw R2 / RMSE / AUC."""
-    y, pred, persist = np.asarray(y, float), np.asarray(pred, float), np.asarray(persist, float)
-    m = ~(np.isnan(y) | np.isnan(pred) | np.isnan(persist))
-    if m.sum() == 0:
-        return float("nan")
-    mse_model = np.mean((y[m] - pred[m]) ** 2)
-    mse_persist = np.mean((y[m] - persist[m]) ** 2)
-    return float(1 - mse_model / mse_persist) if mse_persist > 0 else float("nan")
-
-
-def _spearman(y: np.ndarray, pred: np.ndarray) -> float:
-    """Pooled Spearman rank correlation of prediction vs actual -- scale-free, so comparable
-    across targets (a rolling-max target and a daily-max target are ranked on the same footing).
-    NaN if fewer than 2 paired non-NaN rows."""
-    s = pd.DataFrame({"y": np.asarray(y, float), "p": np.asarray(pred, float)}).dropna()
-    return float(s["y"].corr(s["p"], method="spearman")) if len(s) >= 2 else float("nan")
-
-
-def basin_groups(sites_mega_series: pd.Series) -> pd.Series:
-    """Take in the mega multi-site dataframe but only the sites_uid column
-
-    Return a mapping from index of sites_mega_series to conflict graph id. Example with fake conflict_graph_id numbers:
-    site_mega_series         output pd.Series
-    index site_uid        index conflict_graph_id
-    0     WQS0039         0            4
-    1     WQS0039    ->   1            4
-    2     WQS0115         2            7
-    3     WQS0003         3            2
-
-    """
-
-    # lazily load the basin conflict graph
-    global _BASINGRPS
-    if _BASINGRPS is None:
-        _BASINGRPS = split_groups()
-
-    # this is the max integer not already a
-    nxt = max(_BASINGRPS.values(), default=-1) + 1
-
-    # build a mapping from site_uid to conflict graph conn comp id
-    mapping = {}
-    for s in pd.unique(sites_mega_series):
-        # if site s is in the basin graph, use its component id
-        mapping[s] = _BASINGRPS.get(s, nxt)
-        # otherwise, add 1 to the counter
-        nxt += s not in _BASINGRPS
-    return sites_mega_series.map(mapping)
-
-
-# ── INDIVIDUAL site: chronological CV ──────────────
-def cook_one(
-    recipe: Recipe,
-    site_uid: str,
-    target_col: str,
-    task: Task = "reg",
-    n_splits: int = 5,
-    test_size: int = 90,
-    extra_importance_test: bool = False,
-    **xgb_kw: Any,
-) -> dict:
-    """Hand off a recipe, a single site_uid, a target_col, and a task ('reg' or 'clf' are the only options) and then do CV on the one site.
-
-    `target`/`task` say which output column is the label and how to score it. Pools out-of-fold predictions across folds and scores once (stable, unlike averaging noisy per-fold R2); each fold early-stops on the chronological tail of its train set. Regression also reports the persistence (predict-yesterday) baseline RMSE.
-
-    Always returns "importance", free with XGBoost run.
-    extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
-    """
-    df = recipe(site_uid)
-    _check_target(recipe, df, target_col)
-    df = df.dropna(subset=[target_col]).reset_index(drop=True)
-    feat = _features(df, target_col)
-    X, y = df[feat], _target(df, target_col, task)
-
-    # storage for the results
-    oof = np.full(len(df), np.nan)
-
-    # store (model, test_idx) per fold -> feeds gain + permutation importance
-    fold_models = []
-
-    for train, test in TimeSeriesSplit(n_splits=n_splits, test_size=test_size).split(X):
-        cut = int(len(train) * 0.85)  # chronological val tail -> early stop
-        # fit on the first 85% of the train split, eval on the last 15%
-        m = _fit(task, X.iloc[train[:cut]], y.iloc[train[:cut]], X.iloc[train[cut:]], y.iloc[train[cut:]], **xgb_kw)
-
-        # store the results of the prediction
-        oof[test] = _oof_predict(m, X.iloc[test], task)
-        fold_models.append((m, test))
-
-    ok = ~np.isnan(oof)
-    row = dict(site=site_uid, n_test=int(ok.sum()), n_feat=len(feat), **_score(y[ok], oof[ok], task))
-    if task == "reg":
-        row["persist_rmse"] = _persistence_rmse(df, ok, target_col)
-    row["importance"] = _gain_importance(fold_models, feat)  # always (free)
-    if extra_importance_test:
-        row["importance_perm"] = _perm_importance(fold_models, X, y, feat, task)
-    return row
-
-
-def _persistence_rmse(df: pd.DataFrame, ok: np.ndarray, target: str) -> float:
-    """The persistence baseline, "predict yesterday's value", for a site does very well. This is the RMSE of that baseline."""
-    s = pd.Series(df[target].to_numpy(), index=pd.to_datetime(df["date"])).asfreq("D")
-    yhat = s.shift(1).reindex(pd.to_datetime(df["date"])).to_numpy()
-    y = df[target].to_numpy()
-    m = ok & ~np.isnan(yhat)
-    return float(np.sqrt(mean_squared_error(y[m], yhat[m]))) if m.any() else np.nan
-
-
-# ── CROSS-SITE: pooled, basi/n-grouped CV ─────────
-def _pool(
-    recipe: Recipe, sites: Sequence[str], target: str, min_rows: int = 500, progress_label: str | None = None
-) -> pd.DataFrame:
-    """Build the mega dataframe. Stack many recipe frames into one long dataframe, tagged with `site`.
-
-    Use `sites` to pass an explicit site list (REQUIRED: but if used via cook_many or compare_many, it'll pass all valid sites.)
-    Use `target` to specify the target column in the dataframe (REQUIRED)
-    Use `min_rows` to specify the minimum number of non-nan rows a site must have to make it into the dataframe
-
-    If `progress_label` is given, a self-overwriting status line reports cooking progress (sites cooked so far / total, and how many produced a usable frame).
-    """
-    sites = list(sites)
-    total = len(sites)
-    frames, skipped = [], []
-    for i, s in enumerate(sites, 1):
-        if progress_label is not None:
-            print(
-                f"\r  pooling {progress_label}: site {i}/{total} ({len(frames)} usable so far)",
-                end="",
-                flush=True,
-            )
-        try:
-            d = recipe(s)
-        except Exception as e:
-            skipped.append((s, f"{type(e).__name__}: {e}"))  # build failure; reported in the end-summary
-            continue
-
-        _check_target(recipe, d, target)  # a missing target is a bug -> raise, never skip
-        d = d.dropna(subset=[target])  # drop any rows mising the target
-        if len(d) < min_rows:
-            skipped.append((s, f"only {len(d)} usable rows (< {min_rows})"))
-            continue
-        d = d.copy()
-        d["site"] = s
-        frames.append(d)
-    if progress_label is not None:
-        # overwrite the last heartbeat with the accurate completed total (trailing spaces
-        # clear leftovers from the longer in-progress line), then newline to keep it
-        print(
-            f"\r  cooked {progress_label}: {len(frames)}/{total} sites usable (min_rows >= {min_rows})" + " " * 20,
-            flush=True,
+def _decomposition(y: np.ndarray, oof: np.ndarray, site: np.ndarray, task: Task) -> dict[str, float]:
+    """between / within / macro decomposition of ONE out-of-fold prediction vector."""
+    ok = ~(np.isnan(y) | np.isnan(oof))
+    if ok.sum() < 2:
+        keys = ("between_rate_r2", "macro_auc") if task == "clf" else ("between_r2", "within_r2", "macro_r2")
+        return {k: float("nan") for k in keys}
+    tab = pd.DataFrame({"y": y[ok], "p": oof[ok], "g": site[ok]})
+    site_means = tab.groupby("g")[["y", "p"]].mean()
+    per_site = tab.groupby("g").apply(lambda d: _per_site_score(d.y, d.p, task))
+    if task == "clf":
+        return dict(
+            between_rate_r2=r2_score(site_means.y, site_means.p),
+            macro_auc=float(np.nanmedian(per_site)),
         )
-        # list dropped sites AFTER the heartbeat line -- an inline print mid-loop gets clobbered by
-        # the next \r heartbeat, so both build failures AND the <min_rows drops were invisible.
-        for s, reason in skipped:
-            print(f"    [skipped] {s}: {reason}")
-    if not frames:
-        from collections import Counter
-
-        # if there aren't ANY frames, builds a human-readable error messages explaining
-        # (hopefully) why the sites got skipped.
-        reasons = "; ".join(f"{n}x {r}" for r, n in Counter(r for _, r in skipped).most_common(3))
-        raise ValueError(f"no sites produced a usable frame ({len(skipped)} sites skipped) -- {reasons}")
-    return pd.concat(frames, ignore_index=True)
+    sm = tab.groupby("g")["y"].transform("mean").to_numpy()
+    pm = tab.groupby("g")["p"].transform("mean").to_numpy()
+    return dict(
+        between_r2=r2_score(site_means.y, site_means.p),
+        within_r2=r2_score(tab.y.to_numpy() - sm, tab.p.to_numpy() - pm),
+        macro_r2=float(np.nanmedian(per_site)),
+    )
 
 
-def _grouped_models(X, y, groups, task, n_splits, seed=0, **xgb_kw):
-    """This fits a model using a GroupKFold split. "Rows with the same group class must be kept together."
+def _beta_point(y: np.ndarray, pred: np.ndarray, beta: float = _BETA) -> dict[str, float]:
+    """Recall and FDR at the threshold maximising F_beta -- the DEPLOYED operating point.
 
-    The two main kinds of group identities:
-        a. groups = site_uid col of X: then one SITE is left out, LOSO
-        b. groups = conflict graph id: then one FAMILY of basins is left out, LOFO
-
-    For each train/test split in GroupKFold:
-        1. Permute the training rows
-        If this didn't happen, we would always evaluate on the last temporal chunk of the last site. We want evaluation spread out between sites. XGBoost doesn't need contiguous time series, it just sees a bag of rows, so this is fine.
-        2. Store the cut so we have an eval piece, hardcoded to 85/15% split
-        3. First the model on this split
-        4. Return the test indices and the model
-
-    The fold/split logic lives here so both OOF prediction and feature importance consume the SAME models -- no duplicated splitting, and importance is free (the models already exist). Each fold early-stops on a random 15% slice of its TRAIN rows.
+    Replaces recall_at_far, which read the ROC curve at FPR <= 10%: ~4x stricter than what ships (beta=2 implies FPR ~= 0.44). FDR = FP/(TP+FP) is prevalence-dependent, so read it against `base`. tau is tuned on the same OOF it is scored on -> mildly optimistic.
     """
-    folds = min(n_splits, pd.Series(groups).nunique())
-    if folds < 2:
-        return  # <2 groups -> grouped CV undefined (e.g. LOFO with one basin); caller gets all-NaN OOF
-    rng = np.random.RandomState(seed)
-    for train, test in GroupKFold(folds).split(X, y, groups=groups):
-        # XGBoost looks at a
-        v = rng.permutation(train)
-        cut = int(len(v) * 0.85)
-        m = _fit(task, X.iloc[v[:cut]], y.iloc[v[:cut]], X.iloc[v[cut:]], y.iloc[v[cut:]], **xgb_kw)
-        yield test, m
+    ok = ~(np.isnan(y) | np.isnan(pred))
+    y, pred = y[ok], pred[ok]
+    if len(np.unique(y)) < 2:
+        return {"recall_at_beta": float("nan"), "fdr_at_beta": float("nan")}
+    prec, rec, _ = precision_recall_curve(y, pred)
+    den = (beta**2) * prec + rec
+    fb = np.divide((1 + beta**2) * prec * rec, den, out=np.zeros_like(prec), where=den > 0)
+    i = int(np.nanargmax(fb))
+    return {"recall_at_beta": float(rec[i]), "fdr_at_beta": float(1.0 - prec[i])}
 
 
-def _grouped_oof(
-    X: pd.DataFrame,
-    y: pd.Series,
-    groups: pd.Series,
+def _cross_metrics(
+    pool: pd.DataFrame,
+    y: np.ndarray,
+    oof_site: np.ndarray,
+    oof_family: np.ndarray,
     task: Task,
-    n_splits: int,
-    seed: int = 0,
-    **xgb_kw: Any,
-) -> np.ndarray:
-    """OOF predictions under GroupKFold (groups held out intact). Just a wrapper around the _grouped_models above. This method only cares about the predictions of the model. In particular, it doesn't return any info on feature importance."""
-    oof = np.full(len(y), np.nan)
-    for te, m in _grouped_models(X, y, groups, task, n_splits, seed, **xgb_kw):
-        oof[te] = _oof_predict(m, X.iloc[te], task)
-    return oof
+) -> dict[str, float]:
+    """The reported score set -- 10 CLF / 6 REG columns.
+
+    What was dropped, and why:
+      * every loso_* except loso_auc/loso_r2 -- they correlate >=0.91 with one another, and LOSO
+        ANTI-correlates with LOFO across recipes (REG -0.29, CLF -0.48), so it is misleading as a
+        ranking criterion. One column survives to report the LOSO-LOFO leakage gap.
+      * lofo_f1 (max-F1 cherry-picks a threshold AND weights precision == recall, contradicting the
+        beta=2 deployment), lofo_mcc / lofo_f2 / lofo_recall_at_far (0.75-0.95 correlated with the
+        rest, and all three are hindsight maxima over a threshold sweep).
+      * persist_skill -- an exact monotone transform of loso_r2 (rho = +-1.00) whose baseline the
+        product cannot use: predict-yesterday needs a history a virtual site does not have.
+      * spearman (0.92 with loso_r2), and the LOSO-computed rmse/between/within/macro.
+
+    ALL aggregates now come from the LOFO OOF; they used to come from LOSO, which made every diagnostic optimistic. `lofo_prauc`/`lofo_r2` are load-bearing names -- tune.py ranks by them.
+    """
+    site = pool["site"].to_numpy()
+    overall = _score(y, oof_site, task)  # LOSO -- retained only for the leakage gap
+    lofo = _score(y, oof_family, task)  # LOFO -- the honest number everything else is based on
+
+    if task == "clf":
+        return dict(
+            loso_auc=overall["auc"],
+            lofo_prauc=lofo["prauc"],  # HEADLINE: average precision on the family-grouped OOF
+            lofo_auc=lofo["auc"],
+            lofo_prauc_lift=_imbalance_suite(y, oof_family)["prauc_lift"],
+            **{f"lofo_{k}": v for k, v in _beta_point(y, oof_family).items()},
+            lofo_brier=lofo["brier"],
+            base=lofo["base"],
+            **{f"lofo_{k}": v for k, v in _decomposition(y, oof_family, site, task).items()},
+        )
+    return dict(
+        loso_r2=overall["r2"],
+        lofo_r2=lofo["r2"],
+        lofo_rmse=lofo["rmse"],  # human-readable mg/L; monotone in lofo_r2, never rank on it
+        **{f"lofo_{k}": v for k, v in _decomposition(y, oof_family, site, task).items()},
+    )
 
 
-_PERM_REPEATS = 5  # shuffles per feature per fold for the permutation-importance test
+# ── IMPORTANCE -- both ride the FAMILY fits ───────────────────────────────────
 
 
 def _gain_importance(fold_models, feat: list[str]) -> pd.Series:
@@ -484,35 +568,47 @@ def _gain_importance(fold_models, feat: list[str]) -> pd.Series:
     return pd.concat(cols, axis=1).mean(axis=1).sort_values(ascending=False)
 
 
-def _perm_importance(fold_models, X, y, feat: list[str], task: Task, seed: int = 0) -> pd.Series:
-    """Mean PERMUTATION importance across folds, indexed by feature, sorted desc. Extra feature importance check, optional
+def _perm_importance(fold_models, X, y, feat: list[str], task: Task, cols=None, seed: int = 0) -> pd.Series:
+    """Permutation importance for `cols` (default: all `feat`), averaged over folds. For each fold model, shuffle a column on that fold's HELD-OUT rows and measure the drop in score (R2 for reg, ROC-AUC for clf), _PERM_REPEATS times.
 
-    For each fold, shuffle each feature on that fold's HELD-OUT rows and measure the drop in score (R2 for reg, ROC-AUC for clf) -- honest, in metric units, but costs ~K * n_feat * _PERM_REPEATS rescorings.
+    Same score-drop semantics as sklearn.inspection.permutation_importance, done by hand so the column set is RESTRICTABLE -- a full per-column pass is ~K * n_feat * _PERM_REPEATS rescorings, and a caller screening one added block only needs those columns.
 
-    Folds whose held-out set can't be scored (e.g. a single-class clf window -> AUC undefined) are skipped; if none are scorable, returns NaNs.
+    Folds whose held-out set can't be scored (e.g. a single-class clf window -> AUC undefined) are skipped; a column with no scorable fold comes back NaN.
     """
-    scoring = "r2" if task == "reg" else "roc_auc"
+    cols = list(feat) if cols is None else [c for c in cols if c in feat]
+    if not cols:
+        return pd.Series(dtype=float)
+    score_fn = r2_score if task == "reg" else roc_auc_score
+    rng = np.random.RandomState(seed)
     fold_models = list(fold_models)
     n = len(fold_models)
-    cols = []
+    acc = {c: [] for c in cols}
     for i, (m, te) in enumerate(fold_models, 1):
-        # slow step (~K * n_feat * _PERM_REPEATS rescorings) -> self-overwriting status line
-        print(
-            f"\r  extra_importance_test: permutation fold {i}/{n} " f"({len(feat)} feats x {_PERM_REPEATS} shuffles)",
-            end="",
-            flush=True,
-        )
+        # slow step -> self-overwriting status line
+        print(f"\r    perm fold {i}/{n} ({len(cols)} cols x {_PERM_REPEATS})", end="", flush=True)
+        Xte = X.iloc[te].copy()
+        yte = y.iloc[te]
         try:
-            r = permutation_importance(
-                m, X.iloc[te], y.iloc[te], scoring=scoring, n_repeats=_PERM_REPEATS, random_state=seed
-            )
+            base = score_fn(yte, _oof_predict(m, Xte, task))
         except ValueError:
-            continue
-        cols.append(pd.Series(r.importances_mean, index=feat))
+            continue  # fold unscoreable (e.g. single-class clf window) -> skip
+        for c in cols:
+            orig = Xte[c].to_numpy().copy()
+            drops = []
+            for _ in range(_PERM_REPEATS):
+                Xte[c] = rng.permutation(orig)
+                try:
+                    drops.append(base - score_fn(yte, _oof_predict(m, Xte, task)))
+                except ValueError:
+                    pass
+            Xte[c] = orig  # restore before the next column
+            if drops:
+                acc[c].append(float(np.mean(drops)))
     print(flush=True)  # newline so the finished status line stays put (not erased)
-    if not cols:
-        return pd.Series(np.nan, index=feat)
-    return pd.concat(cols, axis=1).mean(axis=1).sort_values(ascending=False)
+    return pd.Series({c: (float(np.mean(v)) if v else np.nan) for c, v in acc.items()}).sort_values(ascending=False)
+
+
+# ── API -- pooled cross-site CV ───────────────────────────────────────────────
 
 
 def cook_many(
@@ -524,21 +620,54 @@ def cook_many(
     extra_importance_test: bool = False,
     progress: bool | str = False,
     min_rows: int = 500,
+    true_lofo: bool = False,
+    max_holdout_pct: float = 0.2,
+    perm_cols=None,
     **xgb_kw: Any,
 ) -> dict:
     """Pooled cross-site CV with site- (LOSO) and family- (LOFO) grouped holdouts.
 
-    `sites` defaults to all sites (get_site_ids); _pool silently drops any that fail to
-    build or produce fewer than `min_rows` usable (non-NaN-target) rows. `target_col`/`task`
-    say which output column is the label and how to score it. Returns the decomposition
-    (between/within/macro) plus the LOSO/LOFO bracket. For classification the 'level' analogue
-    is the per-site violation RATE.
+    Two passes over the same rows under two holdouts. The MODELS are kept, not just their predictions: they were being fitted and discarded anyway, so both importances ride the FAMILY fits for free. That matters -- LOSO and LOFO anti-correlate across recipes (REG -0.29, CLF -0.48), so an importance scored on LOSO models answers a systematically different question from the lofo_* columns beside it.
 
-    `min_rows` (default 500) is the min num of non-nan rows a site needs to make it into the training/testing, otherwise its ignored.
+    `true_lofo` makes LOFO literal: one fold per basin family, that family held out, every other site trained on -- instead of GroupKFold(5), which holds out about a fifth of the ROWS at once. It returns the IDENTICAL column set, aggregated identically, so it is a drop-in alternative.
 
-    Always returns "importance" (mean GAIN across the LOSO fold-models, free). With    extra_importance_test=True it ALSO returns "importance_perm" (permutation importance on the held-out rows -- this is slow).
+    HOW MUCH IT CHANGES THE NUMBERS DEPENDS ENTIRELY ON THE COHORT, and on this one it barely does. GroupKFold keeps a group intact, so a family too large to fit in a fifth-sized fold already gets a fold to itself -- which IS leave-one-family-out for it. Here families 0 and 2 are 40.9% and 27.8% of pooled rows, so both regimes train on exactly 59.1% and 72.2% respectively when those are the test set, and they coincide on 68.7% of the data. Only the 18 small families gain (+8..10% training data each), which is +2.25% row-weighted overall.
 
-    progress: show a self-overwriting per-site "cooking" status line while building the pool. True labels it with recipe.__name__; pass a string to use that label instead (compare_many passes the recipe's display name).
+    Since the returned columns carry no marker of which regime produced them, record it wherever you log the run -- src/models/train.py writes `true_lofo` and `max_holdout_pct` for exactly this reason.
+
+    Parameters
+    ----------
+    recipe : Recipe
+        Callable site_uid -> feature/target frame.
+    sites : Sequence[str], optional
+        Site ids; default the full cohort (get_site_ids).
+    target_col : str, default TARGET
+    task : {'reg', 'clf'}, default 'reg'
+    n_splits : int, default 5
+        Folds for both holdouts.
+    extra_importance_test : bool, default False
+        Also compute permutation importance (slow).
+    progress : bool or str, default False
+        Pooling progress label; True uses recipe.__name__.
+    min_rows : int, default 500
+        Per-site inclusion floor on non-NaN-target rows.
+    true_lofo : bool, default False
+        One family per fold instead of GroupKFold.
+    max_holdout_pct : float, default 0.2
+        With true_lofo, families above this row share are never held out.
+    perm_cols : sequence, optional
+        Restrict permutation importance to these columns; None = all.
+    **xgb_kw
+        XGBoost overrides. `n_estimators` is a real tree count -- there is no early stopping.
+
+    Returns
+    -------
+    dict
+        Score columns + 'importance' (+ 'importance_perm', + 'operating_points' for clf).
+
+    See Also
+    --------
+    compare_many : the same, one row per named recipe.
     """
     if sites is None:
         sites = get_site_ids()
@@ -546,157 +675,88 @@ def cook_many(
     pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
     feat = _features(pool, target_col)
     X, y = pool[feat], _target(pool, target_col, task)
-    # site (LOSO) folds: collect OOF predictions AND the fold-models (for importance)
-    oof_site = np.full(len(y), np.nan)
-
-    fold_models = []
-    for te, m in _grouped_models(X, y, pool["site"], task, n_splits, **xgb_kw):
-        oof_site[te] = _oof_predict(m, X.iloc[te], task)
-        fold_models.append((m, te))
 
     basin_grp = basin_groups(pool["site"])
-    n_families = pd.Series(basin_grp).nunique()
+    n_families = int(pd.Series(basin_grp).nunique())
     if n_families < 2:  # leave-one-basin-out needs >=2 families to hold one out
         print(
             f"  [LOFO skipped] {n_families} basin family across these {pool['site'].nunique()} "
             f"sites (need >=2) -- lofo_* = NaN",
             file=sys.stderr,
         )
-    oof_family = _grouped_oof(X, y, basin_grp, task, n_splits, **xgb_kw)
+
+    fam_folds = None
+    if true_lofo:
+        fam_folds = list(folds_true_lofo(basin_grp, max_holdout_pct))
+        if not fam_folds:
+            print(
+                f"  [LOFO skipped] no basin family is <= {max_holdout_pct:.0%} of the {len(pool)} pooled "
+                f"rows, so none is eligible to hold out -- lofo_* = NaN. Raise max_holdout_pct.",
+                file=sys.stderr,
+            )
+
+    site_models = [(m, te) for te, m in _grouped_models(X, y, pool["site"], task, n_splits, **xgb_kw)]
+    fam_models = [
+        (m, te)
+        for te, m in (
+            _fold_models(X, y, fam_folds, task, **xgb_kw)
+            if true_lofo
+            else _grouped_models(X, y, basin_grp, task, n_splits, **xgb_kw)
+        )
+    ]
+
+    oof_site = _fold_oof(site_models, X, task, len(y))
+    oof_family = _fold_oof(fam_models, X, task, len(y))
+
+    if true_lofo:
+        # Reported to stderr, NOT as a column: this regime must return the identical column set so
+        # every existing consumer keeps working. Coverage still matters -- rows in a family too big
+        # to hold out never enter the OOF, so the scores describe only the eligible part of the
+        # cohort, and that is not visible in any of the numbers themselves.
+        covered = float(np.mean(~np.isnan(oof_family))) if len(oof_family) else float("nan")
+        print(
+            f"  [true LOFO] {len(fam_folds)}/{n_families} families held out one at a time "
+            f"(cap {max_holdout_pct:.0%} of rows); scores cover {covered:.1%} of pooled rows",
+            file=sys.stderr,
+        )
+
+    # The honest LOFO out-of-fold vector is right here, and it is the only expensive ingredient of a
+    # decision-threshold table -- src/models/tune_threshold.py used to re-run this whole grouped CV
+    # just to get it back. Derive the operating points now so every logged run carries its own,
+    # rather than depending on someone remembering to run a second script.
+    ops = None
+    if task == "clf":
+        scored = np.asarray(y, dtype=float)[~np.isnan(oof_family)]
+        if len(np.unique(scored)) > 1:  # a fold set with one class present cannot define a threshold
+            ops = operating_points(y, oof_family)
+
     out = dict(
         n_sites=pool["site"].nunique(),
-        n_families=int(n_families),  # # of basin families = # of LOFO groups (low -> noisy LOFO)
+        n_families=n_families,  # # of basin families = # of LOFO groups (low -> noisy LOFO)
         n_rows=len(pool),
         n_feat=len(feat),
         **_cross_metrics(pool, np.asarray(y), oof_site, oof_family, task),
-        importance=_gain_importance(fold_models, feat),  # always (free)
+        # Gain rides the FAMILY models, like every other reported quantity. A diagnostic that
+        # describes a different set of models from the scores beside it is worse than a
+        # discontinuity in the log.
+        importance=_gain_importance(fam_models, feat),
     )
+    if ops is not None:
+        # Nested, so compare_many can lift the whole thing out of the row in one pop -- these are
+        # dicts and lists, and would otherwise poison the numeric scoreboard DataFrame.
+        out["operating_points"] = ops
 
     # status messages
     n_total = pool["site"].nunique()
-    test_per_fold = [pool["site"].iloc[te].nunique() for _, te in fold_models]
+    test_per_fold = [pool["site"].iloc[te].nunique() for _, te in site_models]
     train_per_fold = [n_total - t for t in test_per_fold]
-    n_folds = len(fold_models)
     print(
-        f"  cooked {label}: {n_total} sites, {n_folds}-fold LOSO "
-        f"(~{int(np.mean(train_per_fold))} train / ~{int(np.mean(test_per_fold))} test per fold)"
+        f"  cooked {label}: {n_total} sites, {len(site_models)}-fold LOSO "
+        f"(~{int(np.mean(train_per_fold))} train / ~{int(np.mean(test_per_fold))} test per fold), "
+        f"{len(fam_models)}-fold LOFO"
     )
     if extra_importance_test:
-        out["importance_perm"] = _perm_importance(fold_models, X, y, feat, task)
-    return out
-
-
-def _cross_metrics(
-    pool: pd.DataFrame,
-    y: np.ndarray,
-    oof_site: np.ndarray,
-    oof_family: np.ndarray,
-    task: Task,
-) -> dict[str, float]:
-    site = pool["site"].to_numpy()
-    tab = pd.DataFrame({"y": y, "p": oof_site, "g": site})
-    site_means = tab.groupby("g")[["y", "p"]].mean()  # per-site level
-    per_site = tab.groupby("g").apply(lambda d: _per_site_score(d.y, d.p, task))
-    overall = _score(y, oof_site, task)  # LOSO (optimistic: nested basins leak)
-    lofo = _score(y, oof_family, task)  # LOFO (the honest generalization number)
-    # skill vs the persistence ("predict yesterday") baseline -- comparable across targets
-    persist = _persistence_pred(site, pool["date"].to_numpy(), y)
-    persist_skill = _persistence_skill(y, oof_site, persist)
-
-    if task == "clf":
-        # class-imbalance suite on the OOF, for the leaking (loso) and honest (lofo) holdouts
-        loso_imb = _imbalance_suite(y, oof_site)
-        lofo_imb = _imbalance_suite(y, oof_family)
-        return dict(
-            loso_auc=overall["auc"],
-            lofo_auc=lofo["auc"],
-            loso_prauc=overall["prauc"],
-            lofo_prauc=lofo["prauc"],  # base-rate-aware, honest generalization -- the headline pair
-            loso_f1=overall["f1"],
-            lofo_f1=lofo["f1"],  # best-F1 exceedance-decision quality, family-held-out
-            **{f"loso_{k}": v for k, v in loso_imb.items()},
-            **{f"lofo_{k}": v for k, v in lofo_imb.items()},
-            brier=overall["brier"],
-            persist_skill=persist_skill,  # Brier skill vs predict-yesterday (>0 beats it); a
-            # gauged-site validation metric -- N/A for a virtual site, which has no own history
-            base=overall["base"],
-            between_rate_r2=r2_score(site_means.y, site_means.p),  # ranks violation rates
-            macro_auc=float(np.nanmedian(per_site)),
-        )
-    sm = tab.groupby("g")["y"].transform("mean").to_numpy()
-    pm = tab.groupby("g")["p"].transform("mean").to_numpy()
-    return dict(
-        loso_r2=overall["r2"],
-        lofo_r2=lofo["r2"],
-        rmse=overall["rmse"],
-        persist_skill=persist_skill,  # 1 - MSE/MSE(persistence); comparable across targets
-        spearman=_spearman(y, oof_site),  # rank corr of pred vs actual; scale-free
-        between_r2=r2_score(site_means.y, site_means.p),  # ranks site levels
-        within_r2=r2_score(y - sm, oof_site - pm),  # daily, level removed
-        macro_r2=float(np.nanmedian(per_site)),
-    )
-
-
-def cook_fleet(recipe: Recipe, sites: Sequence[str] | None = None, progress: bool | str = False, **kw: Any) -> dict:
-    """Run cook_one on each site (per-site models) and summarise the distribution.
-
-    `sites` defaults to all sites (get_site_ids); sites that fail are skipped. `target_col=`
-    / `task=` (and any model kwargs) are forwarded to cook_one. progress: show a
-    self-overwriting per-site status line (True -> recipe.__name__, or pass a label)."""
-    if sites is None:
-        sites = get_site_ids()
-    sites = list(sites)
-    total = len(sites)
-    label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
-    rows, imps, perms = [], [], []
-    for i, s in enumerate(sites, 1):
-        if label is not None:
-            print(f"\r  fleet {label}: {i}/{total} sites ({len(rows)} fit)", end="", flush=True)
-        try:
-            r = cook_one(recipe, s, **kw)
-        except Exception:
-            continue
-        imps.append(r.pop("importance"))  # keep the per-site table numeric; aggregate below
-        if "importance_perm" in r:
-            perms.append(r.pop("importance_perm"))
-        rows.append(r)
-    if label is not None:
-        print(flush=True)
-    df = pd.DataFrame(rows)
-    metric = "auc" if kw.get("task") == "clf" else "r2"
-    out = dict(
-        n_sites=len(df),
-        **{f"median_{metric}": df[metric].median(), f"mean_{metric}": df[metric].mean()},
-        per_site=df,
-        importance=(
-            pd.concat(imps, axis=1).mean(axis=1).sort_values(ascending=False) if imps else pd.Series(dtype=float)
-        ),
-    )
-    if perms:
-        out["importance_perm"] = pd.concat(perms, axis=1).mean(axis=1).sort_values(ascending=False)
-    return out
-
-
-# ── comparison (paired: same sites/folds for every recipe) ────
-def compare_one(recipes: dict[str, Recipe], site: str, target_col: str, **kw: Any) -> pd.DataFrame:
-    """Table of cook_one metrics, one row per named recipe (same site). target_col=/task=
-    (and model kwargs) are forwarded to cook_one.
-
-    Per-feature importances are kept OUT of the (scalar) metric table and stashed in
-    result.attrs["importance"] = {recipe -> Series} (gain); with extra_importance_test=True
-    also result.attrs["importance_perm"]. View with importance_table(result[, key=...]).
-    """
-    rows, imps, perms = [], {}, {}
-    for name, fn in recipes.items():
-        r = cook_one(fn, site, target_col, **kw)
-        imps[name] = r.pop("importance")
-        if "importance_perm" in r:
-            perms[name] = r.pop("importance_perm")
-        rows.append({"recipe": name, **r})
-    out = pd.DataFrame(rows).set_index("recipe")
-    out.attrs["importance"] = imps
-    if perms:
-        out.attrs["importance_perm"] = perms
+        out["importance_perm"] = _perm_importance(fam_models, X, y, feat, task, cols=perm_cols)
     return out
 
 
@@ -712,10 +772,13 @@ def compare_many(
     target_col=/task=/min_rows= (and model kwargs) are forwarded to cook_many. With progress=True each
     recipe prints a header line (which recipe / elapsed) followed by cook_many's own
     self-overwriting per-site cooking line.
+
+    Importances land in .attrs['importance'] / .attrs['importance_perm'] and the classifier
+    threshold tables in .attrs['operating_points'], so the returned table stays numeric.
     """
     if sites is None:
         sites = get_site_ids()
-    rows, imps, perms, n, t0 = [], {}, {}, len(recipes), time.time()
+    rows, imps, perms, ops, n, t0 = [], {}, {}, {}, len(recipes), time.time()
     for i, (name, fn) in enumerate(recipes.items(), 1):
         if progress:
             print(f"compare_many: [{i}/{n}] {name:<28.28s} elapsed {time.time() - t0:4.0f}s", flush=True)
@@ -723,6 +786,8 @@ def compare_many(
         imps[name] = r.pop("importance")
         if "importance_perm" in r:
             perms[name] = r.pop("importance_perm")
+        if "operating_points" in r:
+            ops[name] = r.pop("operating_points")  # dicts/lists -> attrs; the table stays numeric
         rows.append({"recipe": name, **r})
     if progress:
         print(f"compare_many: done {n}/{n} recipes in {time.time() - t0:.0f}s")
@@ -730,68 +795,31 @@ def compare_many(
     out.attrs["importance"] = imps  # {recipe -> per-feature mean gain}; see importance_table()
     if perms:
         out.attrs["importance_perm"] = perms  # permutation importances (extra_importance_test=True)
+    if ops:
+        out.attrs["operating_points"] = ops  # {recipe -> beta_table + pr_curve + base_rate} (clf)
     return out
 
 
-def compare_fleet(
-    recipes: dict[str, Recipe],
-    sites: Sequence[str] | None = None,
-    target_col: str = TARGET,
-    progress: bool = True,
-    **kw: Any,
-) -> pd.DataFrame:
-    """Table of cook_fleet metrics, one AGGREGATED row per recipe (NOT per site).
-
-    For each recipe, cook_one is fit on every site independently (individual-site modelling,
-    chronological CV) and the per-site scores are summarised to median/mean. So this answers
-    "which feature set is best suited to learning an individual monitoring site?" -- the
-    individual-site analogue of compare_many's cross-site (transfer) question. The metric is
-    r2 for regression, auc for classification (task='clf').
-
-    `sites` defaults to all sites. target_col/task (and model kwargs) forward to cook_one.
-    The full per-site tables are kept OUT of the (aggregated) result and stashed in
-    result.attrs["per_site"] = {recipe -> DataFrame}; importances in result.attrs["importance"]
-    (and ["importance_perm"] with extra_importance_test=True), viewable via importance_table().
-    """
-    if sites is None:
-        sites = get_site_ids()
-    rows, persite, imps, perms, n, t0 = [], {}, {}, {}, len(recipes), time.time()
-    for i, (name, fn) in enumerate(recipes.items(), 1):
-        if progress:
-            print(f"compare_fleet: [{i}/{n}] {name:<28.28s} elapsed {time.time() - t0:4.0f}s", flush=True)
-        r = cook_fleet(fn, sites, target_col=target_col, progress=(name if progress else False), **kw)
-        persite[name] = r.pop("per_site")  # per-site detail -> attrs; the table stays aggregated
-        imps[name] = r.pop("importance")
-        if "importance_perm" in r:
-            perms[name] = r.pop("importance_perm")
-        rows.append({"recipe": name, **r})
-    if progress:
-        print(f"compare_fleet: done {n}/{n} recipes in {time.time() - t0:.0f}s")
-    out = pd.DataFrame(rows).set_index("recipe")
-    out.attrs["per_site"] = persite  # {recipe -> per-site metrics DataFrame}
-    out.attrs["importance"] = imps
-    if perms:
-        out.attrs["importance_perm"] = perms
-    return out
+# ── VIEWS -- reading importances back out ─────────────────────────────────────
 
 
 def importance_table(result, topn: int | None = None, key: str = "importance") -> pd.DataFrame:
     """Tidy feature-importance view: features (rows) x recipes (columns), values = mean
-    importance, sorted by the row mean. Accepts the output of compare_one/compare_many
-    (reads result.attrs[key]), or a {name -> Series} dict, or a single Series.
+    importance, sorted by the row mean. Accepts the output of compare_many (reads
+    result.attrs[key]), or a {name -> Series} dict, or a single Series.
 
     key="importance" (gain, default) or key="importance_perm" (permutation, only present if
-    the compare_* call used extra_importance_test=True). `topn` keeps the top-N features.
+    the compare_many call used extra_importance_test=True). `topn` keeps the top-N features.
     """
     if isinstance(result, pd.Series):
         imps = {key: result}
     elif isinstance(result, dict):
         imps = result
-    else:  # a compare_* DataFrame
+    else:  # a compare_many DataFrame
         imps = result.attrs.get(key)
         if not imps:
             raise ValueError(
-                f"no {key!r} importances found -- pass a compare_one/compare_many result"
+                f"no {key!r} importances found -- pass a compare_many result"
                 + (" run with extra_importance_test=True" if key == "importance_perm" else "")
             )
     tab = pd.DataFrame(imps)  # features (union) x recipes; features absent from a recipe -> NaN
@@ -805,7 +833,7 @@ def importance_breakdown(
 ) -> pd.DataFrame:
     """Per-feature importance for ONE recipe, as 'raw' score + 'pct' (share of the total).
 
-    Accepts a single Series, a {name -> Series} dict, or a compare_* result (reads
+    Accepts a single Series, a {name -> Series} dict, or a compare_many result (reads
     result.attrs[key]); for a multi-recipe result pass recipe= to pick one. Sorted desc.
 
     Units depend on `key`:
@@ -815,13 +843,17 @@ def importance_breakdown(
                             held-out rows (metric units; READ THIS ONE). pct is its share of
                             the total, which is only loosely meaningful (can be skewed by
                             negative entries) -- prefer the raw column for permutation.
+
+    Permutation importance is NOT ADDITIVE: correlated features repair each other's shuffle, so
+    each reads far below its joint contribution and a SUM over a correlated block is a floor, not
+    an estimate. Do not justify dropping a block by summing its members.
     """
     if isinstance(result, pd.Series):
         s = result
     else:
         imps = result if isinstance(result, dict) else result.attrs.get(key)
         if not imps:
-            raise ValueError(f"no {key!r} importances found -- pass a compare_* result or a Series")
+            raise ValueError(f"no {key!r} importances found -- pass a compare_many result or a Series")
         if recipe is None:
             if len(imps) != 1:
                 raise ValueError(f"result has {len(imps)} recipes {list(imps)}; pass recipe=")
@@ -834,14 +866,14 @@ def importance_breakdown(
 
 
 def save_comparison(result: pd.DataFrame, path: str) -> list[str]:
-    """Save a compare_one/compare_many result to CSV(s) for later comparison.
+    """Save a compare_many result to CSV(s) for later comparison.
 
     Writes the metric table to '<path>.csv'. Importances are per-feature vectors that can't
     share the flat metric CSV, so any in result.attrs are written to sidecar files
     '<path>_importance.csv' (gain) and '<path>_importance_perm.csv' (permutation, if the run
     used extra_importance_test=True). Each sidecar carries the raw score per recipe (one
     '<recipe>' column each). Returns the list of files written; pair with load_comparison().
-    Call this on the object compare_* RETURNED -- reshaping a DataFrame drops .attrs, taking
+    Call this on the object compare_many RETURNED -- reshaping a DataFrame drops .attrs, taking
     the importances with it.
     """
     stem = path[:-4] if path.endswith(".csv") else path
@@ -864,7 +896,7 @@ def load_comparison(path: str) -> pd.DataFrame:
 
     Returns the metric DataFrame with any sidecar importances re-attached to .attrs (as
     {recipe -> Series} of RAW scores), so importance_table(result[, key=...]) works on it
-    exactly as on a fresh compare_* result.
+    exactly as on a fresh compare_many result.
     """
     stem = path[:-4] if path.endswith(".csv") else path
     out = pd.read_csv(f"{stem}.csv", index_col="recipe")
@@ -887,7 +919,6 @@ def fit_full(
     val_frac: float = 0.1,
     seed: int = 42,
     extra_importance_test: bool = False,
-    final_fit: bool = False,
     save_path: str | None = None,
     progress: bool | str = False,
     min_rows: int = 500,
@@ -895,14 +926,13 @@ def fit_full(
 ) -> tuple[Model, list[str], dict[str, pd.Series]]:
     """Fit ONE deployable model on the full pooled dataset (no cross-validation holdout).
 
-    cook_many only produces cross-validated fold-models for *scoring* -- each is trained on N-1 sites, so none is a single model fit on all the data. This pools every usable row across `sites` (same pooling cook_many uses) and fits one estimator suitable for saving and predicting on new sites.
+    cook_many only produces cross-validated fold-models for *scoring* -- each is trained on N-1 sites, so none is a single model fit on all the data. This pools every usable row across `sites` (same pooling cook_many uses) and fits one estimator on 100% of them, suitable for saving and predicting on new sites.
 
-    A `val_frac` random slice is held out (it both picks the early-stopping iteration, when the config uses early_stopping_rounds -- the default does -- and serves as the held-out set for permutation importance). By default the shipped model is the one trained on the rest (1 - val_frac of the rows).
+    THE TREE COUNT IS THE CALLER'S. There is no early stopping anywhere (see the module docstring), so `n_estimators` is fit exactly as passed; src/models/train.py reads it from the tuning run and refuses to proceed without one.
 
-    final_fit=True instead trains the shipped model on 100% of the rows: it first fits on the holdout to learn the early-stopping iteration, then refits on ALL rows at that fixed tree count (early_stopping_rounds disabled). Use this for the deployed model -- it sees every
-    row. (With no early_stopping_rounds configured there's nothing to learn, so it just fits on all rows.)
+    A `val_frac` random slice is carved ONLY when extra_importance_test is on, to serve as the held-out set for permutation importance -- the shipped model is always the one trained on every row. (The slice used to be carved unconditionally, which silently discarded 10% of the data for nothing on every run that did not ask for permutation importance.)
 
-    Always computes GAIN importance (free, from the shipped model). With extra_importance_test=True also computes PERMUTATION importance on the val_frac holdout using the holdout-trained model (honest -- that model never saw those rows). Both are returned in the importance dict and, if `save_path` is given, written to CSV sidecars.
+    Always computes GAIN importance (free, from the shipped model). With extra_importance_test=True also computes PERMUTATION importance on the val_frac holdout using a model trained without those rows (honest -- that model never saw them). Both are returned in the importance dict and, if `save_path` is given, written to CSV sidecars.
 
     If `save_path` is given, also persists the model: '<save_path>' (booster) + '<save_path>.meta.json' + '<stem>_importance.csv' (+ '<stem>_importance_perm.csv').
     """
@@ -913,33 +943,20 @@ def fit_full(
     feat = _features(pool, target_col)
     X, y = pool[feat], _target(pool, target_col, task)
 
-    cfg = {**_DEFAULT_XGB, **xgb_kw}
-    has_es = bool(cfg.get("early_stopping_rounds"))
-    need_val = has_es or extra_importance_test
-
-    es_model = None  # trained on (1 - val_frac); source of best_iteration and perm importance
-    if need_val:
+    val = perm_model = None
+    if extra_importance_test:
         val = np.random.RandomState(seed).rand(len(X)) < val_frac
-        if has_es:
-            es_model = _fit(task, X[~val], y[~val], X[val], y[val], **xgb_kw)
-        else:
-            es_model = _model(task, **xgb_kw)
-            es_model.fit(X[~val], y[~val], verbose=False)
+        perm_model = _model(task, **xgb_kw)
+        perm_model.fit(X[~val], y[~val], verbose=False)
 
-    if final_fit or not need_val:  # shipped model trains on ALL rows
-        final_kw = dict(xgb_kw)
-        if has_es:  # can't early-stop without a holdout -> fix the tree count instead
-            final_kw["early_stopping_rounds"] = None
-            if final_fit:
-                final_kw["n_estimators"] = int(es_model.best_iteration) + 1
-        m = _model(task, **final_kw)
-        m.fit(X, y, verbose=False)
-    else:  # default: ship the holdout-trained model (1 - val_frac of the rows)
-        m = es_model
+    m = _model(task, **xgb_kw)  # the shipped model: every row, the caller's tree count
+    m.fit(X, y, verbose=False)
 
     importance = {"importance": pd.Series(m.feature_importances_, index=feat).sort_values(ascending=False)}
     if extra_importance_test:  # perm on the holdout, using the model that never saw it
-        importance["importance_perm"] = _perm_importance([(es_model, np.flatnonzero(val))], X, y, feat, task, seed)
+        importance["importance_perm"] = _perm_importance(
+            [(perm_model, np.flatnonzero(val))], X, y, feat, task, seed=seed
+        )
 
     if save_path is not None:
         for f in save_model(m, feat, save_path, task=task, target_col=target_col):
@@ -950,14 +967,24 @@ def fit_full(
     return m, feat, importance
 
 
-def save_model(model: Model, feat: Sequence[str], path: str, task: Task = "reg", target_col: str = TARGET) -> list[str]:
+def save_model(
+    model: Model,
+    feat: Sequence[str],
+    path: str,
+    task: Task = "reg",
+    target_col: str = TARGET,
+    extra: dict | None = None,
+) -> list[str]:
     """Persist a fitted model (XGBoost native booster) plus a sidecar of what's needed to use it.
 
     Writes '<path>' (the booster in XGBoost's version-robust JSON format) and
     '<path>.meta.json' (the ordered feature columns, task, and target name). The sidecar is what lets you line up new data's columns at predict time. Pair with load_model(). Returns the files written.
+
+    `extra` is merged into the sidecar -- train.py uses it for beta_table / base_rate, so a shipped classifier carries its own decision thresholds and deploy.predict.threshold_for_beta finds them without a separate tuning run.
     """
     model.get_booster().save_model(path)  # booster-level: avoids the sklearn-wrapper save_model quirk
     meta = {"feat": list(feat), "task": task, "target": target_col, "model_class": type(model).__name__}
+    meta.update(extra or {})
     with open(f"{path}.meta.json", "w") as f:
         json.dump(meta, f, indent=2)
     return [path, f"{path}.meta.json"]
@@ -981,59 +1008,3 @@ def load_model(path: str) -> tuple[Model, dict]:
     m = xgb.XGBClassifier() if meta["task"] == "clf" else xgb.XGBRegressor()
     m.load_model(path)
     return m, meta
-
-
-# demo/smoke test
-if __name__ == "__main__":
-    from src.features.features import (
-        agg_crops,
-        agg_surplus,
-        agg_weather_w_lag,
-        daily_nitrate,
-        nitrate_violations,
-        doy_climatology_pure_signal,
-        site_static,
-        lagged_sensor_nitrate,
-    )
-    from src.features.transformers import flatten_buckets, merge_on_date
-
-    EDGES, VEL = [], 0.8
-
-    def _covariates(site):
-        wb = flatten_buckets(agg_weather_w_lag(site, edges=EDGES, water_velocity=VEL))
-        cb = flatten_buckets(agg_crops(site, edges=EDGES, lam=10_000, exp=True))
-        sb = flatten_buckets(agg_surplus(site, edges=EDGES, lam=10_000, exp=True))
-        nd = daily_nitrate(site).rename(TARGET)
-        return nd, [wb, cb, sb, doy_climatology_pure_signal(nd)]
-
-    def recipe_A(site):  # covariates + calendar (target defaults to 'nitrate_con')
-        nd, parts = _covariates(site)
-        return merge_on_date([nd, *parts], spine=nd.index)
-
-    def recipe_A_static(site):  # + static site descriptors
-        d = recipe_A(site)
-        for k, v in site_static(site).items():
-            d[k] = v
-        return d
-
-    def recipe_B(site):  # + own autoregression
-        nd, parts = _covariates(site)
-        own = [lagged_sensor_nitrate([site], shift=k) for k in (1, 2, 3, 7)]
-        return merge_on_date([nd, *parts, *own], spine=nd.index)
-
-    def recipe_violation(site):  # builds a binary 'violation' target column
-        nd, parts = _covariates(site)  # nd is used only for the spine/calendar, NOT as a feature
-        v = nitrate_violations(site).rename("violation")
-        return merge_on_date([v, *parts], spine=nd.index)
-
-    reg_recipes = {"A_covariates": recipe_A, "A_static": recipe_A_static, "B_+own_AR": recipe_B}
-    sites = [s for s in get_site_ids() if daily_nitrate(s).dropna().shape[0] >= 1500][:25]
-
-    print(f"\nINDIVIDUAL (cook_one) on {sites[0]}:")
-    print(compare_one(reg_recipes, sites[0]).round(3).to_string())
-
-    print(f"\nCROSS-SITE regression (cook_many) on {len(sites)} sites:")
-    print(compare_many(reg_recipes, sites).round(3).to_string())
-
-    print(f"\nCROSS-SITE classification -- caller passes target_col='violation', task='clf':")
-    print(compare_many({"violation": recipe_violation}, sites, target_col="violation", task="clf").round(3).to_string())

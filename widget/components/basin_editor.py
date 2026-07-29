@@ -1,18 +1,13 @@
-"""Basin Editor panel section and callbacks.
+"""Basin Editor panel section and callbacks (READ-ONLY).
 
-Owns the Basin Editor block that lives in the Debug menu: site selection,
-flag display, preferred-basin radio, confirm button, and the basin display
-checkboxes.  The map-layer callbacks that *render* basin polygons (basin1,
-basin2, basin3) stay in map_panel because they output to map LayerGroups.
+Owns the Basin Editor block in the Debug menu: site selection, flag display, site metadata, and the basin display table. The map-layer callbacks that *render* basin polygons stay in map_panel, because they output to map LayerGroups.
+
+READ-ONLY. The "Set preferred basin" radio and its Confirm button are gone: they called access.update_basin, which writes preferred_basin.csv, and a static site cannot write. They were already inert behind a deploy safeguard (colors.DEBUG_MODE_ON, now removed with them), so nothing that worked before stops working -- the control that did nothing is simply no longer drawn. Curating a basin selection is a local task against the Python app plus the builder, not something to do from a published page.
+
+Layout follows the newer sustag design: a v1/v2/v3 x site/pin table with each checkbox carrying its basin's area, which makes the cross-check comparison (does the snap agree with the containing catchment and the D8 raster?) readable at a glance instead of requiring three toggles and a mental diff.
 """
 
-import math
-import pandas as pd
-from dash import Input, Output, State, html, dcc, no_update, ctx
-
-from src.data import access
-from geo_utils import delineate_basin_for_pin, delineate_basin_v3_for_pin
-import colors
+from dash import ClientsideFunction, Input, Output, State, html, dcc
 
 # ── Style constants ───────────────────────────────────────────────────────────
 # Duplicated from map_panel to avoid a circular import.
@@ -39,25 +34,98 @@ _SUBSECTION_LABEL = {
 }
 _CHECKBOX_STYLE = {"fontSize": "13px"}
 _CHECKBOX_LABEL = {"fontSize": "13px", "display": "flex", "alignItems": "center", "cursor": "pointer"}
+_AREA_LABEL_STYLE = {"fontSize": "10px", "color": "#888", "marginLeft": "5px", "minWidth": "48px"}
 
-_NO_PIN_POPUP_HIDDEN = {"display": "none"}
-_NO_PIN_POPUP_VISIBLE = {
-    "display": "block",
-    "marginTop": "4px",
-    "padding": "4px 8px",
-    "background": "#fef2f2",
-    "border": "1px solid #fca5a5",
-    "borderRadius": "4px",
-    "fontSize": "11px",
-    "color": "#dc2626",
+# Delineation rows. v0 (auth) is omitted: it is a uid lookup with no pin-drop equivalent, and it is only ever the PREFERRED basin, reachable through the "Show basin" layer in the Explore tab.
+_BASIN_METHODS = [
+    ("v1", "snap"),  # nearest-flowline snap -- the shipped delineation
+    ("v2", "catch"),  # containing catchment (/comid/position) -- cross-check
+    ("v3", "D8"),  # raster flood-fill -- cross-check
+]
+
+# Which rows have a live pin-drop equivalent. Pin delineation is DEFERRED with the forecast, so these cells render but stay inert for now; v2 has no pin layer in this repo at all.
+_PIN_METHODS = {"v1", "v3"}
+
+_FLAG_LABELS = {
+    "flag_area": "large area",
+    "flag_river": "near major river",
+    "flag_not_contained": "not contained",
+    "flag_basin1_over_basin0": "snap over auth",
+    "flag_area_mismatch_v2": "v1/v2 area mismatch",
+    "flag_area_mismatch_v3": "v1/v3 area mismatch",
 }
+
+# The two readout lines. Only the colours that VARY with the data are consts the JS picks between; the rest are set on the spans at layout time and never written again.
+_MUTED = {"color": "#555", "marginRight": "8px"}
+_DIM = {"color": "#888"}
+_LOCATION_KNOWN = {"color": "#555", "marginRight": "8px"}
+_LOCATION_UNKNOWN = {**_LOCATION_KNOWN, "color": "#999"}
+_FLAGS_SOME = {"color": "#dc2626"}
+_FLAGS_NONE = {"color": "#16a34a"}
+
+
+def _clientside_consts():
+    """Styles and labels the basin-editor readouts need in the browser.
+
+    Shipped in this panel's own Store rather than folded into ui-consts so the section stays self-contained; map_common owns the map's constants and this owns its own.
+    """
+    return {
+        "location_known": _LOCATION_KNOWN,
+        "location_unknown": _LOCATION_UNKNOWN,
+        "flags_some": _FLAGS_SOME,
+        "flags_none": _FLAGS_NONE,
+        "flag_labels": _FLAG_LABELS,
+    }
+
+
+def _display_cell(toggle_id: str, area_id: str) -> html.Div:
+    """A display checkbox with an area label to its right (filled by callback)."""
+    return html.Div(
+        [
+            dcc.Checklist(
+                id=toggle_id,
+                options=[{"label": "", "value": "show"}],
+                value=[],
+                style={"fontSize": "13px", "margin": "0"},
+                labelStyle={"margin": "0"},
+            ),
+            html.Span("", id=area_id, style=_AREA_LABEL_STYLE),
+        ],
+        style={"display": "flex", "alignItems": "center", "justifyContent": "flex-start"},
+    )
+
+
+def _basin_display_table() -> html.Table:
+    """    Rows v1/v2/v3 x columns site/pin. Site cells reuse basin{1,2,3}-toggle (map_panel renders the stored parquets); pin cells drive the live pin-drop overlays. Each checkbox shows the area of its basin (km2) to the right -- site areas from preferred_basin.csv, pin areas on drop."""
+    hdr_style = {"fontSize": "10px", "color": "#888", "fontWeight": "600", "padding": "2px 8px", "textAlign": "center"}
+    row_label_style = {"fontSize": "11px", "color": "#555", "padding": "2px 8px", "whiteSpace": "nowrap"}
+    header = html.Tr([html.Th("", style=hdr_style), html.Th("site", style=hdr_style), html.Th("pin", style=hdr_style)])
+    body = []
+    for i, (v, label) in enumerate(_BASIN_METHODS, start=1):
+        pin_cell = (
+            _display_cell(f"pin-basin-{v}-toggle", f"pin-basin-{v}-area")
+            if v in _PIN_METHODS
+            else html.Span("—", style={"fontSize": "11px", "color": "#ccc"})
+        )
+        body.append(
+            html.Tr(
+                [
+                    html.Td(f"{v} ({label})", style=row_label_style),
+                    html.Td(_display_cell(f"basin{i}-toggle", f"basin{i}-area"), style={"padding": "2px 8px"}),
+                    html.Td(pin_cell, style={"padding": "2px 8px"}),
+                ]
+            )
+        )
+    return html.Table([html.Thead(header), html.Tbody(body)], style={"borderCollapse": "collapse"})
 
 
 def layout():
     return html.Details(
         [
             html.Summary("Basin Editor", style=_SECTION_LABEL_SUMMARY),
-            # ── Site filter + dropdown + flags ────────────────────────────────
+            dcc.Store(id="basin-editor-consts", data=_clientside_consts()),
+            # ──
+            # Site filter + dropdown + flags ────────────────────────────────
             html.Div(
                 style={"display": "flex", "gap": "12px", "marginTop": "6px"},
                 children=[
@@ -83,116 +151,41 @@ def layout():
                 clearable=True,
                 style={"fontSize": "12px", "marginTop": "4px"},
             ),
-            html.Div(id="basin-review-flags", style={"fontSize": "11px", "marginTop": "4px"}),
-            # ── Two-column layout ─────────────────────────────────────────────
+            # Both readouts are pre-rendered skeletons: the shape never varies, so the callbacks write the strings (and the one colour that depends on the data) instead of a tree.
             html.Div(
-                style={"display": "flex", "gap": "16px", "marginTop": "8px"},
+                id="basin-review-site-meta",
+                style={"fontSize": "11px", "marginTop": "4px"},
                 children=[
-                    # Left: Set preferred basin (radio) + confirm
-                    html.Div(
-                        style={"flex": "1", "minWidth": "0"},
-                        children=[
-                            html.Div("Set preferred basin", style=_SUBSECTION_LABEL),
-                            dcc.RadioItems(
-                                id="basin-review-type",
-                                options=[
-                                    {"label": " v1 (NLDI)", "value": "1"},
-                                    {"label": " v2 (auth)", "value": "2"},
-                                    {"label": " v3 (D8)", "value": "3"},
-                                    {"label": " Custom v1", "value": "custom_v1"},
-                                    {"label": " Custom v3", "value": "custom_v3"},
-                                ],
-                                value=None,
-                                style={"fontSize": "12px"},
-                                labelStyle={
-                                    "display": "flex",
-                                    "alignItems": "center",
-                                    "gap": "4px",
-                                    "marginBottom": "2px",
-                                },
-                            ),
-                            html.Div(
-                                style={"display": "flex", "alignItems": "center", "gap": "6px", "marginTop": "8px"},
-                                children=[
-                                    html.Button(
-                                        "Confirm",
-                                        id="basin-review-confirm-btn",
-                                        n_clicks=0,
-                                        style={
-                                            "fontSize": "11px",
-                                            "padding": "4px 10px",
-                                            "cursor": "pointer",
-                                            "background": "#1e3a8a",
-                                            "color": "white",
-                                            "border": "none",
-                                            "borderRadius": "3px",
-                                        },
-                                    ),
-                                    html.Span(
-                                        id="basin-review-confirm-status",
-                                        style={"fontSize": "11px", "color": "#888"},
-                                    ),
-                                ],
-                            ),
-                        ],
-                    ),
-                    # Right: Basin display checkboxes (render callbacks live in map_panel)
-                    html.Div(
-                        style={"flex": "1", "minWidth": "0"},
-                        children=[
-                            html.Div("Basin display", style=_SUBSECTION_LABEL),
-                            dcc.Checklist(
-                                id="basin1-toggle",
-                                options=[{"label": " v1", "value": "show"}],
-                                value=[],
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
-                            dcc.Checklist(
-                                id="basin2-toggle",
-                                options=[{"label": " v2", "value": "show"}],
-                                value=[],
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
-                            dcc.Checklist(
-                                id="basin3-toggle",
-                                options=[{"label": " v3", "value": "show"}],
-                                value=[],
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
-                            dcc.Checklist(
-                                id="pin-basin-v1-toggle",
-                                options=[{"label": " v1 pin", "value": "show"}],
-                                value=["show"],
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
-                            dcc.Checklist(
-                                id="pin-basin-v3-toggle",
-                                options=[{"label": " v3 pin", "value": "show"}],
-                                value=[],
-                                style=_CHECKBOX_STYLE,
-                                labelStyle=_CHECKBOX_LABEL,
-                            ),
-                        ],
-                    ),
+                    html.Span(id="basin-review-location", style=_LOCATION_UNKNOWN),
+                    html.Span(id="basin-review-detail", style=_DIM),
                 ],
             ),
             html.Div(
-                id="no-pin-popup",
-                style={"display": "none"},
-                children="No pin dropped on map!",
+                id="basin-review-flags",
+                style={"fontSize": "11px", "marginTop": "4px"},
+                children=[
+                    html.Span(id="basin-review-status", style=_MUTED),
+                    html.Span(id="basin-review-flag-text", style=_FLAGS_NONE),
+                ],
             ),
-            dcc.Interval(id="no-pin-timer", interval=2000, n_intervals=0, disabled=True, max_intervals=1),
+            # ──
+            # Basin display table ──────────────────────────────────────────
+            html.Div(
+                style={"marginTop": "8px"},
+                children=[
+                    html.Div("Basin display", style=_SUBSECTION_LABEL),
+                    _basin_display_table(),
+                ],
+            ),
         ],
         open=True,
     )
 
 
 def register_callbacks(app):
-    @app.callback(
+    """Everything here reads sites.json, which build_bundle joins from the site, stats and basin metadata tables -- so the whole panel comes out of one cached fetch rather than three parquet reads per interaction."""
+    app.clientside_callback(
+        ClientsideFunction(namespace="panels", function_name="basinDropdown"),
         Output("basin-review-site-dropdown", "options"),
         Output("basin-review-site-dropdown", "value"),
         Input("basin-review-flagged-only", "value"),
@@ -201,160 +194,32 @@ def register_callbacks(app):
         Input("selected-site", "data"),
         State("active-menu", "data"),
     )
-    def update_basin_review_dropdown(flagged_only, unreviewed_only, _version, selected_sites, active_menu):
-        try:
-            meta = access.get_basin_metadata()
-        except FileNotFoundError:
-            return [], no_update
 
-        df = meta.copy()
-        # Derived from the column prefix rather than hard-coded, so adding a flag in
-        # _make_basins.FLAG_COLS is enough -- nothing here needs to change with it.
-        flag_cols = [c for c in df.columns if c.startswith("flag_")]
-        if "on" in (flagged_only or []):
-            flag_df = df[flag_cols].fillna(False)
-            df = df[flag_df.any(axis=1)]
-        if "on" in (unreviewed_only or []):
-            df = df[~df["reviewed"].fillna(False).astype(bool)]
-
-        opts = [{"label": r["site_uid"], "value": r["site_uid"]} for _, r in df.iterrows()]
-
-        if ctx.triggered_id == "selected-site" and active_menu == "debug" and selected_sites and len(selected_sites) == 1:
-            return opts, selected_sites[0]
-
-        return opts, no_update
-
-    @app.callback(
+    app.clientside_callback(
+        ClientsideFunction(namespace="panels", function_name="siteFromDropdown"),
         Output("selected-site", "data", allow_duplicate=True),
         Input("basin-review-site-dropdown", "value"),
         prevent_initial_call=True,
     )
-    def sync_selected_site_from_dropdown(site_uid):
-        if ctx.triggered_id != "basin-review-site-dropdown":
-            return no_update
-        return [site_uid] if site_uid else []
 
-    @app.callback(
-        Output("basin-review-flags", "children"),
-        Output("basin-review-type", "options"),
-        Output("basin-review-type", "value"),
+    app.clientside_callback(
+        ClientsideFunction(namespace="panels", function_name="basinSiteMeta"),
+        Output("basin-review-location", "children"),
+        Output("basin-review-location", "style"),
+        Output("basin-review-detail", "children"),
         Input("basin-review-site-dropdown", "value"),
+        State("basin-editor-consts", "data"),
     )
-    def update_basin_review_info(site_uid):
-        default_opts = [
-            {"label": " v0 (auth)", "value": "0"},
-            {"label": " v1 (snap)", "value": "1"},
-            {"label": " v2 (catch)", "value": "2"},
-            {"label": " v3 (D8)", "value": "3"},
-            {"label": " Custom v1", "value": "custom_v1"},
-            {"label": " Custom v3", "value": "custom_v3"},
-        ]
-        if not site_uid:
-            return "", default_opts, None
 
-        try:
-            meta = access.get_basin_metadata()
-        except FileNotFoundError:
-            return "", default_opts, None
-
-        row = meta[meta["site_uid"] == site_uid]
-        if row.empty:
-            return "", default_opts, None
-
-        r = row.iloc[0]
-
-        flag_labels = {
-            "flag_area": "large area",
-            "flag_river": "near river",
-            "flag_not_contained": "not contained",
-            "flag_basin1_over_basin0": "snap over auth",
-            "flag_area_mismatch_v2": "v1 vs v2 area",
-            "flag_area_mismatch_v3": "v1 vs v3 area",
-        }
-        active_flags = [
-            flag_labels[c]
-            for c in flag_labels
-            if not (isinstance(r.get(c), float) and math.isnan(r.get(c, float("nan")))) and bool(r.get(c, False))
-        ]
-
-        current_type = str(int(r["basin_type"])) if pd.notna(r.get("basin_type")) else "1"
-        selection_mode = r.get("selection_mode", "auto")
-        reviewed = bool(r.get("reviewed", False))
-
-        flags_text = ", ".join(active_flags) if active_flags else "none"
-        flags_div = html.Div([
-            html.Span(
-                f"v{current_type} · {selection_mode} · {'reviewed' if reviewed else 'unreviewed'}",
-                style={"color": "#555", "marginRight": "8px"},
-            ),
-            html.Span(
-                f"flags: {flags_text}",
-                style={"color": "#dc2626" if active_flags else "#16a34a"},
-            ),
-        ])
-
-        # v0 = NWIS authoritative (USGS only), v1 = nearest-flowline snap (the default),
-        # v2 = containing catchment, v3 = D8 raster. See src/build/_make_basins.py.
-        has_v0 = pd.notna(r.get("dist_to_0")) and r.get("dist_to_0") != ""
-        opts = [
-            {"label": " v0 (auth)", "value": "0", "disabled": not has_v0},
-            {"label": " v1 (snap)", "value": "1"},
-            {"label": " v2 (catch)", "value": "2"},
-            {"label": " v3 (D8)", "value": "3"},
-            {"label": " Custom v1", "value": "custom_v1"},
-            {"label": " Custom v3", "value": "custom_v3"},
-        ]
-        return flags_div, opts, current_type
-
-    @app.callback(
-        Output("basin-review-confirm-status", "children"),
-        Output("preferred-basin-version", "data"),
-        Output("no-pin-popup", "style"),
-        Output("no-pin-timer", "disabled"),
-        Output("no-pin-timer", "n_intervals"),
-        Input("basin-review-confirm-btn", "n_clicks"),
-        Input("no-pin-timer", "n_intervals"),
-        State("basin-review-site-dropdown", "value"),
-        State("basin-review-type", "value"),
-        State("region-geom", "data"),
-        State("preferred-basin-version", "data"),
-        prevent_initial_call=True,
+    # Site column areas: the v1/v2/v3 rows read area1/area2/area3 from preferred_basin.csv (km2).
+    app.clientside_callback(
+        ClientsideFunction(namespace="panels", function_name="basinFlags"),
+        Output("basin-review-status", "children"),
+        Output("basin-review-flag-text", "children"),
+        Output("basin-review-flag-text", "style"),
+        Output("basin1-area", "children"),
+        Output("basin2-area", "children"),
+        Output("basin3-area", "children"),
+        Input("basin-review-site-dropdown", "value"),
+        State("basin-editor-consts", "data"),
     )
-    def confirm_basin_review(_, timer_n, site_uid, basin_type, region_geom, version):
-        # no-pin-timer also clears the status text, so the DEBUG "Debug Mode Off" flash auto-vanishes.
-        if ctx.triggered_id == "no-pin-timer":
-            return "", no_update, _NO_PIN_POPUP_HIDDEN, True, no_update
-
-        # Lazy deployment safeguard (colors.DEBUG_MODE_ON): the confirm button is inert -- flash a
-        # brief self-clearing message (via no-pin-timer, ~2s) and make no changes to the dataset.
-        if colors.DEBUG_MODE_ON:
-            return ["Debug Mode Off", html.Br(), "See 'colors.py'"], no_update, _NO_PIN_POPUP_HIDDEN, False, 0
-
-        if not site_uid or not basin_type:
-            return "Select a site and basin type first.", no_update, _NO_PIN_POPUP_HIDDEN, True, no_update
-
-        if basin_type in ("custom_v1", "custom_v3"):
-            if not region_geom or region_geom.get("type") != "Point":
-                return "", no_update, _NO_PIN_POPUP_VISIBLE, False, 0
-            lng, lat = region_geom["coordinates"]
-            try:
-                if basin_type == "custom_v1":
-                    geojson = delineate_basin_for_pin(lat, lng)
-                else:
-                    geojson = delineate_basin_v3_for_pin(lat, lng)
-                access.update_basin(site_uid, {"selection_mode": "manual", "reviewed": True}, basin_geom=geojson)
-                return f"Saved {site_uid} → {basin_type}.", (version or 0) + 1, _NO_PIN_POPUP_HIDDEN, True, no_update
-            except Exception as e:
-                return f"Error: {e}", no_update, _NO_PIN_POPUP_HIDDEN, True, no_update
-        else:
-            btype = int(basin_type)
-            try:
-                access.update_basin(site_uid, {
-                    "basin_type": btype,
-                    "basin_name": f"{site_uid}_basin{btype}.parquet",
-                    "selection_mode": "manual",
-                    "reviewed": True,
-                })
-                return f"Saved {site_uid} → v{btype}.", (version or 0) + 1, _NO_PIN_POPUP_HIDDEN, True, no_update
-            except Exception as e:
-                return f"Error: {e}", no_update, _NO_PIN_POPUP_HIDDEN, True, no_update
