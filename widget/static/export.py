@@ -185,24 +185,42 @@ def _copy_bundle(out: Path) -> int:
 _REQUIRED_CHUNKS = ["async-GeoJSON", "async-graph", "async-dropdown", "async-slider", "plotly.min.js"]
 
 _PREFIX_RE = re.compile(r'("requests_pathname_prefix"\s*:\s*)"(?:\\u002f|/)"')
+# dash2html keys its inlined JSON on the EXACT request URL ("/_dash-layout"). Relativising the
+# prefix changes what dash-renderer asks for, so the lookup has to match on the tail instead.
+_LOOKUP_OLD = "if (patched_jsons_content.hasOwnProperty(e)) {"
+_LOOKUP_NEW = (
+    "const _k = Object.keys(patched_jsons_content).find((k) => String(e) === k || String(e).endsWith(k));\n"
+    "    if (_k) {"
+)
 
 
-def _relativise_prefix(out: Path) -> None:
-    """Point dash-renderer's dynamic URLs at the page rather than at the domain root.
+def _patch_index(out: Path) -> None:
+    """Rewrite index.html so the snapshot works from a subdirectory. Two edits, one cause.
 
-    Dash bakes requests_pathname_prefix="/" and builds every URL it fetches at RUNTIME as prefix + path -- the lazy component chunks and plotly.min.js among them. On a GitHub *project* page the site lives under /<repo>/, so those resolve to the domain root and 404, while the eager <script src> tags in index.html are relative and load fine. The result is a site that comes up and works until you touch anything drawn by dcc.Graph, dcc.Dropdown or dl.GeoJSON.
+    Dash bakes requests_pathname_prefix="/" and builds every URL it fetches at RUNTIME as prefix + path -- the lazy component chunks and plotly.min.js among them. On a GitHub *project* page the site lives under /<repo>/, so those resolve to the domain root and 404 while the eager <script src> tags, which are relative, load fine. The site then comes up and works until you touch anything drawn by dcc.Graph, dcc.Dropdown or dl.GeoJSON. "./" resolves against the page's own directory, so one export serves from a project page, a user page and a local http.server alike -- the same rule bundle.py enforces for data URLs.
 
-    "./" resolves against the page's own directory, so one export serves correctly from a project page, a user page and a local http.server alike. Same reason bundle.py refuses to emit a leading slash.
+    That alone breaks the other half: dash2html answers /_dash-layout and /_dash-dependencies from inlined JSON keyed on the exact URL, and "./_dash-dependencies" is not that string, so the fetch falls through to a 404 and the app boots with no callbacks. Matching on the tail covers both spellings and any prefix.
     """
     page = out / "index.html"
     html = page.read_text()
-    patched, n = _PREFIX_RE.subn(r'\1"./"', html)
-    if n != 1:
+
+    # Both halves are idempotent: re-running against an already-patched site is a no-op, which is
+    # what repairing a built site without a full re-export needs.
+    html, n = _PREFIX_RE.subn(r'\1"./"', html)
+    if n != 1 and '"requests_pathname_prefix":"./"' not in html:
         raise RuntimeError(
             f"expected exactly one requests_pathname_prefix in index.html, found {n}. Dash's config shape has "
             "changed; the export would ship absolute URLs that 404 under a project page."
         )
-    page.write_text(patched)
+
+    if _LOOKUP_NEW not in html:
+        if html.count(_LOOKUP_OLD) != 1 or html.count("patched_jsons_content[e]") != 1:
+            raise RuntimeError(
+                "dash2html's inlined-fetch shim does not look the way this expects; without the tail match the "
+                "published page would fetch /_dash-layout and /_dash-dependencies for real and get 404s."
+            )
+        html = html.replace(_LOOKUP_OLD, _LOOKUP_NEW).replace("patched_jsons_content[e]", "patched_jsons_content[_k]")
+    page.write_text(html)
 
 _FINGERPRINT_RE = re.compile(r'splice\(1,\s*0,\s*"(v[0-9_]+m\d+)"\)')
 
@@ -365,7 +383,7 @@ def export(out: Path, port=DEFAULT_PORT, skip_bundle=False, audit_only=False) ->
     with zipfile.ZipFile(zbuf) as z:
         z.extractall(out)
 
-    _relativise_prefix(out)
+    _patch_index(out)
     n = _copy_bundle(out)
     n_chunks = _copy_async_chunks(app, out)
     # GitHub Pages runs Jekyll by default, which drops paths beginning with "_" -- that would delete the entire Dash runtime under _dash-component-suites/.
