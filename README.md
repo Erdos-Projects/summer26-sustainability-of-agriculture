@@ -1,14 +1,42 @@
 # sustag — Virtual Waterborne Nitrate Sensors in Iowa
 
-Iowa grows a lot of corn and puts a lot of fertilizer in the ground. Nitrogen from that fertilizer becomes nitrate in Iowa's water and gives people cancer, which is bad. [Real time nitrate sensors exist](https://iwqis.iowawis.org/) to monitor the nitrate in the water supply, but they break frequently and are currently being hit by funding cuts. **Question: Can dangerous nitrate levels be predicted from weather and land-use data at sites that have never been seen?** Said another way, using DATA and SCIENCE can we deploy *virtual sensors* in areas without any physical sensors?
+Iowa grows a lot of corn and puts a lot of fertilizer in the ground. Nitrogen from that fertilizer becomes nitrate in Iowa's water and gives people cancer, which is bad. [Real time nitrate sensors exist](https://iwqis.iowawis.org/) to monitor the nitrate in the water supply, but they break frequently and are currently being hit by funding cuts. 
 
-TLDR; We build an XGBoost model to identify nitrate violations (yes/no: does nitrate exceed the federal danger threshold of 10 mg/L?) which performs at 86% accuracy with a 59% false discovery rate. We think this is probably the best performance that can be expected with our current data stack. We provide a Dash widget to interact with our data and run forecasts, thought of as a redesign of the [IWQIS water quality app](https://iwqis.iowawis.org/app/?iwqis=/sensors-map).
+**Question: Can dangerous nitrate levels be predicted from weather and land-use data at sites that have never been seen?** Said another way, using data and science, can we deploy *virtual sensors* to make safety predictions in areas without any physical detectors in the water?
 
-Project completed in the Erdos Summer 2026 Data Science Bootcamp.
+TLDR; Yes, you can.
 
-[Link to our beautiful presentation video (5 minutes long)](https://www.youtube.com/watch?v=O_ZCylQCXe8)
+- [Link to our beautiful presentation video](https://www.youtube.com/watch?v=O_ZCylQCXe8) (5 minutes long, results slightly outdated)
+- [Link to an interactive demo of our widget/model]() (please play around with it!)
 
-## Results and demo
+We build two separate XGBoost models, a classifier which identifies nitrate violations and a regressor which models maximum daily nitrate values. We provide a Dash widget to interact with our data and run forecasts, inspired by the [IWQIS water quality app](https://iwqis.iowawis.org/app/?iwqis=/sensors-map) (the demo site linked above is a light version of this widget running a stripped-down pair of our models).
+  - [Results](#results)
+  - [Quickstart](#quickstart)
+  - [Running the app \& notebooks](#running-the-app--notebooks)
+  - [Repo Structure](#repo-structure)
+  - [What's committed vs. downloaded](#whats-committed-vs-downloaded)
+  - [Documentation](#documentation)
+
+## Results
+**Goal:** drop a pin in an arbitrary location in Iowa's waterways and on any given day, make two predictions:
+- (A): will the nitrate at this location exceed 10 mg/L (yes/no)?
+- (B): what is maximum nitrate value this location will observe (in mg/L)?
+
+**Training:** Our two XGBoost models are trained on data from 81 live nitrate sensors (158,215 sensor-days) along with geographic crop, nitrogen-surplus and weather data clipped to each sensor's drainage basin. We validate our models against sites with no hydrological connection to the training sites, see [Roberts et al. 2017, *Ecography* 40:913–929](https://nsojournals.onlinelibrary.wiley.com/doi/abs/10.1111/ecog.02881) as a precedent for example. This means our results are conservative; these models likely perform better than reported.
+
+**Classifier Results:** On basins withheld from training, the classifier reaches 0.86 ROC AUC and 0.69 average precision against a 26% violation base rate — a 2.7× improvement over chance ranking. We ship it with a table of $F_\beta$-optimal operating points: the row at $\beta = 3.5$ shows that we catch 97% of true violation days if we're willing to tollerate 65% of our positive predictions being false alarms.
+
+| $\beta$ | recall | fdr | precision | accuracy |
+| --- | --- | --- | --- | --- | 
+| 1.0 | 0.7579 | 0.4339 | 0.5661 | 0.7877 |
+| 2.0 | 0.8804 | 0.5332 | 0.4668 | 0.7098 |
+| 3.0 | 0.9565 | 0.6300 | 0.3700 | 0.5687 |
+| **3.5** | **0.9732** | **0.6528** | 0.3472 | 0.5212 |
+| 4.0 | 0.9773 | 0.6607 | 0.3393 | 0.5033 |
+
+**Regressor Results:** On basins withheld from training, the regressor explains 40% of daily variance (R² = 0.401) with a typical error of 4.4 mg/L. That splits into two very different abilities: it tracks a basin's variation over time reasonably well (within-site R² = 0.41) but ranks one basin's overall level against another's only weakly (between-site R² = 0.20 ± 0.08) — the harder half, and the one that matters most for ungauged sites.
+
+**Improvements:** Currently our virtual sensors are modeled according to the most drastic possible deployment scenario: we presume they have no access to no *physical* water sensors, and therefore they make predictions using only daily weather data, annual land-use data, and static geographic data. If we were to instead treat these virtual sensors as a supplement to an existing network of live sensors, as exists in Iowa and indeed the rest of the Continental United States, then we would gain access to a slew of additional features which would vastly improve our predictions. This would unlock not only live nitrate values elsewhere in the hydrological network but also other useful covariates such as water turbitidy, discharge rate, and chlorophyll fluorescence which are known to affect water-borne nitrate. Basic statistics tests demonstrate that including network-enabled features in our models would *drastically* improve our 
 
 ## Quickstart
 
@@ -33,7 +61,9 @@ to ensure everything is there. (NOTE: Running this will download weather data fr
 
 You should now be set up! Run the app or notebooks below.
 
-> **Advanced — full rebuild from raw.** To regenerate all data from the original sources instead of using the committed + downloaded artifacts: download the raw sources into `src/data/raw/`, add `src/build/api-keys.toml` (a USGS token), then run `python -m src.build.make_data`. This is slow and network-heavy (re-fetches gridMET/IEM/CDL/etc.) — see [`src/README.md`](src/README.md)'s "Catastrophic rebuild". Most users never need this. **Note:** `weather_global` is a *built* table (gridMET + IEM interpolated onto the IEM grid), so it lives in `interim/`, not `raw/` — dropping it in `raw/weather/` will *not* be picked up, and the build will re-download.
+> **Advanced — full rebuild from raw.** To regenerate all data from the original sources instead of using the committed + downloaded artifacts: download the raw sources into `src/data/raw/`, add `src/build/api-keys.toml` (a USGS token), then run `python -m src.build.make_data`. This is slow and network-heavy (re-fetches gridMET/IEM/CDL/etc.) — see [`src/README.md`](src/README.md)'s "Catastrophic rebuild". Most users never need this. 
+> 
+> **Note:** `weather_global` is a *built* table (gridMET + IEM interpolated onto the IEM grid), so it lives in `interim/`, not `raw/` — dropping it in `raw/weather/` will *not* be picked up, and the build will re-download.
 
 ## Running the app & notebooks
 
@@ -86,7 +116,3 @@ A *full* rebuild from raw (`make_data.py`) additionally needs `src/build/api-key
 - [`src/README.md`](src/README.md) — per-submodule (`data` / `eval` / `features` / `models` / `splits`) API, with runnable examples.
 - [`data_inventory.md`](data_inventory.md) — every external data source (URL, access method, API-key needs).
 - [`kpis.md`](kpis.md) — metric definitions for the CV scores.
-
-## Status
-
-Functional end to end — data access, feature recipes, cross-site CV, model training, the deploy inference path, and the widget all run on the `global_node_id` grain, and the raw-acquisition utilities (`clip_crops`, `build_source`, `gen_surplus_statistics`) are ported so the dataset can be rebuilt from source.

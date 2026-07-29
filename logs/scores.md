@@ -1,3 +1,50 @@
+# CLF Model 24: light6_0729_CLF
+
+**Recipe:** light_CLF  
+**True Lofo:** False (max_holdout_pct = 0.5) 
+**Notes:** None 
+
+**Features:** rest_of_state_nitrate_lag1, rest_of_state_nitrate_lag3, pct_corn_b2, pct_corn_b1, pct_nonag_b0, mean_dist_to_sensor, pct_hay_pasture_b2, max_dist_to_sensor, log_basin_area, pct_nonag_b1, pct_nonag_b2, pct_corn_b0, lat, doy_sin, lon, Nonag_expT2000, pct_small_grains_b0, surplus_kgha_norm_b2, pct_alfalfa_b2, pct_soybeans_b0, pct_soybeans_b2, Corn_expT2000, doy_cos, Soybeans_expT2000, pct_alfalfa_b0, pct_fallow_b1, pct_small_grains_b2, pct_hay_pasture_b1, pct_other_b2, Hay_Pasture_expT2000, fuel_moisture_1000h_b1, surplus_kgha_expT2000, doy_sin2, pct_hay_pasture_b0, pct_soybeans_b1, surplus_kgha_norm_b1, pct_alfalfa_b1, pct_other_b0, fuel_moisture_1000h_b2, Other_expT2000, doy_cos2, pct_other_b1, pct_fallow_b2, Fallow_expT2000, fuel_moisture_1000h_b0, surplus_kgha_norm_b0, pct_small_grains_b1, Small_Grains_expT2000, pct_fallow_b0  
+**Scores:**
+
+| n_sites | n_families | n_rows | n_feat | loso_auc | lofo_prauc | lofo_auc | lofo_prauc_lift | lofo_recall_at_beta | lofo_fdr_at_beta | lofo_brier | base | lofo_between_rate_r2 | lofo_macro_auc |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 81 | 20 | 158215 | 49 | 0.8749 | 0.6893 | 0.8581 | 2.6720 | 0.8804 | 0.5332 | 0.1285 | 0.2580 | 0.4236 | 0.8970 |
+
+**Beta Table:**
+
+Base rate 0.2580 (in the scored rows) — 'never alarm' is 74.2% accurate. Lift is precision ÷ base rate at that point.
+
+| beta | tau | recall | fdr | precision | accuracy | fpr | lift |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.5 | 0.5526 | 0.4881 | 0.2796 | 0.7204 | 0.8191 | 0.0659 | 2.7927 |
+| 1.0 | 0.2188 | 0.7579 | 0.4339 | 0.5661 | 0.7877 | 0.2020 | 2.1945 |
+| 1.5 | 0.1587 | 0.8139 | 0.4727 | 0.5273 | 0.7638 | 0.2537 | 2.0440 |
+| 2.0 | 0.0951 | 0.8804 | 0.5332 | 0.4668 | 0.7098 | 0.3495 | 1.8098 |
+| 2.5 | 0.0809 | 0.8957 | 0.5510 | 0.4490 | 0.6896 | 0.3821 | 1.7407 |
+| 3.0 | 0.0364 | 0.9565 | 0.6300 | 0.3700 | 0.5687 | 0.5661 | 1.4344 |
+| 3.5 | 0.0276 | 0.9732 | 0.6528 | 0.3472 | 0.5212 | 0.6360 | 1.3461 |
+| 4.0 | 0.0249 | 0.9773 | 0.6607 | 0.3393 | 0.5033 | 0.6614 | 1.3155 |
+---
+
+# REG Model 23: light6_0729_REG
+
+**Recipe:** light_REG  
+**True Lofo:** False (max_holdout_pct = 0.5) 
+**Notes:** None 
+
+**Features:** rest_of_state_nitrate_lag1, pct_corn_b1, roll_n_avg_except_this7d, rest_of_state_nitrate_lag3, pct_hay_pasture_b2, pct_corn_b0, pct_corn_b2, lat, mean_dist_to_sensor, pct_nonag_b1, max_dist_to_sensor, pct_nonag_b0, log_basin_area, lon, pct_hay_pasture_b1, Nonag_expT2000, Corn_expT2000, pct_alfalfa_b2, fuel_moisture_1000h_b2, pct_soybeans_b1, Soybeans_expT2000, Hay_Pasture_expT2000, pct_small_grains_b2, pct_other_b0, surplus_kgha_norm_b2, pct_hay_pasture_b0, Other_expT2000, surplus_kgha_norm_b1, pct_soybeans_b2, surplus_kgha_expT2000, pct_soybeans_b0, surplus_kgha_norm_b0, doy_sin, pct_small_grains_b0, fuel_moisture_1000h_b1, Small_Grains_expT2000, pct_nonag_b2, Fallow_expT2000, pct_alfalfa_b0, pct_other_b2, pct_fallow_b0, pct_fallow_b2, pct_alfalfa_b1, pct_other_b1, pct_fallow_b1, pct_small_grains_b1, doy_sin2, doy_cos, fuel_moisture_1000h_b0, doy_cos2  
+**Scores:**
+
+| n_sites | n_families | n_rows | n_feat | loso_r2 | lofo_r2 | lofo_rmse | lofo_between_r2 | lofo_within_r2 | lofo_macro_r2 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 81 | 20 | 158215 | 50 | 0.4517 | 0.3713 | 4.4160 | 0.2042 | 0.4129 | 0.3056 |
+
+**Beta Table:**
+
+
+---
+
 # CLF Model 22: light5_0728_CLF
 
 **Recipe:** light_CLF  

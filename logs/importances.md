@@ -1,3 +1,120 @@
+# CLF Model 24
+
+Recipe: light_CLF
+Date: ?
+| features | gain | perm |
+| --- | --- | --- |
+| rest_of_state_nitrate_lag1 | 0.0903 | 0.0498 |
+| pct_corn_b2 | 0.0587 | 0.0174 |
+| fuel_moisture_1000h_b2 | 0.0107 | 0.0089 |
+| mean_dist_to_sensor | 0.0349 | 0.0085 |
+| rest_of_state_nitrate_lag3 | 0.0791 | 0.0084 |
+| pct_nonag_b2 | 0.0253 | 0.0080 |
+| doy_sin2 | 0.0116 | 0.0051 |
+| max_dist_to_sensor | 0.0317 | 0.0047 |
+| pct_hay_pasture_b2 | 0.0329 | 0.0033 |
+| doy_sin | 0.0205 | 0.0031 |
+| pct_alfalfa_b0 | 0.0136 | 0.0030 |
+| pct_alfalfa_b2 | 0.0169 | 0.0025 |
+| surplus_kgha_norm_b2 | 0.0170 | 0.0021 |
+| lat | 0.0220 | 0.0019 |
+| Corn_expT2000 | 0.0152 | 0.0017 |
+| doy_cos | 0.0147 | 0.0015 |
+| lon | 0.0201 | 0.0015 |
+| log_basin_area | 0.0279 | 0.0013 |
+| Soybeans_expT2000 | 0.0145 | 0.0012 |
+| pct_nonag_b0 | 0.0388 | 0.0007 |
+| pct_corn_b1 | 0.0447 | 0.0006 |
+| pct_other_b2 | 0.0129 | 0.0005 |
+| Small_Grains_expT2000 | 0.0086 | 0.0005 |
+| Other_expT2000 | 0.0105 | 0.0004 |
+| Hay_Pasture_expT2000 | 0.0128 | 0.0004 |
+| fuel_moisture_1000h_b1 | 0.0123 | 0.0003 |
+| pct_corn_b0 | 0.0246 | 0.0003 |
+| Nonag_expT2000 | 0.0187 | 0.0001 |
+| fuel_moisture_1000h_b0 | 0.0094 | 0.0001 |
+| pct_soybeans_b0 | 0.0159 | 0.0001 |
+| surplus_kgha_norm_b1 | 0.0113 | 0.0000 |
+| pct_fallow_b0 | 0.0084 | -0.0001 |
+| doy_cos2 | 0.0100 | -0.0001 |
+| pct_other_b0 | 0.0108 | -0.0001 |
+| surplus_kgha_norm_b0 | 0.0093 | -0.0001 |
+| pct_other_b1 | 0.0100 | -0.0002 |
+| surplus_kgha_expT2000 | 0.0122 | -0.0003 |
+| pct_soybeans_b2 | 0.0158 | -0.0003 |
+| pct_fallow_b2 | 0.0099 | -0.0004 |
+| pct_soybeans_b1 | 0.0114 | -0.0004 |
+| pct_fallow_b1 | 0.0133 | -0.0004 |
+| pct_hay_pasture_b0 | 0.0115 | -0.0005 |
+| pct_small_grains_b0 | 0.0174 | -0.0006 |
+| Fallow_expT2000 | 0.0095 | -0.0006 |
+| pct_small_grains_b1 | 0.0087 | -0.0007 |
+| pct_alfalfa_b1 | 0.0111 | -0.0009 |
+| pct_nonag_b1 | 0.0265 | -0.0016 |
+| pct_small_grains_b2 | 0.0131 | -0.0017 |
+| pct_hay_pasture_b1 | 0.0131 | -0.0025 |
+
+---
+
+# REG Model 23
+
+Recipe: light_REG
+Date: ?
+| features | gain | perm |
+| --- | --- | --- |
+| rest_of_state_nitrate_lag1 | 0.1216 | 0.0935 |
+| roll_n_avg_except_this7d | 0.0708 | 0.0333 |
+| pct_corn_b1 | 0.0777 | 0.0185 |
+| fuel_moisture_1000h_b2 | 0.0191 | 0.0113 |
+| lon | 0.0223 | 0.0073 |
+| fuel_moisture_1000h_b1 | 0.0078 | 0.0062 |
+| doy_sin | 0.0083 | 0.0051 |
+| pct_corn_b2 | 0.0415 | 0.0050 |
+| pct_hay_pasture_b2 | 0.0488 | 0.0049 |
+| pct_nonag_b1 | 0.0265 | 0.0043 |
+| pct_alfalfa_b2 | 0.0193 | 0.0035 |
+| log_basin_area | 0.0246 | 0.0034 |
+| doy_sin2 | 0.0045 | 0.0034 |
+| Other_expT2000 | 0.0106 | 0.0026 |
+| pct_corn_b0 | 0.0432 | 0.0023 |
+| Nonag_expT2000 | 0.0203 | 0.0023 |
+| pct_soybeans_b1 | 0.0153 | 0.0021 |
+| pct_other_b1 | 0.0067 | 0.0019 |
+| rest_of_state_nitrate_lag3 | 0.0559 | 0.0018 |
+| Hay_Pasture_expT2000 | 0.0125 | 0.0018 |
+| surplus_kgha_norm_b2 | 0.0112 | 0.0014 |
+| pct_other_b2 | 0.0071 | 0.0012 |
+| pct_nonag_b2 | 0.0074 | 0.0012 |
+| surplus_kgha_expT2000 | 0.0097 | 0.0009 |
+| Soybeans_expT2000 | 0.0139 | 0.0009 |
+| pct_fallow_b2 | 0.0069 | 0.0006 |
+| surplus_kgha_norm_b1 | 0.0102 | 0.0005 |
+| Small_Grains_expT2000 | 0.0078 | 0.0004 |
+| pct_fallow_b1 | 0.0063 | 0.0004 |
+| pct_fallow_b0 | 0.0070 | 0.0004 |
+| Corn_expT2000 | 0.0202 | 0.0003 |
+| fuel_moisture_1000h_b0 | 0.0029 | 0.0002 |
+| lat | 0.0299 | 0.0002 |
+| doy_cos2 | 0.0009 | 0.0001 |
+| pct_hay_pasture_b1 | 0.0207 | -0.0000 |
+| pct_small_grains_b2 | 0.0125 | -0.0001 |
+| pct_soybeans_b2 | 0.0099 | -0.0004 |
+| pct_alfalfa_b1 | 0.0069 | -0.0005 |
+| pct_other_b0 | 0.0119 | -0.0007 |
+| surplus_kgha_norm_b0 | 0.0090 | -0.0009 |
+| Fallow_expT2000 | 0.0072 | -0.0013 |
+| pct_soybeans_b0 | 0.0094 | -0.0014 |
+| doy_cos | 0.0040 | -0.0015 |
+| mean_dist_to_sensor | 0.0266 | -0.0015 |
+| max_dist_to_sensor | 0.0260 | -0.0020 |
+| pct_alfalfa_b0 | 0.0071 | -0.0023 |
+| pct_nonag_b0 | 0.0249 | -0.0026 |
+| pct_small_grains_b1 | 0.0061 | -0.0028 |
+| pct_small_grains_b0 | 0.0083 | -0.0029 |
+| pct_hay_pasture_b0 | 0.0109 | -0.0035 |
+
+---
+
 # CLF Model 22
 
 Recipe: light_CLF

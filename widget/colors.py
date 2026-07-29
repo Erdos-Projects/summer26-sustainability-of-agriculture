@@ -21,6 +21,15 @@ PIN_BASIN_V3 = {"stroke": "#0891b2", "fill": "#0891b2"}
 RAIN_GRID = {"stroke": "#0284c7", "fill": "#38bdf8"}
 IEM_BBOX = {"stroke": "#f97316"}
 
+# The forecast at a dropped pin: its basin overlay, and the two figure colours. The figure is drawn
+# in the browser (assets/clientside/forecast.js) and reaches these through clientside_consts, so the
+# palette is still defined once here.
+FORECAST = {
+    "basin": "#c026d3",
+    "line": "#c1121f",  # predicted nitrate, and P(violation)
+    "alarm": "rgba(193,18,31,0.13)",  # the shaded band on the days the classifier would alarm
+}
+
 SITE_DEFAULT = {"stroke": "darkgreen", "fill": "limegreen"}
 SITE_USGS = {"stroke": "#6b21a8", "fill": "#55a3f7"}
 SITE_SELECTED = {"stroke": "darkred", "fill": "red"}

@@ -33,7 +33,7 @@ RELATIVE UNITS. `--lams` and `--mcws` are given as a FRACTION of the expected pe
 - It exposes how inert the historical values were. reg_lambda=5 at depth 4 is c=0.0009 -- a 0.09% shrink. min_child_weight=10 is 0.2% of a typical leaf. Nothing in a sweep over those was ever going to move.
 - It unifies the REG and CLF ladders. REG's Hessian is 1/row; CLF's is p(1-p), ~0.17 at the observed base rate, so the same relative c produces the ~5.7x smaller absolute CLF value automatically. One ladder, both tasks. `--absolute` opts out and passes the numbers through untouched.
 
-OUTPUT. Each recipe upserts one self-describing row into models/lofo_tune.csv keyed on its OWN name, so the four coexist and re-tuning one replaces only its line. train.py::_tuned_iters reads `n_estimators` from that file by recipe name, and REFUSES to fit a deployable model without it. The per-recipe grid also lands in models/tune_<recipe>.csv (`--append` accumulates stages).
+OUTPUT. Each recipe upserts one self-describing row into models/lofo_tune.csv keyed on its OWN name, so the four coexist and re-tuning one replaces only its line. That file is this tuner's SCOREBOARD, not an input to training: a winner reaches a fitted model only by being pasted into train.RECIPE_XGB, which every run prints ready to copy, tree count included. The per-recipe grid also lands in models/tune_<recipe>.csv (`--append` accumulates stages).
 """
 
 from __future__ import annotations
@@ -41,6 +41,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import itertools
+import json
 import sys
 import time
 from pathlib import Path
@@ -74,6 +75,11 @@ _HEADLINE = {"reg": "lofo_r2", "clf": "lofo_prauc"}
 # what the scoreboard reports. The tree-count scan calls _score directly -- one metric, thousands of
 # times -- so it needs the bare name.
 _CURVE_METRIC = {"reg": "r2", "clf": "prauc"}
+# The metric the surviving loso_* column carries, which is NOT _CURVE_METRIC for CLF: _cross_metrics
+# emits loso_auc there while the ranking is on prauc. Writing the winner's leakage gap under
+# f"loso_{_CURVE_METRIC[task]}" would invent a loso_prauc column no other row has and leave the
+# loso_auc every consumer reads empty.
+_LOSO_METRIC = {"reg": "r2", "clf": "auc"}
 # reported next to it, so a config that buys LOFO by widening the leakage gap is visible.
 # lofo_between_r2 leads for REG on purpose: depth is bought almost entirely in the between-site
 # ranker, which is the known bottleneck.
@@ -167,13 +173,41 @@ def _flag(axis: str) -> str:
     return f"{axis}s"
 
 
-def _predict_prefix(m, X, task: str, k: int) -> np.ndarray:
-    """Prediction using only the FIRST k trees of an already-fitted model. `iteration_range` is what makes the whole tree-count search cost one fit instead of one fit per candidate."""
-    return m.predict_proba(X, iteration_range=(0, k))[:, 1] if task == "clf" else m.predict(X, iteration_range=(0, k))
+def _base_margin(m, task: str) -> float:
+    """The constant every `output_margin` prediction carries, in MARGIN space.
+
+    `base_score` is stored in PROBABILITY space for binary:logistic, so it must be logit-ed before it can be subtracted from a margin -- using it raw shifts every CLF prefix by logit(p) - p, silently, and the resulting curve still looks entirely plausible. It also serialises as a bracketed string, hence the strip.
+    """
+    b = float(json.loads(m.get_booster().save_config())["learner"]["learner_model_param"]["base_score"].strip("[]"))
+    return float(np.log(b / (1 - b))) if task == "clf" else b
+
+
+def _prefix_oofs(models, X, task: str, ks, n: int) -> dict:
+    """{k: out-of-fold vector} for every prefix length in `ks`, from ONE pass of tree slices per fold.
+
+    Boosting margins are additive and `iteration_range=(a, b)` costs O(b - a), not O(b), so the margin at each k is the running SUM of slice predictions rather than a fresh walk from tree 0 -- O(max k) per fold instead of O(sum k). Each slice carries the base margin, so it is subtracted once per slice; the link function is applied at the end.
+
+    Two traps, both of which produce plausible-looking wrong numbers rather than an error: `base_score` is in probability space for binary:logistic (see _base_margin), and `iteration_range=(0, 0)` means ALL trees, not none, so it cannot be used to read the base off. The fold slice X.iloc[te] is taken once per FOLD here rather than once per (fold, k).
+    """
+    ks = sorted(ks)
+    oofs = {k: np.full(n, np.nan) for k in ks}
+    for m, te in models:
+        Xte = X.iloc[te]
+        base = _base_margin(m, task)
+        acc = m.predict(Xte, iteration_range=(0, ks[0]), output_margin=True)
+        oofs[ks[0]][te] = acc
+        for a, b in zip(ks, ks[1:]):
+            acc = acc + m.predict(Xte, iteration_range=(a, b), output_margin=True) - base
+            oofs[b][te] = acc
+    if task == "clf":  # margins -> P(positive), matching predict_proba
+        for k in ks:
+            oofs[k] = 1.0 / (1.0 + np.exp(-oofs[k]))
+    return oofs
 
 
 def _score_pool_curve(
-    pool, feat, target, task, metric, ceiling, n_splits, true_lofo, max_holdout_pct, coarse=_COARSE, fine=_FINE, **cfg
+    pool, feat, target, task, metric, ceiling, n_splits, true_lofo, max_holdout_pct,
+    coarse=_COARSE, fine=_FINE, loso=False, **cfg
 ):
     """Score a config, choosing its tree count rather than being told it. -> (metrics_at_best_k, best_k, curve).
 
@@ -189,13 +223,9 @@ def _score_pool_curve(
         fam_models = [(m, te) for te, m in cook._grouped_models(X, y, fam, task, n_splits, **kw)]
 
     def curve_over(ks):
-        out = {}
-        for k in ks:
-            oof = np.full(len(y), np.nan)
-            for m, te in fam_models:
-                oof[te] = _predict_prefix(m, X.iloc[te], task, k)
-            out[k] = (cook._score(y, oof, task)[metric], oof)
-        return out
+        ks = [k for k in ks if k > 0]  # iteration_range=(0, 0) means ALL trees, not none
+        got = _prefix_oofs(fam_models, X, task, ks, len(y))
+        return {k: (cook._score(y, oof, task)[metric], oof) for k, oof in got.items()}
 
     scan = curve_over(range(coarse, ceiling + 1, coarse))
     # Refine around the top TWO coarse points rather than only the argmax. The curve is bimodal --
@@ -215,11 +245,15 @@ def _score_pool_curve(
     best_k = max(scan, key=lambda k: scan[k][0])
     oof_family = scan[best_k][1]
 
-    # the LOSO pass, prefixed at the SAME k, so loso_* reports the leakage gap for the model chosen
-    site_models = [(m, te) for te, m in cook._grouped_models(X, y, pool["site"], task, n_splits, **kw)]
+    # The LOSO pass is a FULL second CV whose only product is the leakage gap, and ranking is on
+    # LOFO alone -- so it is OFF per config here and run once for the winner instead (see
+    # _winner_loso). Off, oof_site stays all-NaN and _cross_metrics emits a NaN loso_*, leaving the
+    # column set intact. Prefixed at the SAME best_k when it does run, so the gap describes the
+    # model actually chosen rather than one at the ceiling.
     oof_site = np.full(len(y), np.nan)
-    for m, te in site_models:
-        oof_site[te] = _predict_prefix(m, X.iloc[te], task, best_k)
+    if loso:
+        site_models = [(m, te) for te, m in cook._grouped_models(X, y, pool["site"], task, n_splits, **kw)]
+        oof_site = _prefix_oofs(site_models, X, task, [best_k], len(y))[best_k]
 
     metrics = dict(
         n_sites=pool["site"].nunique(),
@@ -229,6 +263,18 @@ def _score_pool_curve(
         **cook._cross_metrics(pool, np.asarray(y), oof_site, oof_family, task),
     )
     return metrics, best_k, {k: v[0] for k, v in sorted(scan.items())}
+
+
+def _winner_loso(pool, feat, target, task, metric, k, n_splits, **cfg):
+    """Site-grouped score at a FIXED tree count -- the leakage-gap companion, run once for the winning config.
+
+    Fits at `k` rather than the ceiling: the winner's tree count is already known, so there is nothing to scan. This is what makes turning the per-config LOSO pass off cheap rather than lossy -- the gap is still reported, just once instead of once per grid cell.
+    """
+    X, y = pool[feat], cook._target(pool, target, task)
+    models = [(m, te) for te, m in cook._grouped_models(X, y, pool["site"], task, n_splits, n_estimators=int(k), **cfg)]
+    if not models:
+        return float("nan")
+    return cook._score(y, _prefix_oofs(models, X, task, [int(k)], len(y))[int(k)], task)[metric]
 
 
 def _parse_pairs(s: str | None) -> dict:
@@ -252,7 +298,7 @@ def _parse_list(s: str | None, cast=float):
 def _upsert_lofo(row):
     """Write `row` into models/lofo_tune.csv, replacing any existing row for the same recipe.
 
-    Keyed on the 'recipe' column: tuning a recipe again overwrites its line; a new recipe name appends a line. `n_estimators` is the field train.py reads -- it is the TUNED tree count, not an early-stopping best_iteration, and train.py refuses to ship a model without it.
+    Keyed on the 'recipe' column: tuning a recipe again overwrites its line; a new recipe name appends a line. A record of what each sweep found, read by nothing -- the winner reaches training only via train.RECIPE_XGB.
     """
     OUT.mkdir(parents=True, exist_ok=True)
     new = pd.DataFrame([row])
@@ -272,7 +318,7 @@ def _upsert_lofo(row):
 def _emit_config(df: pd.DataFrame, search: list[str], recipe_name: str, base: dict, fixed: dict | None = None) -> None:
     """Print the winner as a paste-ready RECIPE_XGB entry, plus which axes are still at inherited values.
 
-    Only the keys that MOVED against `base` -- echoing the whole config would bury the two or three swept keys that changed among nine that did not. n_estimators is excluded on purpose: train.py reads the tree count from lofo_tune.csv, not from RECIPE_XGB.
+    The keys that MOVED against `base`, plus n_estimators ALWAYS -- echoing the whole config would bury the two or three swept keys that changed among nine that did not, but the tree count is what train.py refuses to fit without, and it is only valid for the config printed beside it.
 
     An axis counts as RESOLVED if this run searched it OR `fixed` pins it, because fulltune.py threads each stage's winner into the next as --fix: without that, every stage after the first would report the axes it had already settled as untuned, and the final confirmation stage -- which pins all six -- would report the completed config as tuning nothing at all.
     """
@@ -289,12 +335,13 @@ def _emit_config(df: pd.DataFrame, search: list[str], recipe_name: str, base: di
         if base.get(param) != v:
             changed[param] = v
 
-    print(f"\n  n_estimators={int(best['best_k'])} is written to {LOFO_FILE.name} automatically (train.py reads it).")
-    if changed:
-        print(f"  To adopt the rest, put these in train.RECIPE_XGB[{recipe_name!r}]:")
-        print(f'      "{recipe_name}": {{' + ", ".join(f"{k!r}: {v!r}" for k, v in changed.items()) + "},")
-    else:
-        print(f"  Swept parameters match the base config -- nothing to add to train.RECIPE_XGB[{recipe_name!r}].")
+    # n_estimators leads the block: it is the one key train.py cannot proceed without, and pasting the rest without it leaves the recipe untuned.
+    entry = {"n_estimators": int(best["best_k"]), **changed}
+    print(f"\n  To adopt this winner, put it in train.RECIPE_XGB[{recipe_name!r}] -- the tree count belongs WITH the "
+          f"config it was tuned for:")
+    print(f'      "{recipe_name}": {{' + ", ".join(f"{k!r}: {v!r}" for k, v in entry.items()) + "},")
+    if not changed:
+        print("  (the swept parameters all match the base config; only the tree count moved)")
 
     untouched = [a for a in _AXES if a not in resolved]
     if untouched:
@@ -358,8 +405,12 @@ def tune(
     n_splits: int = 5,
     min_rows: int = 500,
     pool: pd.DataFrame | None = None,
+    loso: bool = False,
 ):
-    """Sweep one recipe. `pool` lets fulltune.py share one pooling pass across all six stages."""
+    """Sweep one recipe. `pool` lets fulltune.py share one pooling pass across all six stages.
+
+    `loso` runs the site-grouped pass for EVERY config. It is off by default because that is a full second CV per grid cell whose only product is the leakage-gap column, while ranking is on LOFO alone -- roughly halving a sweep. The gap is still reported: one site pass is run for the winner, at the winner's own tree count (see _winner_loso).
+    """
     from src.models.train import xgb_for  # local: train imports cook, and cook is heavy
 
     name = getattr(recipe, "__name__", str(recipe))
@@ -416,7 +467,7 @@ def tune(
             kw.pop("n_estimators", None)  # the scan supplies the ceiling; a base value would fight it
             r, best_k, curve = _score_pool_curve(
                 pool, feat, target_col, task, _CURVE_METRIC[task], ceiling, n_splits,
-                true_lofo, max_holdout_pct, **kw,
+                true_lofo, max_holdout_pct, loso=loso, **kw,
             )
             rows.append(
                 {
@@ -462,6 +513,24 @@ def tune(
     ref = df.loc[df["config"] == "DEFAULT (inherited)", head]
     if len(ref):
         df.insert(2, "delta_vs_default", (df[head] - float(ref.iloc[0])).round(4))
+
+    # The leakage gap, once, for the winner only -- at its own tree count rather than the ceiling.
+    # Per-config this was a full second CV for a column nothing ranks on; here it is one extra fit
+    # set per sweep, and it still answers the question the column exists for.
+    loso_col, lofo_col = f"loso_{_LOSO_METRIC[task]}", f"lofo_{_LOSO_METRIC[task]}"
+    if not loso and len(df):
+        b = df.iloc[0]
+        wkw = {k: b[k] for k in base if k in b.index and pd.notna(b[k])}
+        wkw.pop("n_estimators", None)
+        wkw = {k: (int(v) if k in _INT_KEYS else v) for k, v in wkw.items()}
+        t_l = time.time()
+        val = _winner_loso(pool, feat, target_col, task, _LOSO_METRIC[task], b["best_k"], n_splits, **wkw)
+        df.loc[0, loso_col] = val
+        # against its OWN twin, not the headline: for CLF the pair is auc/auc while the ranking is
+        # prauc, and a prauc-vs-auc subtraction is not a leakage gap.
+        twin = float(b[lofo_col]) if lofo_col in b.index and pd.notna(b.get(lofo_col)) else float("nan")
+        print(f"  leakage gap for the winner: {loso_col}={val:.4f} vs {lofo_col}={twin:.4f} "
+              f"({val - twin:+.4f})   ({time.time() - t_l:.0f}s)")
 
     OUT.mkdir(parents=True, exist_ok=True)
     # Keyed on the RECIPE, not the task: tune_reg.csv would have had light_REG silently overwrite
@@ -525,6 +594,13 @@ def main():
     ap.add_argument(
         "--append", action="store_true", help="append to tune_<recipe>.csv instead of overwriting, so stages accumulate"
     )
+    ap.add_argument(
+        "--loso",
+        action="store_true",
+        help="run the site-grouped pass for EVERY config (roughly doubles the sweep). Off by default: it is a full "
+        "second CV whose only product is the leakage-gap column, which nothing ranks on -- the winner still gets "
+        "one, at its own tree count.",
+    )
     ap.add_argument("--true-lofo", action="store_true", help="score with a TRUE leave-one-family-out holdout")
     ap.add_argument(
         "--max-holdout-pct",
@@ -578,6 +654,7 @@ def main():
         tune(
             task, getattr(mod, recipe_attr), target_col, sites, search, fixed, ladders, a.absolute,
             a.ceiling, seeds, a.append, a.true_lofo, a.max_holdout_pct, a.splits, a.min_rows,
+            loso=a.loso,
         )
 
 

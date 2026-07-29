@@ -11,7 +11,7 @@ must hold to drain into the centre cell.
 """
 
 import sys
-from collections import deque
+from collections import OrderedDict, deque
 from functools import lru_cache
 from pathlib import Path
 
@@ -85,7 +85,10 @@ _OUTLET_ACC_FRAC = 0.5     # min fraction of window-max accumulation to count as
 NODE_SNAP_RADIUS = 4       # cells (~2 km) to recover a node straddling the basin divide
 
 _ACCUM: np.ndarray | None = None
-_FLOW_FIELD_CACHE: dict[tuple, np.ndarray] = {}
+
+# Flow fields, most-recent-first, keyed on the rounded outlet. The bound is load-bearing: a field is the whole raster in float64 (14.7 MB), and a caller delineating ARBITRARY pins (deploy's virtual basins, widget/static/build_reaches.py) visits a new outlet every time -- unbounded, six workers over ~1,000 basins each reach ~88 GB. A small cap still serves what the cache is for, since the training path groups edges by parent and those calls are consecutive.
+_FLOW_FIELD_CACHE: OrderedDict[tuple, np.ndarray] = OrderedDict()
+_FLOW_FIELD_CACHE_MAX = 4
 
 
 def _accum_cache_file() -> Path:
@@ -219,6 +222,7 @@ def flow_distance_field_ll(lat: float, lon: float) -> np.ndarray:
     (lat, lon). Raises ValueError if the sensor is outside the D8 raster extent (Iowa)."""
     key = (round(lat, 6), round(lon, 6))
     if key in _FLOW_FIELD_CACHE:
+        _FLOW_FIELD_CACHE.move_to_end(key, last=False)
         return _FLOW_FIELD_CACHE[key]
     direction = load_direction_array()
     col, row = ll_to_image_pixel(lat, lon)
@@ -227,6 +231,9 @@ def flow_distance_field_ll(lat: float, lon: float) -> np.ndarray:
     ocol, orow = _snap_outlet(direction, col, row)
     field = _build_flow_field(direction, ocol, orow)
     _FLOW_FIELD_CACHE[key] = field
+    _FLOW_FIELD_CACHE.move_to_end(key, last=False)
+    while len(_FLOW_FIELD_CACHE) > _FLOW_FIELD_CACHE_MAX:
+        _FLOW_FIELD_CACHE.popitem(last=True)  # oldest use, 14.7 MB back
     return field
 
 

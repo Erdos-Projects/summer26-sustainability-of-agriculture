@@ -291,6 +291,12 @@ def clientside_consts():
         # The pin. A forecast is computed at a REACH OUTLET, which stream-order-3 snapping puts a median 1.5 km from the click, so the marker moves there and these draw the journey: a dashed line back to the click and a small hollow dot marking it.
         "snap_connector": {"color": colors.SITE_SELECTED["stroke"], "weight": 1.5, "dashArray": "4 4", "opacity": 0.8},
         "snap_click": {"color": "#888", "weight": 1.5, "fillOpacity": 0, "opacity": 0.9},
+        # The forecast's own drawing: the basin overlay at the snapped reach, and the figure colours.
+        "forecast": {
+            "basin_style": {"color": colors.FORECAST["basin"], "weight": 2, "fillOpacity": 0.05},
+            "line": colors.FORECAST["line"],
+            "alarm_fill": colors.FORECAST["alarm"],
+        },
         # The three dash_extensions.assign() handles serialise to {"variable": "dashExtensions.default.functionN"}, which the browser resolves against assets/dashExtensions_default.js. Passing them through means the hover/popup behaviour is still written once, in Python, at the top of this module.
         "rain_grid": {
             "style": _GRID_STYLE_JS,

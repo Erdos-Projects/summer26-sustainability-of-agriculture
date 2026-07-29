@@ -62,11 +62,18 @@ QUOTA_HEADER = "x-ratelimit-remaining"
 RETRY_AFTER_CAP = 3600  # refuse to sleep longer than this on a single 429, however odd the header
 
 
+def tombstoned() -> set[int]:
+    """COMIDs NLDI has no basin for (404, or an empty polygon), from failed.json.
+
+    Excluded from reach_ids AND from the snap index (build_forecast.build_snap_index): no basin means no feature row, so a pin able to land on one would meet "no precomputed row" instead of a forecast. Delete failed.json to retry them.
+    """
+    return {int(c) for c in _load_failed()}
+
+
 def reach_ids(min_order: int = MIN_STREAM_ORDER) -> list[int]:
     """COMIDs of the forecastable reaches, ascending.
 
-    TotDASqKM > 0 drops the 145 NHDPlus divergence artifacts, matching what _make_basins.snap_comid
-    considers snappable -- so every reach a pin can snap to has a row here and vice versa.
+    TotDASqKM > 0 drops the 145 NHDPlus divergence artifacts, matching what _make_basins.snap_comid considers snappable; tombstoned reaches drop out too -- together that keeps this set, the snap index and the reach store describing the same reaches, so every reach a pin can snap to has a row.
     """
     import pandas as pd
 
@@ -77,7 +84,8 @@ def reach_ids(min_order: int = MIN_STREAM_ORDER) -> list[int]:
         columns=["COMID", "TotDASqKM", "StreamOrde"],
     )
     keep = fl[(fl["StreamOrde"] >= min_order) & (fl["TotDASqKM"] > 0)]
-    return sorted(int(c) for c in keep["COMID"])
+    dead = tombstoned()
+    return sorted(int(c) for c in keep["COMID"] if int(c) not in dead)
 
 
 def _load_failed() -> dict:

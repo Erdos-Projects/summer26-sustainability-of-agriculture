@@ -9,20 +9,16 @@ import pandas as pd
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT))  # repo root on path
 
-from src.eval.cook import compare_many, fit_full, save_model
+from src.eval.cook import compare_many, fit_full, save_model, _pool
 from src.features.recipes import recipe_REG, recipe_CLF, light_REG, light_CLF
+from src.data.access import get_site_ids
 
-# NO EARLY STOPPING anywhere. `n_estimators` below is a placeholder: the count actually used comes
-# from tune.py's per-recipe row in models/lofo_tune.csv, and build() refuses to fit a deployable
-# model without one. The rule these configs used to carry (early_stopping_rounds=50) watched a
-# random 15% of ROWS, so it validated in-distribution while the score is out-of-family -- it never
-# fired, and the ceiling silently did the regularizing. See src/eval/cook.py's module docstring.
+# NO EARLY STOPPING anywhere, which is why the task bases below carry no `n_estimators`: nothing learns a tree count at fit time, so it is a per-recipe TUNED value and lives in RECIPE_XGB with the rest of that recipe's config. A recipe without one cannot be fitted -- build() raises UntunedRecipe rather than defaulting. The rule these configs used to carry (early_stopping_rounds=50) watched a random 15% of ROWS, so it validated in-distribution while the score is out-of-family -- it never fired, and the ceiling silently did the regularizing. See src/eval/cook.py's module docstring.
 
 # current best for regression (from `python _tune.py reg`: lofo_r2 0.343)
 REAL_XGB_REG = dict(
-    n_estimators=1500,
-    learning_rate=0.01,
-    max_depth=3,
+    learning_rate=0.02,
+    max_depth=4,
     min_child_weight=10,
     subsample=0.7,
     colsample_bytree=0.7,
@@ -33,7 +29,6 @@ REAL_XGB_REG = dict(
 
 # current best for classification, but all the results in _tune.py were nearly identical.
 REAL_XGB_CLF = dict(
-    n_estimators=1500,
     learning_rate=0.01,
     max_depth=3,
     min_child_weight=10,
@@ -44,19 +39,49 @@ REAL_XGB_CLF = dict(
     random_state=42,
 )
 
-# Per-RECIPE overrides, layered on the task base above. Empty means "the task default, unchanged".
+# Per-RECIPE overrides, layered on the task base above. THE WHOLE tuned config for a recipe lives here, tree count included: it is the one place a fit's hyperparameters come from, it is in version control, and a diff shows what moved.
 #
-# The two families are different models -- light_CLF carries 49 columns against recipe_CLF's 51, on
-# a different bucket geometry -- so the depth and learning rate that suit one need not suit the
-# other. tune.py tunes all four separately and upserts a row per recipe; without somewhere to PUT a
-# light-specific winner, that tuning could be measured and then not applied, which is worse than not
-# measuring it. (n_estimators is the exception: it is already per recipe, read from
-# models/lofo_tune.csv by _tuned_iters.)
+# The two families are different models -- light_CLF carries 49 columns against recipe_CLF's 51, on a different bucket geometry -- so the depth and learning rate that suit one need not suit the other. tune.py tunes all four separately and prints a paste-ready block per recipe; without somewhere to PUT a light-specific winner, that tuning could be measured and then not applied, which is worse than not measuring it.
+#
+# A recipe with no `n_estimators` here is UNTUNED and cannot be fitted. That is deliberate: the tree count is only meaningful for the config it was tuned WITH, so taking it from anywhere other than this dict risks pairing one sweep's count with another sweep's depth. tune.py's models/lofo_tune.csv is the tuner's own scoreboard, not an input to training.
 RECIPE_XGB = {
-    "recipe_REG": {},
-    "recipe_CLF": {},
-    "light_REG": {},
-    "light_CLF": {},
+    # lofo_r2 = 0.3922
+    "recipe_REG": {
+        "n_estimators": 290,
+        "max_depth": 5,
+        "learning_rate": 0.02,
+        "reg_lambda": 1062.936,
+        "min_child_weight": 7.08624,
+        "subsample": 0.9,
+        "colsample_bytree": 0.5,
+    },
+    # lofo_prauc=0.6959
+    # top of ladder for depth, more probing needed
+    "recipe_CLF": {
+        "n_estimators": 240,
+        "max_depth": 7,
+        "learning_rate": 0.05,
+        "reg_lambda": 5.253353,
+        "min_child_weight": 0.525335,
+        "colsample_bytree": 0.5,
+    },
+    # lofo_r2 = 0.3946
+    "light_REG": {
+        "n_estimators": 640,
+        "max_depth": 5,
+        "reg_lambda": 826.728,
+        "min_child_weight": 5.51152,
+        "colsample_bytree": 0.5,
+    },
+    # lofo_auc=0.8581
+    # lofo_prauc=0.6931
+    "light_CLF": {
+        "n_estimators": 1080,
+        "max_depth": 5,
+        "reg_lambda": 1.050671,
+        "min_child_weight": 157.600602,
+        "colsample_bytree": 0.5,
+    },
 }
 
 
@@ -64,6 +89,7 @@ def xgb_for(recipe, task):
     """Effective XGBoost config for one recipe: the task base with that recipe's overrides applied."""
     base = REAL_XGB_REG if task == "reg" else REAL_XGB_CLF
     return {**base, **RECIPE_XGB.get(getattr(recipe, "__name__", str(recipe)), {})}
+
 
 OUT = Path(__file__).resolve().parent / "models"  # src/models/models -- anchored (CWD-independent, like _LOGFILE)
 _LOGFILE = _ROOT / "logs" / "fulltrain_logs.json"
@@ -80,40 +106,27 @@ _LOGFILE = _ROOT / "logs" / "fulltrain_logs.json"
 # specifically want the largest family kept out of the test set; the run prints its actual coverage
 # either way.
 DEFAULT_MAX_HOLDOUT_PCT = 0.5
-_LOFO_FILE = OUT / "lofo_tune.csv"  # tune.py's per-recipe winner table (holds the tuned n_estimators)
 
 
 class UntunedRecipe(RuntimeError):
     """Raised when a deployable fit is asked for and no tuning run has resolved its tree count."""
 
 
-def _tuned_iters(recipe_name):
-    """The tree count tune.py recorded for `recipe_name` (models/lofo_tune.csv `n_estimators`), or None if the file / row / column is absent.
+def _tuned_iters(xgb, recipe_name, task):
+    """`xgb`'s tree count, or UntunedRecipe naming the sweep that would produce one.
 
-    There is NO fallback: with early stopping gone nothing learns a tree count at fit time, and the count is not a detail -- on the measured LOFO fold, running to a 1500 ceiling instead of the 175 trees the holdout wanted gave back 0.0324 R2, about 4x the REG noise floor. build() turns a None into UntunedRecipe rather than guessing.
+    No fallback and no default: nothing learns a tree count at fit time, and on the measured LOFO fold running to a 1500 ceiling instead of the 175 trees the holdout wanted gave back 0.0324 R2, ~4x the REG noise floor.
     """
-    if not _LOFO_FILE.exists():
-        return None
-    df = pd.read_csv(_LOFO_FILE)
-    if "n_estimators" not in df.columns:
-        return None
-    row = df[df["recipe"] == recipe_name]
-    if row.empty or pd.isna(row["n_estimators"].iloc[0]):
-        return None
-    return int(row["n_estimators"].iloc[0])
-
-
-def _require_tuned_iters(recipe_name, task):
-    """The tuned tree count for `recipe_name`, or a message telling the caller how to produce one."""
-    n = _tuned_iters(recipe_name)
-    if n is not None:
-        return n
+    n = xgb.get("n_estimators")
+    if n is not None and not pd.isna(n):
+        return int(n)
     family = "light" if recipe_name.startswith("light") else "full"
     raise UntunedRecipe(
-        f"No tuned n_estimators for {recipe_name!r} in {_LOFO_FILE}.\n"
+        f"No n_estimators for {recipe_name!r} in train.RECIPE_XGB.\n"
         f"There is no early stopping any more, so nothing can learn the tree count at fit time.\n"
         f"Run:  python fulltune.py --family {family} --task {task}\n"
-        f"  (or, for a single stage:  python tune.py --family {family} --task {task} --search depth,lr)"
+        f"  (or, for a single stage:  python tune.py --family {family} --task {task} --search depth,lr)\n"
+        f"then paste the block it prints -- n_estimators included -- into RECIPE_XGB[{recipe_name!r}]."
     )
 
 
@@ -195,15 +208,20 @@ def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=300, t
     # The tuned count also becomes the CV's n_estimators, so the numbers logged below describe the
     # model that actually ships rather than one fitted at a different depth of boosting.
     if final_iters is None:
-        final_iters = _require_tuned_iters(getattr(recipe, "__name__", ""), task)
+        final_iters = _tuned_iters(xgb, getattr(recipe, "__name__", ""), task)
     final_iters = int(final_iters)
     xgb = {**xgb, "n_estimators": final_iters}
 
-    # then do CV
     print(f"\n===== {name} ({task}) =====")
     print(f"  tree count: {final_iters} (tuned; there is no early stopping)")
+
+    # Pool ONCE. The CV and the deployable fit want the identical frame, and each used to build it
+    # from scratch -- on this cohort that is the single most expensive thing a training run does.
+    print("[1/3] pooling...")
+    pool = _pool(recipe, get_site_ids(), target_col, min_rows=min_rows, progress_label=name)
+
     lofo_regime = f"true LOFO, holdout cap {max_holdout_pct:.0%}" if true_lofo else "LOFO via GroupKFold"
-    print(f"[1/2] evaluating cross-site (LOSO/{lofo_regime})...")
+    print(f"[2/3] evaluating cross-site (LOSO/{lofo_regime})...")
     scores = compare_many(
         {name: recipe},
         sites=None,
@@ -213,6 +231,7 @@ def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=300, t
         min_rows=min_rows,
         true_lofo=true_lofo,
         max_holdout_pct=max_holdout_pct,
+        pool=pool,
         **xgb,
     )
     print(scores.round(3).to_string())
@@ -222,9 +241,9 @@ def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=300, t
     print(f"  logged run #{key} -> {_LOGFILE}")
 
     # then fit the deployable model on ALL rows, at the same tuned tree count the CV just scored
-    print(f"[2/2] fitting deployable model on all rows ({final_iters} trees, from the tuning run)...")
+    print(f"[3/3] fitting deployable model on all rows ({final_iters} trees, from the tuning run)...")
     model, feat, _imp = fit_full(
-        recipe, sites=None, target_col=target_col, task=task, progress=True, min_rows=min_rows, **xgb
+        recipe, sites=None, target_col=target_col, task=task, progress=True, min_rows=min_rows, pool=pool, **xgb
     )
     # The classifier ships with its own operating points, so deploy.predict.threshold_for_beta finds
     # them straight away and the widget's beta slider works on a freshly trained model.
@@ -237,8 +256,10 @@ def build(name, recipe, target_col, task, xgb, final_iters=None, min_rows=300, t
     for f in save_model(model, feat, str(OUT / f"{name}.json"), task=task, target_col=target_col, extra=extra):
         print(f"  wrote {f}")
     if ops:
-        print(f"  beta table: {len(ops['beta_table'])} operating points, base rate {ops['base_rate']:.3f}, "
-              f"from {ops['coverage']:.1%} of pooled rows")
+        print(
+            f"  beta table: {len(ops['beta_table'])} operating points, base rate {ops['base_rate']:.3f}, "
+            f"from {ops['coverage']:.1%} of pooled rows"
+        )
 
 
 def main():
@@ -291,8 +312,7 @@ def main():
     if args.light:
         print("[cfg] training the LIGHT recipes (static-site feature set)")
 
-    # build() reads the tuned n_estimators from models/lofo_tune.csv per recipe name, and raises
-    # UntunedRecipe if there is none -- there is no early stopping to fall back on.
+    # build() takes the tuned n_estimators from the recipe's RECIPE_XGB entry and raises UntunedRecipe if it has none -- there is no early stopping to fall back on.
     lofo_kw = dict(true_lofo=args.true_lofo is not None, max_holdout_pct=args.true_lofo or DEFAULT_MAX_HOLDOUT_PCT)
     if args.true_lofo is not None:
         print(f"[cfg] TRUE LOFO: one family held out per fold, capped at {args.true_lofo:.0%} of pooled rows")

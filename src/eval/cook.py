@@ -163,7 +163,15 @@ def _pool(
         # (hopefully) why the sites got skipped.
         reasons = "; ".join(f"{n}x {r}" for r, n in Counter(r for _, r in skipped).most_common(3))
         raise ValueError(f"no sites produced a usable frame ({len(skipped)} sites skipped) -- {reasons}")
-    return pd.concat(frames, ignore_index=True)
+    out = pd.concat(frames, ignore_index=True)
+    # float32 for the FEATURES only: XGBoost's DMatrix casts to float32 internally anyway, so this
+    # is exact rather than approximate -- verified here, fold predictions are bit-identical -- and it
+    # halves pool memory while trimming fit time. The target keeps its dtype, so every metric is
+    # still computed in float64 and none of the scoring arithmetic moves.
+    f64 = [c for c in out.columns if c != target and out[c].dtype == "float64"]
+    if f64:
+        out[f64] = out[f64].astype("float32")
+    return out
 
 
 # ── FIT -- frame + folds in, fitted models out ────────────────────────────────
@@ -623,6 +631,8 @@ def cook_many(
     true_lofo: bool = False,
     max_holdout_pct: float = 0.2,
     perm_cols=None,
+    loso: bool = True,
+    pool: pd.DataFrame | None = None,
     **xgb_kw: Any,
 ) -> dict:
     """Pooled cross-site CV with site- (LOSO) and family- (LOFO) grouped holdouts.
@@ -657,6 +667,10 @@ def cook_many(
         With true_lofo, families above this row share are never held out.
     perm_cols : sequence, optional
         Restrict permutation importance to these columns; None = all.
+    loso : bool, default True
+        Run the site-grouped pass. It is a FULL second CV whose only product is the leakage-gap column (`loso_r2` / `loso_auc`); everything reported is aggregated from the family pass. Off, the column set is unchanged and that one column is NaN -- which is what src/models/tune.py does per config, running one site pass for the winner instead.
+    pool : pd.DataFrame, optional
+        A prebuilt pool from `_pool`, to avoid re-pooling. `recipe`, `sites` and `min_rows` are then unused for pooling. src/models/train.py passes one so a training run pools once instead of once for the CV and again for the deployable fit.
     **xgb_kw
         XGBoost overrides. `n_estimators` is a real tree count -- there is no early stopping.
 
@@ -672,7 +686,8 @@ def cook_many(
     if sites is None:
         sites = get_site_ids()
     label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
-    pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
+    if pool is None:
+        pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
     feat = _features(pool, target_col)
     X, y = pool[feat], _target(pool, target_col, task)
 
@@ -695,7 +710,13 @@ def cook_many(
                 file=sys.stderr,
             )
 
-    site_models = [(m, te) for te, m in _grouped_models(X, y, pool["site"], task, n_splits, **xgb_kw)]
+    # The site pass is a FULL second CV whose only product is the leakage gap; everything else is
+    # aggregated from the family pass. With loso=False it is skipped, oof_site stays all-NaN and
+    # _cross_metrics emits a NaN loso_* -- the column set is identical either way, so no consumer
+    # has to care.
+    site_models = (
+        [(m, te) for te, m in _grouped_models(X, y, pool["site"], task, n_splits, **xgb_kw)] if loso else []
+    )
     fam_models = [
         (m, te)
         for te, m in (
@@ -746,15 +767,19 @@ def cook_many(
         # dicts and lists, and would otherwise poison the numeric scoreboard DataFrame.
         out["operating_points"] = ops
 
-    # status messages
+    # status messages. np.mean of an empty list is a NaN plus a RuntimeWarning, so the LOSO detail
+    # is only printed when that pass actually ran.
     n_total = pool["site"].nunique()
-    test_per_fold = [pool["site"].iloc[te].nunique() for _, te in site_models]
-    train_per_fold = [n_total - t for t in test_per_fold]
-    print(
-        f"  cooked {label}: {n_total} sites, {len(site_models)}-fold LOSO "
-        f"(~{int(np.mean(train_per_fold))} train / ~{int(np.mean(test_per_fold))} test per fold), "
-        f"{len(fam_models)}-fold LOFO"
-    )
+    if site_models:
+        test_per_fold = [pool["site"].iloc[te].nunique() for _, te in site_models]
+        train_per_fold = [n_total - t for t in test_per_fold]
+        loso_note = (
+            f"{len(site_models)}-fold LOSO "
+            f"(~{int(np.mean(train_per_fold))} train / ~{int(np.mean(test_per_fold))} test per fold)"
+        )
+    else:
+        loso_note = "LOSO skipped (loso=False -> loso_* is NaN)"
+    print(f"  cooked {label}: {n_total} sites, {loso_note}, {len(fam_models)}-fold LOFO")
     if extra_importance_test:
         out["importance_perm"] = _perm_importance(fam_models, X, y, feat, task, cols=perm_cols)
     return out
@@ -778,6 +803,14 @@ def compare_many(
     """
     if sites is None:
         sites = get_site_ids()
+    # `pool` rides through **kw to every cook_many call, so with more than one recipe every recipe
+    # after the first would be silently scored on the FIRST recipe's columns -- a wrong number that
+    # looks entirely plausible. Refuse instead.
+    if kw.get("pool") is not None and len(recipes) > 1:
+        raise ValueError(
+            f"compare_many got a prebuilt pool for {len(recipes)} recipes -- every recipe would be scored on the "
+            f"FIRST recipe's columns. Pass pool= only for a single recipe (src/models/train.py's case)."
+        )
     rows, imps, perms, ops, n, t0 = [], {}, {}, {}, len(recipes), time.time()
     for i, (name, fn) in enumerate(recipes.items(), 1):
         if progress:
@@ -922,6 +955,7 @@ def fit_full(
     save_path: str | None = None,
     progress: bool | str = False,
     min_rows: int = 500,
+    pool: pd.DataFrame | None = None,
     **xgb_kw: Any,
 ) -> tuple[Model, list[str], dict[str, pd.Series]]:
     """Fit ONE deployable model on the full pooled dataset (no cross-validation holdout).
@@ -934,12 +968,15 @@ def fit_full(
 
     Always computes GAIN importance (free, from the shipped model). With extra_importance_test=True also computes PERMUTATION importance on the val_frac holdout using a model trained without those rows (honest -- that model never saw them). Both are returned in the importance dict and, if `save_path` is given, written to CSV sidecars.
 
+    `pool` accepts a prebuilt frame from `_pool` so a caller that has already pooled does not pay for it twice -- src/models/train.py scores with cook_many and then fits here on the same rows, which used to build the identical frame from scratch both times.
+
     If `save_path` is given, also persists the model: '<save_path>' (booster) + '<save_path>.meta.json' + '<stem>_importance.csv' (+ '<stem>_importance_perm.csv').
     """
     if sites is None:
         sites = get_site_ids()
     label = (progress if isinstance(progress, str) else getattr(recipe, "__name__", "recipe")) if progress else None
-    pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
+    if pool is None:
+        pool = _pool(recipe, sites, target_col, min_rows=min_rows, progress_label=label)
     feat = _features(pool, target_col)
     X, y = pool[feat], _target(pool, target_col, task)
 

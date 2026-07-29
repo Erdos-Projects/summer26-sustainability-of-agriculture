@@ -45,10 +45,10 @@ DEFAULT_PORT = 8099
 # Routes we request explicitly rather than hoping a browser touches them. dash-renderer would fetch the two _dash-* endpoints itself; requesting them here is what puts them in the access log, which is how dash2html learns to inline them.
 SNAPSHOT_ROUTES = ["/", "/_dash-layout", "/_dash-dependencies"]
 
-# Callbacks that are allowed to remain server-side, because the features they drive are deferred until the lighter recipe/model lands. Anything else server-side is a bug: it would render as a live control that silently does nothing on the published site.
+# Callbacks that are allowed to remain server-side. Anything else server-side is a bug: it would render as a live control that silently does nothing on the published site.
+#
+# Both survivors are DEBUG-tab basin overlays, which exist to compare delineation methods against each other while reviewing the dataset -- they call NLDI and flood-fill a D8 raster live, and neither has a precomputed counterpart because neither is part of what the site is for. The forecast itself is clientside (components/forecast_panel.py).
 DEFERRED_OUTPUTS = {
-    "forecast-graph.figure",  # run_forecast: NLDI + feature build + XGBoost
-    "forecast-download.data",  # download_forecast: server-side matplotlib render
     "pin-basin-layer.children",  # v1 pin delineation: flowline snap + NLDI
     "pin-basin-v3-layer.children",  # v3 pin delineation: D8 raster flood-fill
 }
@@ -59,7 +59,7 @@ DEFERRED_OUTPUTS = {
 
 
 def _build_app():
-    """    Construct the Dash app exactly as widget/app.py does.
+    """Construct the Dash app exactly as widget/app.py does.
 
     assets_folder is passed EXPLICITLY. Dash resolves it relative to the module that constructs the app, and this module lives in widget/static/ rather than widget/ -- so `Dash(__name__)` here finds no assets folder at all and silently omits custom.css and dashExtensions_default.js. The latter carries the rain grid's style/hover/tooltip functions, so the snapshot would build and look fine while the grid rendered unstyled and untooltipped.
     """
@@ -77,7 +77,7 @@ def _build_app():
 
 
 class _LogCapture(logging.Handler):
-    """    Collect werkzeug access lines into a buffer in dash2html's expected shape.
+    """Collect werkzeug access lines into a buffer in dash2html's expected shape.
 
     dash2html swaps `sys.stderr` for a StringIO before starting the server. That is fragile: a StreamHandler binds to whatever `sys.stderr` was when it was created, so the swap only works if nothing has logged yet. Attaching a handler to the `werkzeug` logger is equivalent for process_log's purposes (it only greps for `"GET `) and does not depend on import ordering.
     """
@@ -117,7 +117,7 @@ def _serve(app, port):
 
 
 def audit_callbacks(dependencies) -> dict:
-    """    Split the dependency graph into clientside vs server-side callbacks.
+    """Split the dependency graph into clientside vs server-side callbacks.
 
     A server-side callback in a static build is worse than a missing one: the control renders, the user clicks it, and nothing happens with no error surfaced.
     """
@@ -149,7 +149,7 @@ def _report_audit(audit) -> None:
 
 
 def _copy_bundle(out: Path) -> int:
-    """    Copy every artifact the manifest lists into the built site.
+    """Copy every artifact the manifest lists into the built site.
 
     Not discovered from the access log: most of these are fetched lazily by a user interaction the snapshot never performs, so log-based discovery would silently ship a site with missing data.
     """
@@ -279,6 +279,34 @@ def _copy_async_chunks(app, out: Path) -> int:
     return n
 
 
+_SKEW_RUNNER = _HERE / "_feature_skew.cjs"
+
+
+def check_feature_skew() -> dict:
+    """Model features the browser cannot resolve from the bundle, per task; {} when sound.
+
+    The JS half of deploy.predict._assert_no_skew. An unresolvable column arrives as NaN, which is indistinguishable from an absent distance ring, so the site would score a plausible forecast without it. Runs before anything is written.
+    """
+    import subprocess
+
+    proc = subprocess.run(["node", str(_SKEW_RUNNER)], capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise RuntimeError(f"the feature-skew check could not run: {proc.stderr.strip()[:400]}")
+    return {task: cols for task, cols in json.loads(proc.stdout).items() if cols}
+
+
+def _report_skew() -> None:
+    skew = check_feature_skew()
+    if skew:
+        raise RuntimeError(
+            f"the browser cannot resolve every model feature from the bundle: {skew}. It would ship a forecast with "
+            "those columns silently NaN. Either the MODEL is behind src/features/recipes.py (retrain, then copy into "
+            "deploy/models/) or the REACH STORE is (re-run build_reaches, then build_bundle --only reaches). "
+            "deploy.predict._assert_no_skew reports the same mismatch from the Python side."
+        )
+    print("── feature skew ──  none; every model feature resolves from the bundle")
+
+
 def export(out: Path, port=DEFAULT_PORT, skip_bundle=False, audit_only=False) -> None:
     from dash2html.utils import make_static, process_log
 
@@ -297,6 +325,7 @@ def export(out: Path, port=DEFAULT_PORT, skip_bundle=False, audit_only=False) ->
     deps = requests.get(base + "_dash-dependencies", timeout=30).json()
     audit = audit_callbacks(deps)
     _report_audit(audit)
+    _report_skew()
     if audit_only:
         return
 

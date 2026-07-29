@@ -59,7 +59,8 @@ FORECAST_YEARS = range(2015, 2018)
 
 # Minimum NHD stream order a pin can snap to. Must stay in step with widget/static/fetch_basins.py:
 # the snap index and the reach store have to describe the same set, or a pin snaps to a COMID that
-# has no feature row. Order >= 3 is 16,762 of the 61,417 reaches, median basin 68 km2.
+# has no feature row. Order >= 3 is 16,762 of the 61,417 reaches, median basin 68 km2, less whatever
+# NLDI tombstoned (fetch_basins.tombstoned) -- a reach with no basin leaves the snappable set too.
 MIN_STREAM_ORDER = 3
 
 # Days of weather to carry BEFORE the first forecast year. The light recipes shift the weather block back by the basin's travel-time lag (round(median_dist / (2.1 m/s * 86400)), so 0-3 days for Iowa basins), and January rows would otherwise reconstruct against nothing. 75 days is slack, not a tuned number.
@@ -388,9 +389,6 @@ def build_hydro():
 
 
 # ── model repack ──────────────────────────────────────────────────────────────
-# Node slots per tree. The light boosters train at max_depth=3, so 15 is the cap; trees that prune
-# a branch come in at 13/11/9/7 and are padded out to the stride.
-_TREE_STRIDE = 15
 _OBJECTIVE_CODE = {"reg:squarederror": 0, "binary:logistic": 1}
 
 
@@ -403,25 +401,27 @@ def _pack_booster(model_json: dict) -> bytes:
       - For a LEAF, split_conditions holds the leaf weight, so one float array serves as both threshold and output. The learning rate is already baked into it; do not rescale.
       - base_score is stored in PREDICTION space, not margin space. reg:squarederror adds it to the margin directly; binary:logistic needs logit() first, then the sigmoid at the end.
 
+    The stride is the widest tree in THIS booster, not a constant: it follows max_depth (15 node slots at depth 3, 63 at depth 5), so a retune to a deeper model changes it. It ships in the header and the browser reads it from there, so nothing but this function needs to know.
+
     Layout: an int32 header [n_trees, stride, n_features, objective] then float32 base_margin, then four flat arrays of n_trees*stride: split_indices int16, left_children int16 (-1 = leaf), default_left uint8, split_conditions float32.
     """
     learner = model_json["learner"]
     trees = learner["gradient_booster"]["model"]["trees"]
     n = len(trees)
+    stride = max(len(tree["left_children"]) for tree in trees)
 
-    split_idx = np.zeros(n * _TREE_STRIDE, np.int16)
-    left = np.full(n * _TREE_STRIDE, -1, np.int16)
-    default_left = np.zeros(n * _TREE_STRIDE, np.uint8)
-    cond = np.zeros(n * _TREE_STRIDE, np.float32)
+    split_idx = np.zeros(n * stride, np.int16)
+    left = np.full(n * stride, -1, np.int16)
+    default_left = np.zeros(n * stride, np.uint8)
+    cond = np.zeros(n * stride, np.float32)
 
     for t, tree in enumerate(trees):
         L = np.asarray(tree["left_children"], np.int32)
         R = np.asarray(tree["right_children"], np.int32)
         internal = L >= 0
         assert (R[internal] == L[internal] + 1).all(), f"tree {t}: right child is not left+1"
-        assert len(L) <= _TREE_STRIDE, f"tree {t} has {len(L)} nodes, over the {_TREE_STRIDE} stride"
         assert not any(tree["categories"]), f"tree {t} has categorical splits, which the walker does not implement"
-        o = t * _TREE_STRIDE
+        o = t * stride
         k = len(L)
         split_idx[o:o + k] = np.asarray(tree["split_indices"], np.int32).astype(np.int16)
         left[o:o + k] = L.astype(np.int16)
@@ -436,7 +436,7 @@ def _pack_booster(model_json: dict) -> bytes:
     base_margin = np.log(base_score / (1.0 - base_score)) if objective == "binary:logistic" else base_score
 
     header = struct.pack(
-        "<4if", n, _TREE_STRIDE, int(learner["learner_model_param"]["num_feature"]),
+        "<4if", n, stride, int(learner["learner_model_param"]["num_feature"]),
         _OBJECTIVE_CODE[objective], base_margin,
     )
     return header + split_idx.tobytes() + left.tobytes() + default_left.tobytes() + cond.tobytes()

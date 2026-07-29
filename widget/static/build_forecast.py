@@ -13,6 +13,7 @@ Three groups, in dependency order:
 THE WEATHER TRICK. fuel_moisture_1000h is the one input that is COMID x DATE, and shipping it per reach would be 16,762 x 1,095 floats. But the model consumes the basin MEAN, which is a linear functional of the node field: mean_b(t) = w_b . A(:,t). So decompose the field once, A ~ mu + U_k S_k Vt_k, and the basin mean falls out as w_b.mu + (w_b . U_k S_k) . Vt_k. Each reach then stores one scalar and k coefficients -- 33 floats instead of 1,095 -- against shared modes of k x n_days. The node field itself never ships.
 """
 
+import shutil
 import sys
 from pathlib import Path
 
@@ -47,7 +48,8 @@ WEATHER_RANK = 64
 # That is the same failure mode _assert_no_skew catches at predict time, one stage earlier.
 #   1: initial (single whole-basin weather projection)
 #   2: weather projection is per distance bucket, and weather_lag_days is a list
-ROW_SCHEMA = 2
+#   3: weather_lag_days is indexed BY bucket, one entry per ring, aligned with the weather list
+ROW_SCHEMA = 3
 
 
 def recipe_fingerprint():
@@ -144,7 +146,7 @@ def build_snap_index(out, min_stream_order, write_bin):
 
     Geometry is NOT simplified. Simplifying barely pays here -- 1 m tolerance sheds 3% of vertices, 5 m sheds 21% -- while spending a fifth of the 25 m tie budget on displacement, which is exactly what would make a pin near two reaches snap differently in the browser than in Python. 2.87 MB of exact float32 is the cheaper trade. float32 resolves to about 0.25 m at Iowa's ~4e6 m easting, well inside the tolerance.
 
-    Every reach here is a single LineString (checked: 16,762 of 16,762), so there is no part indexing.
+    Every reach here is a single LineString (checked: 16,760 of 16,760), so there is no part indexing.
 
     THE OUTLET is shipped alongside, in lat/lon, because it is where the forecast is actually computed. NLDI's basin for a COMID is the area draining to that reach's downstream end, and the per-reach feature row is built there -- not at wherever the user clicked, which can be kilometres away and is not a point any precomputed row describes. The map moves the pin to it so the displayed location is the modelled one.
 
@@ -161,8 +163,13 @@ def build_snap_index(out, min_stream_order, write_bin):
         columns=["COMID", "TotDASqKM", "StreamOrde", "GNIS_NAME", "geometry"],
     )
     # TotDASqKM > 0 drops the NHDPlus divergence artifacts, matching what snap_comid considers
-    # snappable -- so the browser can never return a COMID the reach store has no row for.
-    fl = fl[(fl["StreamOrde"] >= min_stream_order) & (fl["TotDASqKM"] > 0)]
+    # snappable; the tombstones drop the reaches NLDI has no basin for -- together, the browser can
+    # never return a COMID the reach store has no row for. Rebuild this group if new tombstones
+    # appear (build_bundle --only snap_index).
+    from widget.static.fetch_basins import tombstoned
+
+    dead = tombstoned()
+    fl = fl[(fl["StreamOrde"] >= min_stream_order) & (fl["TotDASqKM"] > 0) & (~fl["COMID"].isin(dead))]
     fl = fl.sort_values("COMID").reset_index(drop=True)
     if not (fl.geom_type == "LineString").all():
         raise ValueError("a reach is not a single LineString; the packed layout assumes one part each")
@@ -200,8 +207,10 @@ def build_snap_index(out, min_stream_order, write_bin):
     return sizes
 
 
-def reach_row(comid, basin, outlet_lat, outlet_lon, basis, tasks, years):
+def reach_row(comid, sd, outlet_lat, outlet_lon, basis, tasks, years):
     """    Everything the browser needs to score one reach, computed the way training computed it.
+
+    `sd` is a SiteData whose grid carries the basin's cells -- build_reaches.py computes it once and caches it, because the cells are a function of the BASIN and the grid, not of the recipe. Everything this function does to them is recipe-dependent and cheap, which is what makes a retuned bucket edge or decay length a re-aggregation of minutes rather than another D8 pass of hours.
 
     `tasks` maps a task name to (edges, vel, lam), which come straight from recipes.LIGHT_* so this cannot drift from _light_features. The blocks returned per task are the per-year crop shares and surplus by distance bucket plus the unbucketed exp-decay terms; the static descriptors and the weather projection are shared across tasks.
 
@@ -209,13 +218,9 @@ def reach_row(comid, basin, outlet_lat, outlet_lon, basis, tasks, years):
 
     Returns None when no grid cell intersects the basin -- a real outcome for the smallest reaches, and one the caller records rather than crashes on.
     """
-    from src.data import access
     from src.features import recipes
     from src.features.transformers import bucket_lags
 
-    sd = access.build_virtual_site_data(
-        basin, outlet_lat, outlet_lon, site_uid=f"COMID-{comid}", with_weather=False
-    )
     grid = sd.grid
     if grid is None or grid.empty:
         return None
@@ -250,10 +255,12 @@ def reach_row(comid, basin, outlet_lat, outlet_lon, basis, tasks, years):
             "surplus": trim(sb).to_dict("records"),
             "surplus_expT": trim(sb_exp).to_dict("records"),
         }
-        # One lag PER WEATHER BUCKET, keyed exactly as the recipe buckets the block, so the browser
-        # shifts each series by what training shifted it by.
+        # One lag PER WEATHER BUCKET, keyed exactly as the recipe buckets the block, so the browser shifts each series by what training shifted it by.
+        #
+        # Indexed BY ring, aligned element-for-element with the weather list above. transformers.bucket_lags returns only the rings that HAVE cells, so its own output is dense -- a basin with cells in b0 and b2 yields two values -- and shipping it that way would leave which ring each lag belongs to to be recovered downstream from the weather list's None pattern. That recovery is exact but needless, and non-contiguous rings are common enough here (roughly one basin in seven) that getting it wrong would be both quiet and routine. An empty ring gets 0, which nothing reads: its weather is NaN.
         lag = bucket_lags(site_data=sd, water_velocity=vel, edges=list(w_edges))
-        out[task]["weather_lag_days"] = [int(v) for v in lag] if len(lag) else [0]
+        by_ring = {int(b): int(v) for b, v in lag.items()}
+        out[task]["weather_lag_days"] = [by_ring.get(b, 0) for b in range(len(w_edges) + 1)]
         out[task]["weather"] = _project_weather(grid, basis, w_edges)
 
     return out
@@ -363,10 +370,11 @@ def _row_values(row, task, years, crop_classes):
 def pack_chunk(rows, years, crop_classes, rank):
     """    Pack one spatial chunk of reaches into the layout forecast.js reads.
 
-    [n:i32][rank:i32][n_years:i32][n_buckets:i32][n_crops:i32], then, each of length n:
-    comid i32; the six statics as f32 (lat, lon, basin_area_m2, mean_dist, max_dist, log_basin_area);
-    the two weather lags as i8 (reg, clf); the weather offset f32; then n*rank weather coefficients;
-    then the reg block and the clf block, each n * n_years * (n_crops*n_buckets + n_buckets + n_crops + 1).
+    [n:i32][rank:i32][n_years:i32][n_buckets:i32][n_crops:i32], then, each of length n: comid i32; the six statics as f32 (lat, lon, basin_area_m2, mean_dist, max_dist, log_basin_area); then per task in (reg, clf) the n*n_buckets lags i8, the n*n_buckets weather offsets f32 and the n*n_buckets*rank weather coefficients f32; then the reg block and the clf block, each n * n_years * (n_crops*n_buckets + n_buckets + n_crops + 1).
+
+    WEATHER IS PER RING AND PER TASK. fuel_moisture_1000h is bucketed by distance exactly as the crop and surplus blocks are -- the light models want fuel_moisture_1000h_b0/_b1/_b2 -- and the two tasks cut their rings at different distances, so each is a different functional of the same shared modes. That costs 2 * n_buckets * (1 + rank) floats a reach instead of 1 + rank, which is most of what a reach weighs and still nothing beside shipping the node-space field.
+
+    An absent ring is NaN, which is what the recipe emits for it and what the booster routes down its default branch -- the same treatment predict() gives a missing distance bucket.
     """
     rows = sorted(rows, key=lambda r: r["comid"])
     n = len(rows)
@@ -377,17 +385,24 @@ def pack_chunk(rows, years, crop_classes, rank):
     statics = np.array(
         [[r["lat"], r["lon"], r["basin_area_m2"], r["mean_dist_to_sensor"], r["max_dist_to_sensor"], r["log_basin_area"]]
          for r in rows], np.float32).tobytes()
-    lags = np.array([[r["reg"]["weather_lag_days"], r["clf"]["weather_lag_days"]] for r in rows], np.int8).tobytes()
-    offset = np.array([(r["weather"] or {}).get("offset", np.nan) for r in rows], np.float32).tobytes()
-    coef = np.array(
-        [(r["weather"]["coef"] if r["weather"] else [np.nan] * rank) for r in rows], np.float32
-    ).tobytes()
+    lags = b"".join(np.array([r[task]["weather_lag_days"] for r in rows], np.int8).tobytes() for task in ("reg", "clf"))
+    offsets = b"".join(
+        np.array([[(w or {}).get("offset", np.nan) for w in r[task]["weather"]] for r in rows], np.float32).tobytes()
+        for task in ("reg", "clf")
+    )
+    coefs = b"".join(
+        np.array([[(w["coef"] if w else [np.nan] * rank) for w in r[task]["weather"]] for r in rows],
+                 np.float32).tobytes()
+        for task in ("reg", "clf")
+    )
     blocks = b"".join(
         np.array([_row_values(r, task, years, crop_classes) for r in rows], np.float32).tobytes()
         for task in ("reg", "clf")
     )
+    assert len(lags) == 2 * n * N_BUCKETS, "packed lags do not match the declared layout"
+    assert len(coefs) == 2 * n * N_BUCKETS * rank * 4, "packed weather does not match the declared layout"
     assert len(blocks) == 2 * n * per_task * 4, "packed block size does not match the declared layout"
-    return head + comid + statics + lags + offset + coef + blocks
+    return head + comid + statics + lags + offsets + coefs + blocks
 
 
 def pack_basin(basin):
@@ -412,6 +427,19 @@ def pack_basin(basin):
     )
 
 
+def _expT_cols(row, crop_classes) -> dict:
+    """{task: [exp-decay column name, ...]}, in _row_values' packed order.
+
+    The names carry the recipe's lambda (Corn_expT2000), so shipping them lets the browser match the model's exp-decay columns EXACTLY. Matching by prefix instead would bridge a model trained at one lambda onto values computed at another -- the skew deploy.predict._assert_no_skew refuses to score through.
+    """
+    def names(task):
+        cexp, sexp = row[task]["crops_expT"][0], row[task]["surplus_expT"][0]
+        out = [next((k for k in cexp if k.startswith(f"{cls}_expT")), f"{cls}_expT") for cls in crop_classes]
+        return out + [next((k for k in sexp if k.startswith("surplus_kgha_expT")), "surplus_kgha_expT")]
+
+    return {task: names(task) for task in ("reg", "clf")}
+
+
 def build_reaches(out, years, crop_classes, write_bin, cache_dir, rows_dir, basin_cache):
     """    Pack every computed reach row into spatial chunks, plus one basin outline per reach.
 
@@ -433,12 +461,25 @@ def build_reaches(out, years, crop_classes, write_bin, cache_dir, rows_dir, basi
 
     import geopandas as gpd
 
+    # Clear what a previous pack wrote. A pack emits only the chunks that HAVE current rows, so a
+    # leftover file for a chunk this pass has nothing for stays on disk and the browser reads it --
+    # under whatever layout it was written with. The manifest would not list it, so export's orphan
+    # check catches it before publishing, but every local test until then scores stale data.
+    for sub in ("reaches", "basins"):
+        shutil.rmtree(out / "forecast" / sub, ignore_errors=True)
+
+    # Stale rows are SKIPPED, not packed. build_reaches leaves a row per COMID whatever schema it was written under, so a pack after a bump would otherwise read an old shape into the new layout -- garbage that looks like data. Counted and reported, since a large number means the pass is behind the recipe.
+    fingerprint = recipe_fingerprint()
     by_chunk = {}
     sizes = {}
+    stale = 0
     for f in files:
         if not f.stem.isdigit():
             continue
         row = json.loads(f.read_text())
+        if row.get("schema") != ROW_SCHEMA or row.get("recipe") != fingerprint:
+            stale += 1
+            continue
         by_chunk.setdefault(chunk_of(row["lat"], row["lon"]), []).append(row)
 
         comid = row["comid"]
@@ -448,13 +489,29 @@ def build_reaches(out, years, crop_classes, write_bin, cache_dir, rows_dir, basi
             rel = f"forecast/basins/{comid}.bin"
             sizes[rel] = write_bin(out / "forecast" / "basins" / f"{comid}.bin", pack_basin(basin))
 
+    if stale:
+        print(f"   [skipped] {stale:,} row(s) from an older schema or recipe -- re-run build_reaches to refresh them")
+    if not by_chunk:
+        raise RuntimeError(
+            f"every one of the {len(files):,} reach rows is stale (schema != {ROW_SCHEMA} or a different recipe). "
+            "Run `python -m widget.static.build_reaches` before packing."
+        )
+
     for cid, rows in sorted(by_chunk.items()):
         rel = f"forecast/reaches/{cid}.bin"
         sizes[rel] = write_bin(out / "forecast" / "reaches" / f"{cid}.bin", pack_chunk(rows, list(years), crop_classes, rank))
+    # weather_cols travels with the chunks so the browser names its weather columns from the RECIPE rather than from a literal in forecast.js -- WEATHER_KEEP is a recipe setting, and renaming it must not need a JS edit. One variable only: the reach row projects a single field onto the shared basis.
+    from src.features import recipes
+
+    if len(recipes.WEATHER_KEEP) != 1:
+        raise ValueError(f"the reach store projects ONE weather variable; WEATHER_KEEP is {recipes.WEATHER_KEEP}")
+
     sizes["forecast/reach_chunks.json"] = _write_json_via(
         out / "forecast" / "reach_chunks.json",
         {"bbox": CHUNK_BBOX, "grid": CHUNK_GRID, "chunks": sorted(by_chunk), "n_reaches": len(files),
-         "years": list(years), "crop_classes": crop_classes, "n_buckets": N_BUCKETS, "rank": rank},
+         "years": list(years), "crop_classes": crop_classes, "n_buckets": N_BUCKETS, "rank": rank,
+         "weather_cols": list(recipes.WEATHER_KEEP),
+         "expT_cols": _expT_cols(next(iter(by_chunk.values()))[0], crop_classes)},
         write_bin,
     )
     return sizes

@@ -20,7 +20,7 @@ THE CEILING ADAPTS. Stage 1 runs at `--ceiling` (default 1500) and reports what 
 
 One pool is built and shared across every stage (tune.tune(pool=...)); pooling the cohort is the expensive part and repeating it six times would dominate the run.
 
-WHAT IT LEAVES BEHIND. Each stage upserts into models/lofo_tune.csv, so the FINAL stage's row is the one that survives -- which is the row train.py reads for `n_estimators`. The per-stage grids accumulate in models/tune_<recipe>.csv (stage 1 overwrites, the rest append).
+WHAT IT LEAVES BEHIND. Each stage upserts into models/lofo_tune.csv, so the FINAL stage's row is the one that survives. Nothing reads that file: the settled config reaches a model only when the block the final stage prints is pasted into train.RECIPE_XGB, tree count and all. The per-stage grids accumulate in models/tune_<recipe>.csv (stage 1 overwrites, the rest append).
 """
 
 from __future__ import annotations

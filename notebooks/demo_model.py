@@ -9,7 +9,7 @@ clean:
     top_features(cv, n=15)                   # gain-ranked feature importances
     run_full_train("demo_CLF", recipe_CLF, task="clf")   # CV + fit on ALL rows + log + save booster
 
-`run_cv` uses the quick FAST_XGB config below by default (snappy for a live demo); `run_full_train` produces the actual deployable model + a fulltrain_logs.json entry, and needs a tuning run first -- src/models/train.py reads the tree count from models/lofo_tune.csv and raises UntunedRecipe without one.
+`run_cv` uses the quick FAST_XGB config below by default (snappy for a live demo); `run_full_train` produces the actual deployable model + a fulltrain_logs.json entry, and needs a tuning run first -- src/models/train.py takes the tree count from that recipe's RECIPE_XGB entry and raises UntunedRecipe without one.
 """
 
 import sys
