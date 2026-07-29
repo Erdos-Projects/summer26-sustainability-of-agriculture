@@ -7,7 +7,7 @@ Iowa grows a lot of corn and puts a lot of fertilizer in the ground. Nitrogen fr
 TLDR; Yes, you can.
 
 - [Link to our beautiful presentation video](https://www.youtube.com/watch?v=O_ZCylQCXe8) (5 minutes long, results slightly outdated)
-- [Link to an interactive demo of our widget/model]() (please play around with it!)
+- [Link to an interactive demo of our widget/model](https://erdos-projects.github.io/summer26-sustainability-of-agriculture/) (please play around with it!)
 
 We build two separate XGBoost models, a classifier which identifies nitrate violations and a regressor which models maximum daily nitrate values. We provide a Dash widget to interact with our data and run forecasts, inspired by the [IWQIS water quality app](https://iwqis.iowawis.org/app/?iwqis=/sensors-map) (the demo site linked above is a light version of this widget running a stripped-down pair of our models).
   - [Results](#results)
@@ -72,6 +72,7 @@ You should now be set up! Run the app or notebooks below.
 ```bash
 python widget/app.py        # Dash dev server -> http://127.0.0.1:8050
 ```
+Note that the widget was completely overhauled at the end of the project in order to adapt it to live on a [static webpage](https://erdos-projects.github.io/summer26-sustainability-of-agriculture/). The older, server-deployment target was scrapped.
 
 **Demo notebooks** — `notebooks/fulldemo.ipynb` is intended as a walkthrough of the pipeline (data access -> EDA -> feature engineering -> cross-site CV -> final models -> results & deployment). It is the only demo written retroactively.
 

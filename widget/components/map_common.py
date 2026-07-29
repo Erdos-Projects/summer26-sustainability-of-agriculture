@@ -291,6 +291,8 @@ def clientside_consts():
         # The pin. A forecast is computed at a REACH OUTLET, which stream-order-3 snapping puts a median 1.5 km from the click, so the marker moves there and these draw the journey: a dashed line back to the click and a small hollow dot marking it.
         "snap_connector": {"color": colors.SITE_SELECTED["stroke"], "weight": 1.5, "dashArray": "4 4", "opacity": 0.8},
         "snap_click": {"color": "#888", "weight": 1.5, "fillOpacity": 0, "opacity": 0.9},
+        # Debug: the pin's NLDI basin in the v1 comparison colour. (No v3 twin -- that delineation is computed live and has no shipped counterpart.)
+        "pin_basin_v1": colors.pin_basin_style("v1"),
         # The forecast's own drawing: the basin overlay at the snapped reach, and the figure colours.
         "forecast": {
             "basin_style": {"color": colors.FORECAST["basin"], "weight": 2, "fillOpacity": 0.05},

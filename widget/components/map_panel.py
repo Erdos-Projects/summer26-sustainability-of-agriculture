@@ -25,7 +25,7 @@ def register_callbacks(app):
         prevent_initial_call=True,
     )
 
-    # One JS function, five registrations. The close button's id is passed as a literal State so the
+    # One JS function, six registrations. The close button's id is passed as a literal State so the
     # shared implementation can tell an open click from a close click.
     for _popup_id, _btn_id, _close_id in [
         ("selection-help-popup", "selection-help-btn", "selection-help-close-btn"),
@@ -33,6 +33,7 @@ def register_callbacks(app):
         ("forecast-help-popup", "forecast-help-btn", "forecast-help-close-btn"),
         ("map-display-help-popup", "map-display-help-btn", "map-display-help-close-btn"),
         ("map-layers-help-popup", "map-layers-help-btn", "map-layers-help-close-btn"),
+        ("basin-editor-help-popup", "basin-editor-help-btn", "basin-editor-help-close-btn"),
     ]:
         app.clientside_callback(
             ClientsideFunction(namespace="ui", function_name="helpPopup"),
@@ -115,6 +116,7 @@ def register_callbacks(app):
         Input("basin-all-toggle", "value"),
         Input("selected-site", "data"),
         Input("preferred-basin-version", "data"),
+        Input("region-geom", "data"),  # a dropped pin gets its basin drawn by the same toggle
         State("ui-consts", "data"),
     )
 
@@ -130,22 +132,16 @@ def register_callbacks(app):
             State("ui-consts", "data"),
         )
 
-    @app.callback(
+    # v1 reads the SHIPPED outline for the snapped reach -- the same polygon delineate_basin_for_pin
+    # would fetch from NLDI, already packed for every forecastable reach. v3 below cannot follow: its
+    # D8 flood-fill has no precomputed counterpart, so it stays server-side and inert once published.
+    app.clientside_callback(
+        ClientsideFunction(namespace="layers", function_name="pinBasin"),
         Output("pin-basin-layer", "children"),
         Input("pin-basin-v1-toggle", "value"),
         Input("region-geom", "data"),
+        State("ui-consts", "data"),
     )
-    def render_pin_basin_v1(toggle, region_geom):
-        if "show" not in toggle:
-            return []
-        if not region_geom or region_geom.get("type") != "Point":
-            return []
-        lng, lat = region_geom["coordinates"]
-        try:
-            geojson = delineate_basin_for_pin(lat, lng)
-            return [dl.GeoJSON(data=geojson, options={"style": colors.pin_basin_style("v1")})]
-        except Exception:
-            return []
 
     @app.callback(
         Output("pin-basin-v3-layer", "children"),

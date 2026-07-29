@@ -413,19 +413,7 @@
         B().buffer(`models/${task}.bin`).then(decodeBooster), B().json(`models/${task}.json`),
     ]).then(([booster, meta]) => ({booster, feat: meta.feat, beta_table: meta.beta_table, base_rate: meta.base_rate})));
 
-    const basin = (comid) => B().memo(`basin:${comid}`, () => B().buffer(`forecast/basins/${comid}.bin`).then(decodeBasin));
-
-    /* ── the basin overlay ────────────────────────────────────────────────────
-     * build_forecast.pack_basin's layout: [n:i32][lon:f32 x n][lat:f32 x n], one exterior ring. Returned as a GeoJSON Feature rather than a Leaflet positions array because that is what the server-side layer passed and the styling options carry over unchanged.
-     */
-    function decodeBasin(buf) {
-        const n = new DataView(buf).getInt32(0, true);
-        const lon = new Float32Array(buf.slice(4, 4 + n * 4));
-        const lat = new Float32Array(buf.slice(4 + n * 4, 4 + n * 8));
-        const ring = new Array(n);
-        for (let i = 0; i < n; i++) ring[i] = [lon[i], lat[i]];  // GeoJSON is lon,lat
-        return {type: "Feature", properties: {}, geometry: {type: "Polygon", coordinates: [ring]}};
-    }
+    const basin = (comid) => B().reachBasin(comid);  // decoder lives in bundle.js; the map layers draw it too
 
     /* ── the forecast ─────────────────────────────────────────────────────────
      * The numeric core, kept separate from the callback that formats it: the parity harness scores a
@@ -607,7 +595,7 @@
             const fail = (msg, color) => [NO(), {display: "none"}, P(msg, {color: color || "#888", fontSize: "12px"}),
                                           [], null, hideDl];
             if (!regionGeom || regionGeom.type !== "Point") {
-                return fail("Drop a pin first (Pin drop selection mode).");
+                return fail("Drop a pin first (Pin drop selection mode in Explore tab).");
             }
             if (!regionGeom.snap) {
                 return fail("No stream within 10 km of that pin — there is no reach to forecast.");
@@ -681,7 +669,6 @@
         _plan: plan,
         _figureSpec: figureSpec,
         _operatingPoint: operatingPoint,
-        _decodeBasin: decodeBasin,
         _chunkOf: chunkOf,
         _decodeChunk: decodeChunk,
         _decodeModes: decodeModes,

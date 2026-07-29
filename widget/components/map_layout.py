@@ -4,18 +4,27 @@ Shared constants, styles, and helpers come from map_common (star-imported)."""
 
 from .map_common import *  # noqa: F401,F403
 
-
 _LEGEND_BOX_STYLE = {
-    "background": "rgba(255,255,255,0.95)", "border": "1px solid #ccc", "borderRadius": "6px",
-    "padding": "6px 10px", "boxShadow": "0 1px 4px rgba(0,0,0,0.25)", "fontSize": "12px",
+    "background": "rgba(255,255,255,0.95)",
+    "border": "1px solid #ccc",
+    "borderRadius": "6px",
+    "padding": "6px 10px",
+    "boxShadow": "0 1px 4px rgba(0,0,0,0.25)",
+    "fontSize": "12px",
 }
 
 
 def _legend_swatch(fill, stroke):
     return html.Span(
         style={
-            "display": "inline-block", "width": "12px", "height": "12px", "borderRadius": "50%",
-            "backgroundColor": fill, "border": f"2px solid {stroke}", "marginRight": "6px", "flex": "0 0 auto",
+            "display": "inline-block",
+            "width": "12px",
+            "height": "12px",
+            "borderRadius": "50%",
+            "backgroundColor": fill,
+            "border": f"2px solid {stroke}",
+            "marginRight": "6px",
+            "flex": "0 0 auto",
         }
     )
 
@@ -64,14 +73,22 @@ def _surplus_legend():
     stops = [surplus_viz.surplus_to_hex(lo + i / (n - 1) * (hi - lo)) for i in range(n)]
     bar = html.Div(
         style={
-            "width": "12px", "height": "80px", "borderRadius": "3px", "border": "1px solid #bbb",
+            "width": "12px",
+            "height": "80px",
+            "borderRadius": "3px",
+            "border": "1px solid #bbb",
             "background": "linear-gradient(to top, " + ", ".join(stops) + ")",
         }
     )
     ends = html.Div(
         [html.Span("high", style={"fontSize": "10px"}), html.Span("low", style={"fontSize": "10px"})],
-        style={"display": "flex", "flexDirection": "column", "justifyContent": "space-between",
-               "height": "80px", "marginLeft": "6px"},
+        style={
+            "display": "flex",
+            "flexDirection": "column",
+            "justifyContent": "space-between",
+            "height": "80px",
+            "marginLeft": "6px",
+        },
     )
     return html.Div([bar, ends], style={**_LEGEND_BOX_STYLE, "display": "flex", "alignItems": "stretch"})
 
@@ -134,7 +151,8 @@ def _build_selection_section():
 def _agg_readout():
     """Static label naming the aggregations the stored series were built with.
 
-    They used to be user-selectable (4 water x 4 rain), but the bundle stores one series pair per interval at fixed aggregations, so the choice is made at build time now. Showing it keeps the chart self-describing rather than leaving the reader to guess how a point was reduced."""
+    They used to be user-selectable (4 water x 4 rain), but the bundle stores one series pair per interval at fixed aggregations, so the choice is made at build time now. Showing it keeps the chart self-describing rather than leaving the reader to guess how a point was reduced.
+    """
     intervals = bundle.series_intervals()
     nit, pre = (intervals[0][1], intervals[0][2]) if intervals else ("max", "mean")
     return [
@@ -251,7 +269,7 @@ def _build_forecast_section():
             html.Div(
                 [
                     html.P(
-                        "Drop a pin (Pin drop mode), pick a year, and run the model to predict "
+                        "Drop a pin (Pin drop mode in Explore Tab), pick a year, and run the model to predict "
                         "nitrate at that ungauged point.",
                         style={**_HP, "marginTop": "6px"},
                     ),
@@ -263,18 +281,28 @@ def _build_forecast_section():
                                 options=[{"label": str(y), "value": y} for y in years],
                                 value=default_year,
                                 clearable=False,
-                                style={"width": "110px", "fontSize": "12px", "display": "inline-block",
-                                       "verticalAlign": "middle"},
+                                style={
+                                    "width": "110px",
+                                    "fontSize": "12px",
+                                    "display": "inline-block",
+                                    "verticalAlign": "middle",
+                                },
                             ),
                         ],
                         style={"marginBottom": "8px", "marginTop": "6px"},
                     ),
                     html.Div(
                         [
-                            html.Label("Recall emphasis (β):", style={"fontSize": "12px", "marginBottom": "2px", "display": "block"}),
+                            html.Label(
+                                "Recall emphasis (β):",
+                                style={"fontSize": "12px", "marginBottom": "2px", "display": "block"},
+                            ),
                             dcc.Slider(
                                 id="forecast-beta",
-                                min=0.5, max=4, step=0.5, value=2,
+                                min=0.5,
+                                max=4,
+                                step=0.5,
+                                value=2,
                                 marks={0.5: "0.5", 1: "1", 2: "2", 3: "3", 4: "4"},
                                 tooltip={"placement": "bottom", "always_visible": False},
                             ),
@@ -294,8 +322,9 @@ def _build_forecast_section():
                         type="default",
                     ),
                     html.Div(
-                        html.Button("Download figure", id="download-forecast-button", n_clicks=0,
-                                    style={"fontSize": "12px"}),
+                        html.Button(
+                            "Download figure", id="download-forecast-button", n_clicks=0, style={"fontSize": "12px"}
+                        ),
                         id="download-forecast-row",
                         style={"display": "none"},
                     ),
@@ -405,7 +434,8 @@ def _build_map_display_section():
                             step=1,
                             value=colors.default("surplus-year-slider"),
                             marks=None,
-                            tooltip={"placement": "bottom", "always_visible": True},
+                            # Shown only while dragging: always_visible parked a 20XX box under the slider permanently.
+                            tooltip={"placement": "bottom", "always_visible": False},
                             updatemode="mouseup",
                         ),
                         style={"flex": "1", "marginTop": "-8px", "marginBottom": "-8px"},
@@ -436,10 +466,9 @@ def _build_map_display_section():
                 "Displays the IEM precipitation grid cell positions for the active graph site.",
                 style=_HP,
             ),
-            html.Strong("Year / Opacity", style={"fontSize": "11px"}),
+            html.Strong("Year", style={"fontSize": "11px"}),
             html.P(
-                "Year picks which annual surplus layer (2000-2017) the heatmap shows; Opacity sets "
-                "how transparent it is.",
+                "Picks which annual surplus / crop layer (2000-2017) colours the rain-grid cells.",
                 style={**_HP, "margin": "2px 0 0 0"},
             ),
         ],
@@ -523,11 +552,18 @@ def _build_debugging_section():
             html.Div(
                 [
                     dcc.Input(
-                        id="map-zoom-input", type="number", min=1, max=18, step=1, placeholder="zoom",
+                        id="map-zoom-input",
+                        type="number",
+                        min=1,
+                        max=18,
+                        step=1,
+                        placeholder="zoom",
                         style={"width": "56px", "fontSize": "12px"},
                     ),
                     dcc.Input(
-                        id="map-center-input", type="text", placeholder="lat, lon",
+                        id="map-center-input",
+                        type="text",
+                        placeholder="lat, lon",
                         style={"width": "120px", "fontSize": "12px"},
                     ),
                     html.Button("Apply", id="map-view-apply", n_clicks=0, style={"fontSize": "12px"}),
@@ -578,7 +614,9 @@ def layout():
                                 # interactive:False so this statewide outline's transparent fill
                                 # doesn't capture mouse events over all of Iowa (it would block
                                 # hover on the rain-grid cells beneath it).
-                                options={"style": {"color": "#555", "weight": 2, "fillOpacity": 0, "interactive": False}},
+                                options={
+                                    "style": {"color": "#555", "weight": 2, "fillOpacity": 0, "interactive": False}
+                                },
                             ),
                             dl.LayerGroup(id="iem-bbox-layer"),
                             dl.Pane(name="hydro-pane", style={"zIndex": 410}),
@@ -632,8 +670,14 @@ def layout():
                     ),
                     html.Div(
                         style={
-                            "position": "absolute", "bottom": "12px", "left": "12px", "zIndex": 600,
-                            "display": "flex", "flexDirection": "column", "gap": "6px", "alignItems": "flex-start",
+                            "position": "absolute",
+                            "bottom": "12px",
+                            "left": "12px",
+                            "zIndex": 600,
+                            "display": "flex",
+                            "flexDirection": "column",
+                            "gap": "6px",
+                            "alignItems": "flex-start",
                         },
                         children=[
                             # Both legends are rendered up front and hidden; the clientside callback
@@ -691,7 +735,26 @@ def layout():
                         style={"display": "none"},
                         children=[
                             _hr(),
-                            basin_editor.layout(),
+                            # Wrapped here rather than inside basin_editor: map_common imports that
+                            # module, so it cannot import _wrap_with_help back.
+                            _wrap_with_help(
+                                basin_editor.layout(),
+                                btn_id="basin-editor-help-btn",
+                                close_id="basin-editor-help-close-btn",
+                                popup_id="basin-editor-help-popup",
+                                heading="Basin Editor",
+                                body=[
+                                    html.P(
+                                        "Used to manually configure and edit basins during development.",
+                                        style=_HP,
+                                    ),
+                                    html.P(
+                                        'Kept for deployment as it provides a "search by name" box for sites and '
+                                        "displays useful basin information.",
+                                        style={**_HP, "margin": "2px 0 0 0"},
+                                    ),
+                                ],
+                            ),
                             _hr(),
                             _build_debugging_section(),
                         ],

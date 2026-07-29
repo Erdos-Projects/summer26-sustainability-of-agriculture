@@ -47,9 +47,8 @@ SNAPSHOT_ROUTES = ["/", "/_dash-layout", "/_dash-dependencies"]
 
 # Callbacks that are allowed to remain server-side. Anything else server-side is a bug: it would render as a live control that silently does nothing on the published site.
 #
-# Both survivors are DEBUG-tab basin overlays, which exist to compare delineation methods against each other while reviewing the dataset -- they call NLDI and flood-fill a D8 raster live, and neither has a precomputed counterpart because neither is part of what the site is for. The forecast itself is clientside (components/forecast_panel.py).
+# The survivor is the DEBUG tab's v3 pin delineation, which flood-fills the D8 raster live to compare against v1 while reviewing the dataset. Nothing precomputed corresponds to it -- the reach store ships NLDI outlines, which is what v1 now reads -- so it cannot be converted without a second delineation pass over every reach, for a comparison tool the published site is not for. It renders inert.
 DEFERRED_OUTPUTS = {
-    "pin-basin-layer.children",  # v1 pin delineation: flowline snap + NLDI
     "pin-basin-v3-layer.children",  # v3 pin delineation: D8 raster flood-fill
 }
 
@@ -185,6 +184,26 @@ def _copy_bundle(out: Path) -> int:
 # Chunks whose absence breaks something visible, asserted after the copy. dash_leaflet's GeoJSON is the load-bearing one: it backs the hydro, basin, rain-grid, marker and pin layers, so without it the map renders with no data at all.
 _REQUIRED_CHUNKS = ["async-GeoJSON", "async-graph", "async-dropdown", "async-slider", "plotly.min.js"]
 
+_PREFIX_RE = re.compile(r'("requests_pathname_prefix"\s*:\s*)"(?:\\u002f|/)"')
+
+
+def _relativise_prefix(out: Path) -> None:
+    """Point dash-renderer's dynamic URLs at the page rather than at the domain root.
+
+    Dash bakes requests_pathname_prefix="/" and builds every URL it fetches at RUNTIME as prefix + path -- the lazy component chunks and plotly.min.js among them. On a GitHub *project* page the site lives under /<repo>/, so those resolve to the domain root and 404, while the eager <script src> tags in index.html are relative and load fine. The result is a site that comes up and works until you touch anything drawn by dcc.Graph, dcc.Dropdown or dl.GeoJSON.
+
+    "./" resolves against the page's own directory, so one export serves correctly from a project page, a user page and a local http.server alike. Same reason bundle.py refuses to emit a leading slash.
+    """
+    page = out / "index.html"
+    html = page.read_text()
+    patched, n = _PREFIX_RE.subn(r'\1"./"', html)
+    if n != 1:
+        raise RuntimeError(
+            f"expected exactly one requests_pathname_prefix in index.html, found {n}. Dash's config shape has "
+            "changed; the export would ship absolute URLs that 404 under a project page."
+        )
+    page.write_text(patched)
+
 _FINGERPRINT_RE = re.compile(r'splice\(1,\s*0,\s*"(v[0-9_]+m\d+)"\)')
 
 
@@ -262,7 +281,9 @@ def _copy_async_chunks(app, out: Path) -> int:
             dst_dir = out / "_dash-component-suites" / namespace / rel_path.parent
             dst_dir.mkdir(parents=True, exist_ok=True)
             if rel_path.name.startswith("async-"):
-                # Fingerprinted name ONLY. The webpack shim rewrites the URL whenever the loading script sits under /_dash-component-suites/, which it always does here, so the plain name is never requested and would just double the payload.
+                # BOTH names. The webpack shim rewrites a chunk URL to the fingerprinted form only sometimes; the browser was observed requesting the PLAIN name and taking a ChunkLoadError on the 404 -- which kills every lazily-loaded component (dl.GeoJSON, dcc.Graph, dcc.Dropdown, dcc.Slider) while the eagerly-bundled ones carry on working, so the site looks alive and is half dead. A running Dash server hides the difference because check_fingerprint strips any fingerprint and serves the same bytes; a static host cannot. Shipping both costs a few MB against a ~220 MB site.
+                shutil.copy2(src, dst_dir / rel_path.name)
+                n += 1
                 for fp in _fingerprints_in(src.parent):
                     shutil.copy2(src, dst_dir / _fingerprinted(rel_path.name, fp))
                     n += 1
@@ -344,6 +365,7 @@ def export(out: Path, port=DEFAULT_PORT, skip_bundle=False, audit_only=False) ->
     with zipfile.ZipFile(zbuf) as z:
         z.extractall(out)
 
+    _relativise_prefix(out)
     n = _copy_bundle(out)
     n_chunks = _copy_async_chunks(app, out)
     # GitHub Pages runs Jekyll by default, which drops paths beginning with "_" -- that would delete the entire Dash runtime under _dash-component-suites/.

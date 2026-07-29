@@ -54,7 +54,7 @@
         },
 
         /* Preferred basin per selected site, plus the dissolved union of all of them. One GeoJSON component per layer; Leaflet does the fetching. */
-        upstream: function (preferredToggle, allToggle, selectedUids, _version, consts) {
+        upstream: function (preferredToggle, allToggle, selectedUids, _version, regionGeom, consts) {
             const out = [];
             if (on(allToggle)) {
                 out.push(geojsonUrl(B().dataUrl("basins/union.geojson"), {
@@ -67,8 +67,24 @@
                         pane: "basin-pane", style: consts.basin_style_preferred, interactive: false,
                     }));
                 }
+                // A dropped pin is a selection too, so "Show basin" covers it: the catchment draining to the reach the pin snapped to, drawn in the same style as a site's. Same polygon the forecast overlays, from the same cached fetch -- but shown as soon as the pin lands, without waiting for a forecast to be run.
+                if (regionGeom && regionGeom.snap) {
+                    return B().reachBasin(regionGeom.snap.comid)
+                        .then((f) => out.concat([B().dl("GeoJSON", {
+                            data: f, options: {pane: "basin-pane", style: consts.basin_style_preferred, interactive: false},
+                        })]))
+                        .catch(() => out);  // a reach with no packed outline just draws the site basins
+                }
             }
             return out;
+        },
+
+        /* Debug: the pin's NLDI basin, drawn in the v1 comparison colour. Reads the SHIPPED outline rather than calling NLDI, so it works on the static site -- the v3 twin cannot, since no D8 delineation is precomputed. */
+        pinBasin: function (toggle, regionGeom, consts) {
+            if (!on(toggle) || !regionGeom || !regionGeom.snap) return [];
+            return B().reachBasin(regionGeom.snap.comid)
+                .then((f) => [B().dl("GeoJSON", {data: f, options: consts.pin_basin_v1})])
+                .catch(() => []);
         },
 
         /* One factory for the v1/v2/v3 comparison layers; the basin type and its style come in as State so the three registrations share an implementation. */

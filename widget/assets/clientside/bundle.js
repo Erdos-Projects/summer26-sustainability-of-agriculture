@@ -82,6 +82,18 @@
         );
     }
 
+    /* One reach's NLDI basin outline as a GeoJSON Feature, from build_forecast.pack_basin: [n:i32][lon:f32 x n][lat:f32 x n], a single exterior ring. Shared because two namespaces draw it -- the forecast's own overlay and the map's basin layers -- off the one cached fetch. */
+    function reachBasin(comid) {
+        return memo(`basin:${comid}`, () => buffer(`forecast/basins/${comid}.bin`).then((buf) => {
+            const n = new DataView(buf).getInt32(0, true);
+            const lon = new Float32Array(buf.slice(4, 4 + n * 4));
+            const lat = new Float32Array(buf.slice(4 + n * 4, 4 + n * 8));
+            const ring = new Array(n);
+            for (let i = 0; i < n; i++) ring[i] = [lon[i], lat[i]];  // GeoJSON is lon,lat
+            return {type: "Feature", properties: {}, geometry: {type: "Polygon", coordinates: [ring]}};
+        }));
+    }
+
     /* Index a decoded pack's id column for O(1) joins. Cached alongside the pack because the rain grid joins the same covariate arrays on every year/mode change. */
     function indexById(rel, idColumn) {
         return once(rel + "#index", () => {
@@ -132,7 +144,7 @@
     window.dash_clientside.bundle = {
         dataUrl, assetUrl, json, pack, buffer, memo, indexById, triggeredId,
         component, dl, h,
-        sites, sitesById, palette, manifest, siteCells, series, surplus, crops, gridIndex,
+        sites, sitesById, palette, manifest, siteCells, series, surplus, crops, gridIndex, reachBasin,
         no_update: window.dash_clientside.no_update,
     };
 })();
