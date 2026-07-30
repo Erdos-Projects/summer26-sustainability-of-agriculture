@@ -2,7 +2,7 @@
 
 Iowa's rivers carry nitrate from fertiliser runoff. Above **10 mg/L** the water is deemed unsafe to drink, and the sensor network that measures it is sparse, expensive, and shrinking under budget cuts — most of the state is simply unmonitored.
 
-This tool aims to answer the question a missing sensor would: **on a given day, at a place with no instrument, how much nitrate is in the water, and is it over the limit?** It uses only public data — weather, satellite land cover, and soil nitrogen surplus — so it works anywhere in the state.
+This tool aims to answer the question a missing sensor would: **on a given day, at a place with no instrument, how much nitrate is in the water and is it over the limit?** It uses only public data — weather, satellite land cover, and soil nitrogen surplus — so it works anywhere in the state.
 
 This was completed at the Summer 2026 Erdos Institute Data Science Bootcamp. Team members [Isaac Martin](https://web.ma.utexas.edu/users/ikmartin/), Rajpreet Kaur and Erin Bevilacqua. Ongoing work occuring in a separate repo, this tool remains a static representation of our work and a proof-of-concept.
 

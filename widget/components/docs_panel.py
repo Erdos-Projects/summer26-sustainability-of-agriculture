@@ -23,16 +23,40 @@ _ROOT = Path(__file__).resolve().parents[2]  # widget/components -> widget -> re
 # vanish; the embed is built as a real component in docs.js instead.
 DOCS = [
     ("about", "About this project", "Start here -- short version", "widget/docs/about.md", False, None),
+    ("stakeholders", "Applications", "For potential stakeholders", "widget/docs/stakeholders.md", False, None),
     ("summary", "Executive summary", "Full account, one page", "executive_summary.md", False, None),
     ("kpis", "Results & metrics", "Objectives and metrics for evaluation", "kpis.md", True, None),
-    ("readme", "Github README", "How to run it yourself", "README.md", True, None),
+    # ("readme", "Github README", "How to run it yourself", "README.md", True, None),
     ("data", "Data inventory", "All our data, documented", "data_inventory.md", False, None),
     ("video", "Presentation", "Five-minute walkthrough", "widget/docs/presentation.md", False, "O_ZCylQCXe8"),
     ("links", "Links", "Repo, video, data sources", "widget/docs/links.md", False, None),
 ]
 
+# A document carrying this marker is still being written and is withheld entirely -- no tab, no text
+# in the payload, so nothing half-finished reaches the published site.
+#
+# The switch lives in the DOCUMENT rather than in a flag here, so publishing happens in the same
+# place the writing does and cannot be left half-done in two files. Deleting the marker line both
+# publishes the tab and is how you preview it locally.
+_DRAFT_MARKER = "<!-- DRAFT"
+
+
+def _is_draft(rel: str) -> bool:
+    """Whether a listed document is still a stub. A missing file counts as one, so a half-added tab degrades to absent rather than crashing the app."""
+    path = _ROOT / rel
+    if not path.exists():
+        return True
+    with path.open() as fh:
+        return _DRAFT_MARKER in fh.read(500)
+
+
+# What actually ships. DOCS stays the full declaration; everything downstream -- the nav, the
+# callbacks, the payload -- is built from this, so the three cannot disagree about which tabs exist.
+PUBLISHED = [d for d in DOCS if not _is_draft(d[3])]
+_WITHHELD = [d[0] for d in DOCS if d not in PUBLISHED]
+
 # Relative href -> slug, for the in-viewer link switch. Keyed on the FULL relative path: "src/README.md" must not resolve to the root README, and basename matching is exactly how it would.
-_LINKS = {rel: slug for slug, _, _, rel, _, _ in DOCS if "/" not in rel}
+_LINKS = {rel: slug for slug, _, _, rel, _, _ in PUBLISHED if "/" not in rel}
 _REPO_BLOB = "https://github.com/Erdos-Projects/summer26-sustainability-of-agriculture/blob/main/"
 
 
@@ -54,13 +78,15 @@ def _read(rel: str) -> str:
 def payload() -> dict:
     """Everything the browser needs: text by slug, plus the link map the click handler resolves against."""
     return {
-        "order": [slug for slug, *_ in DOCS],
-        "text": {slug: _read(rel) for slug, _, _, rel, _, _ in DOCS},
-        "mathjax": {slug: mj for slug, _, _, _, mj, _ in DOCS},
+        "order": [slug for slug, *_ in PUBLISHED],
+        "text": {slug: _read(rel) for slug, _, _, rel, _, _ in PUBLISHED},
+        "mathjax": {slug: mj for slug, _, _, _, mj, _ in PUBLISHED},
         # Privacy-enhanced host: youtube-nocookie does not set tracking cookies until the viewer
         # actually presses play.
-        "embed": {slug: (f"https://www.youtube-nocookie.com/embed/{vid}" if vid else None)
-                  for slug, _, _, _, _, vid in DOCS},
+        "embed": {
+            slug: (f"https://www.youtube-nocookie.com/embed/{vid}" if vid else None)
+            for slug, _, _, _, _, vid in PUBLISHED
+        },
         "links": _LINKS,
         "repo_blob": _REPO_BLOB,
     }
@@ -76,6 +102,10 @@ def _nav_button(slug: str, label: str, subtitle: str, first: bool) -> html.Butto
 
 
 def layout():
+    # Said out loud, because a tab that is declared in DOCS and simply absent from the panel is
+    # otherwise indistinguishable from a bug.
+    if _WITHHELD:
+        print(f"[docs] withheld while still marked DRAFT: {', '.join(_WITHHELD)}")
     return html.Div(
         [
             dcc.Store(id="docs-payload", data=payload()),
@@ -117,7 +147,7 @@ def layout():
                                         className="docs-nav",
                                         children=[
                                             _nav_button(s, lab, sub, i == 0)
-                                            for i, (s, lab, sub, _, _, _) in enumerate(DOCS)
+                                            for i, (s, lab, sub, _, _, _) in enumerate(PUBLISHED)
                                         ],
                                     ),
                                     html.Div(id="docs-body", className="docs-body"),
@@ -151,7 +181,7 @@ def register_callbacks(app):
         ClientsideFunction(namespace="docs", function_name="activeDoc"),
         Output("docs-active", "data"),
         Input("docs-open-btn", "n_clicks"),
-        *[Input(f"docs-nav-{slug}", "n_clicks") for slug, *_ in DOCS],
+        *[Input(f"docs-nav-{slug}", "n_clicks") for slug, *_ in PUBLISHED],
         State("docs-active", "data"),
         prevent_initial_call=True,
     )
@@ -161,7 +191,7 @@ def register_callbacks(app):
     app.clientside_callback(
         ClientsideFunction(namespace="docs", function_name="render"),
         Output("docs-body", "children"),
-        *[Output(f"docs-nav-{slug}", "className") for slug, *_ in DOCS],
+        *[Output(f"docs-nav-{slug}", "className") for slug, *_ in PUBLISHED],
         Input("docs-active", "data"),
         State("docs-payload", "data"),
         prevent_initial_call=True,
