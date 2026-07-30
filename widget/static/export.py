@@ -65,13 +65,17 @@ def _build_app():
     from dash import Dash
 
     from layout import build_layout
-    from components import map_panel, info_panel, forecast_panel
+    from components import map_panel, info_panel, forecast_panel, docs_panel
 
     app = Dash(__name__, suppress_callback_exceptions=True, assets_folder=str(_WIDGET / "assets"))
     app.layout = build_layout()
+    # This list is a duplicate of widget/app.py's and has to stay in step with it. A panel registered
+    # in only one place works in local dev and is inert on the published site, and the audit below
+    # cannot catch it: it reports callbacks that ARE server-side, never ones that are missing.
     map_panel.register_callbacks(app)
     info_panel.register_callbacks(app)
     forecast_panel.register_callbacks(app)
+    docs_panel.register_callbacks(app)
     return app
 
 
@@ -182,7 +186,7 @@ def _copy_bundle(out: Path) -> int:
 
 
 # Chunks whose absence breaks something visible, asserted after the copy. dash_leaflet's GeoJSON is the load-bearing one: it backs the hydro, basin, rain-grid, marker and pin layers, so without it the map renders with no data at all.
-_REQUIRED_CHUNKS = ["async-GeoJSON", "async-graph", "async-dropdown", "async-slider", "plotly.min.js"]
+_REQUIRED_CHUNKS = ["async-GeoJSON", "async-graph", "async-dropdown", "async-slider", "async-markdown", "plotly.min.js"]
 
 _PREFIX_RE = re.compile(r'("requests_pathname_prefix"\s*:\s*)"(?:\\u002f|/)"')
 # dash2html keys its inlined JSON on the EXACT request URL ("/_dash-layout"). Relativising the

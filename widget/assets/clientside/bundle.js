@@ -53,6 +53,9 @@
     const component = (namespace, type, props) => ({namespace: namespace, type: type, props: props});
     const dl = (type, props) => component("dash_leaflet", type, props);
     const h = (type, props) => component("dash_html_components", type, props);
+    /* dcc components built here rather than in the Python layout load their async chunk on first
+     * use instead of at page boot -- which for Markdown+MathJax is 2.4 MB deferred. */
+    const dcc = (type, props) => component("dash_core_components", type, props);
 
     /* Named accessors for the artifacts more than one callback needs. Layouts documented in build_bundle.py at the _pack call that writes each one -- keep the dtype lists in step. */
     const sites = () => json("sites.json");
@@ -143,7 +146,7 @@
     window.dash_clientside = window.dash_clientside || {};
     window.dash_clientside.bundle = {
         dataUrl, assetUrl, json, pack, buffer, memo, indexById, triggeredId,
-        component, dl, h,
+        component, dl, h, dcc,
         sites, sitesById, palette, manifest, siteCells, series, surplus, crops, gridIndex, reachBasin,
         no_update: window.dash_clientside.no_update,
     };

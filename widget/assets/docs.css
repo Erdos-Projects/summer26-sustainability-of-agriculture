@@ -1,0 +1,145 @@
+/* Docs overlay: the trigger, the panel, and typography for rendered markdown.
+ *
+ * The rest of the widget keeps its styles in Python (map_common.clientside_consts) so there is one
+ * definition of each. This file has to break that rule: dcc.Markdown emits h1/p/table/pre/code that
+ * no style dict can reach, and geometry expressed here rather than in two places is the lesser evil.
+ * Callbacks therefore toggle className, not style, for anything in this file.
+ */
+
+/* ── the trigger ─────────────────────────────────────────────────────────── */
+
+.docs-open-btn {
+  position: absolute; top: 12px; left: 12px; z-index: 900;
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 14px 8px 11px;
+  border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; color: #0f172a;
+  font: 600 13px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  cursor: pointer; box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
+}
+.docs-open-btn:hover { background: #f8fafc; border-color: #94a3b8; }
+.docs-open-icon { font-size: 16px; line-height: 1; }
+
+/* ── overlay + panel ─────────────────────────────────────────────────────── */
+
+.docs-overlay { display: none; }
+.docs-overlay.is-open { display: block; }
+
+.docs-backdrop { position: fixed; inset: 0; z-index: 3000; background: rgba(15, 23, 42, 0.45); }
+
+/* Centred with margin:auto, NOT translateX(-50%) -- a transformed element becomes the containing
+ * block for its position:fixed descendants, which would trap MathJax's context menu inside it.
+ * The 1100px cap matters: 92vw on a wide monitor is an unreadable measure for prose. */
+.docs-panel {
+  position: fixed; top: 4vh; bottom: 4vh; left: 0; right: 0; margin: 0 auto;
+  width: min(1100px, 92vw); z-index: 3001;
+  display: flex; flex-direction: column; overflow: hidden;
+  background: #fff; border-radius: 10px; box-shadow: 0 18px 50px rgba(0, 0, 0, 0.35);
+  animation: docs-in 120ms ease-out;
+}
+@keyframes docs-in { from { opacity: 0; transform: scale(0.99); } to { opacity: 1; transform: none; } }
+
+.docs-header {
+  flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between;
+  padding: 14px 18px; border-bottom: 1px solid #e2e8f0;
+}
+.docs-title { font: 600 14px/1 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0f172a; }
+.docs-close {
+  border: 0; background: none; cursor: pointer; color: #94a3b8;
+  font-size: 26px; line-height: 1; padding: 0 4px;
+}
+.docs-close:hover { color: #0f172a; }
+
+.docs-main { flex: 1 1 auto; display: flex; min-height: 0; }
+
+/* ── left nav ────────────────────────────────────────────────────────────── */
+
+.docs-nav {
+  flex: 0 0 232px; overflow-y: auto; padding: 14px 10px;
+  border-right: 1px solid #e2e8f0; background: #fbfcfd;
+}
+.docs-nav-item {
+  display: block; width: 100%; text-align: left; cursor: pointer;
+  border: 0; border-left: 3px solid transparent; border-radius: 0 6px 6px 0;
+  background: none; padding: 9px 12px; margin-bottom: 2px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+.docs-nav-item:hover { background: #f1f5f9; }
+.docs-nav-item.is-active { background: #eef2f7; border-left-color: #0f172a; }
+.docs-nav-label { display: block; font-size: 13px; font-weight: 600; color: #0f172a; }
+.docs-nav-sub { display: block; font-size: 11px; color: #64748b; margin-top: 2px; line-height: 1.35; }
+
+/* ── the document ────────────────────────────────────────────────────────── */
+
+.docs-body {
+  flex: 1 1 auto; overflow-y: auto; padding: 30px 40px 72px;
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  font-size: 16px; line-height: 1.65; color: #1f2937;
+}
+.docs-body > * { max-width: 74ch; }
+
+/* Sans headings against the serif body: the standard pairing, and it keeps the document visually
+ * continuous with the panel chrome. */
+.docs-body h1, .docs-body h2, .docs-body h3, .docs-body h4 {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  color: #0f172a; line-height: 1.3;
+}
+.docs-body h1 { font-size: 26px; margin: 0 0 16px; padding-bottom: 9px; border-bottom: 1px solid #e5e7eb; }
+.docs-body h1 ~ h1 { margin-top: 46px; }  /* data_inventory.md carries two H1s */
+.docs-body h2 { font-size: 20px; margin: 32px 0 10px; }
+.docs-body h3 { font-size: 16px; margin: 24px 0 8px; }
+.docs-body p { margin: 0 0 14px; }
+.docs-body ul, .docs-body ol { margin: 0 0 14px; padding-left: 24px; }
+.docs-body li { margin: 5px 0; }
+.docs-body strong { color: #0f172a; }
+.docs-body hr { border: 0; border-top: 1px solid #e5e7eb; margin: 32px 0; }
+.docs-body img { max-width: 100%; }
+.docs-body blockquote {
+  margin: 16px 0; padding: 8px 16px; border-left: 3px solid #cbd5e1;
+  background: #f8fafc; color: #475569;
+}
+.docs-body a { color: #0369a1; text-decoration: none; border-bottom: 1px solid rgba(3, 105, 161, 0.35); cursor: pointer; }
+.docs-body a:hover { border-bottom-color: currentColor; }
+
+/* Wide tables -- data_inventory.md has rows up to 159 characters. display:block + width:max-content
+ * is what makes overflow-x actually apply to a <table>; without nowrap the cells just squash. */
+.docs-body table {
+  display: block; width: max-content; max-width: 100%; overflow-x: auto;
+  border-collapse: collapse; margin: 0 0 18px;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 13px;
+}
+.docs-body th, .docs-body td {
+  border: 1px solid #e2e8f0; padding: 6px 10px; text-align: left; vertical-align: top; white-space: nowrap;
+}
+.docs-body thead th { background: #f8fafc; font-weight: 600; }
+.docs-body tbody tr:nth-child(even) { background: #fcfdfe; }
+
+.docs-body code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 13px;
+  background: #f1f5f9; padding: 1px 5px; border-radius: 4px;
+}
+.docs-body pre {
+  background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+  padding: 12px 14px; margin: 0 0 16px; overflow-x: auto; max-width: 74ch;
+}
+.docs-body pre code { background: none; padding: 0; font-size: 12.5px; line-height: 1.5; white-space: pre; }
+
+/* Embedded video. aspect-ratio keeps the 16:9 box without the old padding-top hack, and the wrapper
+ * is capped at the same measure as the prose so the page does not jump width between tabs. */
+.docs-video {
+  max-width: 74ch; aspect-ratio: 16 / 9; margin: 0 0 22px;
+  background: #0f172a; border-radius: 8px; overflow: hidden;
+}
+.docs-video iframe { width: 100%; height: 100%; border: 0; display: block; }
+
+/* kpis.md's display math can be wider than the pane. */
+.docs-body mjx-container[display="true"] { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+
+@media (max-width: 820px) {
+  .docs-panel { top: 2vh; bottom: 2vh; width: 96vw; }
+  .docs-main { flex-direction: column; }
+  .docs-nav { flex: 0 0 auto; display: flex; gap: 4px; overflow-x: auto; border-right: 0; border-bottom: 1px solid #e2e8f0; }
+  .docs-nav-item { width: auto; white-space: nowrap; border-left: 0; border-bottom: 3px solid transparent; border-radius: 6px 6px 0 0; }
+  .docs-nav-item.is-active { border-left: 0; border-bottom-color: #0f172a; }
+  .docs-nav-sub { display: none; }
+  .docs-body { padding: 20px 18px 56px; }
+}

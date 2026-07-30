@@ -90,6 +90,13 @@ _require_nhd_assets()
 
 # Watercolor (Stadia/Stamen) is deliberately absent: it requires an API key for production traffic,
 # so it would break on a public static build. The remaining three are keyless.
+# ATTRIBUTION. OpenStreetMap tiles are ODbL and the OSMF tile usage policy requires a visible
+# "© OpenStreetMap contributors"; Esri World Imagery requires its own credit. The attribution box is
+# currently hidden in assets/custom.css, which is a deliberate choice rather than an oversight -- to
+# comply instead, delete that rule and pass `attribution=` on the dl.TileLayer, e.g.
+#     '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+# and hide only Leaflet's own prefix (`.leaflet-control-attribution a[href*="leafletjs"]`), which is
+# a courtesy credit and not a licence condition.
 TILE_URLS = {
     "street": "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
     "satellite": "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
@@ -152,7 +159,8 @@ _MENU_TAB_INACTIVE = {**_MENU_TAB_ACTIVE, "background": "#f1f5f9", "color": "#64
 _GRAPH_OVERLAY_BASE = {
     "position": "absolute",
     "top": "10px",
-    "left": "10px",
+    # Clears the docs button, which sits at left:12px in the same corner (assets/docs.css).
+    "left": "64px",
     "width": "48%",
     "height": "35vh",
     "background": "rgba(255,255,255,0.95)",

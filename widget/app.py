@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from dash import Dash
 
 from layout import build_layout
-from components import map_panel, info_panel, forecast_panel
+from components import map_panel, info_panel, forecast_panel, docs_panel
 
 # suppress_callback_exceptions: several callbacks target components that only exist once a
 # selection has been made (the per-row table buttons carry pattern-matching ids).
@@ -22,6 +22,7 @@ app.layout = build_layout()
 map_panel.register_callbacks(app)
 info_panel.register_callbacks(app)
 forecast_panel.register_callbacks(app)
+docs_panel.register_callbacks(app)  # keep in step with widget/static/export.py::_build_app
 
 
 if __name__ == "__main__":

@@ -1,13 +1,15 @@
 # Data Inventory
 
+This documents all of our data sources and explains how to access them. Below, in the "Data Story" section, we describe our process for finding, selecting, cleaning, and processing this data.
+
 ## Summary
 
 Two different resolutions: basin level and global grid level.
 
-- Water data (the nitrate_con targets) and basin GeoDataFrame parquets tied to individual site ids. For this reason we refer to "sites" and "basins" interchangably
-- Weather, Crop, Surplus data all processed and aggrigated to a single global grid (boundaries given by `bbox_wgs84` in `src/build/pipeline_config.toml`). At runtime, `src.data.access.get_data(site_uid)` grabs relevant data from the global cell ids contained in the basin parquet, so the stitching happens at runtime. This is necessary for the virtual site functionality deployed in the widget.
+- Water data (the nitrate_con targets) and basin GeoDataFrame parquets tied to individual site ids. For this reason we refer to "sites" and "basins" interchangeably.
+- Weather, Crop, Surplus data all processed and aggregated to a single global grid (boundaries given by `bbox_wgs84` in `src/build/pipeline_config.toml`). At runtime, `src.data.access.get_data(site_uid)` grabs relevant data from the global cell ids contained in the basin parquet, so the stitching happens at runtime. This is necessary for the virtual site functionality deployed in the widget.
 
-Data is built (after downloading the raw source, see `README.md`) by `make_data.py`, which in turn calls variou `_make_*.py` scripts. Note this whole pipeline was originally written by hand, but Claude was used to port it to the Erdos specified directory structure  and to decouple the covariate data from the basin architecture. Not all ported files have been manually reviewed in their entirety, but all tests pass and all old functionality is retained.
+Data is built (after downloading the raw source, see `README.md`) by `make_data.py`, which in turn calls various `_make_*.py` scripts. Note this whole pipeline was originally written by hand, but Claude was used to port it to the Erdos specified directory structure  and to decouple the covariate data from the basin architecture. Not all ported files have been manually reviewed in their entirety, but all tests pass and all old functionality is retained.
 
 ## Sources
 Sources feeding the pipeline. Acquisition lives in `src/build/` (builders + `util/`), raw
@@ -18,7 +20,7 @@ access details (URLs, keys, code) are in the *Access Points* section below.
 |---|---|---|---|---|
 | IWQIS | Iowa nitrate sensor time series (`WQS*`) | bulk CSV, by request | `_make_water.py` | By request (IWQIS / U. Iowa IIHR); not an open API |
 | USGS-NWIS | USGS nitrate gauges (`USGS-*`) | REST API | `_make_water.py` | public domain |
-| NLDI | Drainage-basin delineation (basin0/1/2) | REST API | `_make_basins.py`, `site_view.py` | public |
+| NLDI | Drainage-basin delineation (basin0/1/2), and every forecastable reach for the widget | REST API | `_make_basins.py`, `widget/static/fetch_basins.py` | public; quota-metered (800 req / ~12 min) |
 | IEM | ~4 km precip Voronoi grid (reference-day geometry) | zip download | `_make_grid.py` | Public (Iowa State U. / IEM); free |
 | gridMET | Daily weather (temp, ET, humidity, solar…) | download | `_make_weather.py` | Public domain (Climatology Lab, U. Idaho) |
 | USDA CDL | Cropland Data Layer (crop classification raster) | CropScape API | `util/clip_crops.py`, `_make_crops.py` | public |
@@ -77,6 +79,18 @@ The IWQIS KMZ basin layer (`iowawis.org/layers/basins`) is **no longer used**. I
 "authoritative" basin for WQS sites by scraping a PHP endpoint and score-matching candidate KMZs
 against the D8 area; the nearest-flowline snap supersedes it and gives a real COMID.
 
+### Deployment artifacts
+
+The published widget has no server, so basins and covariates are precomputed for all 16,760 forecastable reaches:
+
+| Path | Size | Built by |
+|---|---|---|
+| `src/data/raw/basins/nldi/` | 404 MB | `fetch_basins.py` — one NLDI polygon per COMID; quota-metered, so a refetch costs the better part of a day |
+| `src/data/cache/reach_grids/` | 464 MB | `build_reaches.py` — each basin's clipped grid cells |
+| `src/data/cache/reach_rows/` | 242 MB | `build_reaches.py` — each reach's aggregated feature row |
+
+`build_bundle.py` packs these into `widget/assets/data/` (~120 MB), which is what the browser fetches.
+
 ### gridMET (additional daily weather data)
 - *Description:* Daily gridded weather at 4 km resolution. Includes max/min temp, humidity, VPD, solar radiation, ET, and 1000-hr fuel moisture. Used for all non-precipitation weather features.
 - *URL:* https://www.climatologylab.org/gridmet.html (served via the Northwest Knowledge Network THREDDS)
@@ -116,7 +130,7 @@ tif = requests.get(tiff_url).content
 ### gTREND Surplus Data (Land-borne surplus nitrate data from 2000-2017)
 - *Description:* Surplus nitrate data at 250m resolution from a nature paper. Access using instructions from the "Data Records" section of the paper. See also the section in `src/README.md` on Catastrophic data rebuilding.
 - *URL:* https://www.nature.com/articles/s41597-026-06576-x
-- *Access Method:* Manual download, tifs ingested by `src/data/raw/surplus/tif/`.
+- *Access Method:* Manual download, tifs ingested from `src/data/raw/surplus/tif/`.
 - *Requires API-Key:* **False**
 
 ### US Census TIGER (state/county boundaries — masking)
@@ -147,7 +161,11 @@ Here's a writeup documenting our thought process as we identified and consolidat
 
 ## Target
 
-The two main targets are derived from a collection of 162 water-borne nitrate sensors spread out across Iowa's hydrological network recording nitrate (NO2 + NO3) concentration measurements (mg/L) in 5-15 minute intervals. Each of these sensors began reporting at a different date between 2008 and 2025, and many sensors were decommissioned. There are also significant data gaps in most of the nitrate timeseries in which a sensor was turned off for a time (or malfunctioned and was replaced) before being turned back on again. This means the quality of these timeseries vary significantly from sensor to sensor -- some are mostly nan, some span time periods of 1 year. To standardize and clean the data we filtered out sites that had a NaN reporting rate above 50% or a total lifespan of under 3.92 years (3.92 was chosen because there was one sensor with high quality data we liked a lot). We then manually scanned through the timeseries plots of the remaining sensors and threw away the ones which were clearly garbage (those reporting a perfectly linear nitrate concentration over their entire lifespan, for instance). This left us with 85 sensors. We later dropped two more — `USGS-415959091441301` (an NWIS well) and `WQS0031` (Big Spring, whose IWQIS `river` field reads "Groundwater / Spring") — because they are groundwater sites with no surface drainage basin, so the basin delineation, the distance-bucketed covariate aggregation and the surface travel-time lags are all meaningless for them. **83 sensors** is the working set.
+The two main targets are derived from a collection of 162 water-borne nitrate sensors spread out across Iowa's hydrological network recording nitrate (NO2 + NO3) concentration measurements (mg/L) in 5-15 minute intervals. Each of these sensors began reporting at a different date between 2008 and 2025, and many sensors were decommissioned. There are also significant data gaps in most of the nitrate timeseries in which a sensor was turned off for a time (or malfunctioned and was replaced) before being turned back on again. This means the quality of these timeseries vary significantly from sensor to sensor -- some are mostly nan, some span time periods of 1 year.
+
+To standardize and clean the data we filtered out sites that had a NaN reporting rate above 50% or a total lifespan of under 3.92 years (3.92 was chosen because there was one sensor with high quality data we liked a lot). We then manually scanned through the timeseries plots of the remaining sensors and threw away the ones which were clearly garbage (those reporting a perfectly linear nitrate concentration over their entire lifespan, for instance). This left us with 85 sensors.
+
+We later dropped two more — `USGS-415959091441301` (an NWIS well) and `WQS0031` (Big Spring, whose IWQIS `river` field reads "Groundwater / Spring") — because they are groundwater sites with no surface drainage basin, so the basin delineation, the distance-bucketed covariate aggregation and the surface travel-time lags are all meaningless for them. **83 sensors** is the working set (the models train on 81 — two fall short on rows once the features are built).
 
 From these nitrate timeseries, we define two targets: a regression target given by the daily max nitrate value observed by a sensor and a classification target given by the violation category of a sensor. A "violation" is defined by the EPA as a nitrate concentration above 10 mg/L (though in reality levels far below this are still unsafe for human consumption), so in the latter case the target is "1" if the daily maximum nitrate level rose above 10 mg/L and is "0" otherwise.
 
@@ -165,13 +183,13 @@ Water-borne nitrate comes from a variety of sources, but the primary source is a
 - *Daily Historical Weather*, precipitation in inches from IEM and then min/max temperature in Celsius, min/max humidity, vapor pressure difference, evapotranspiration in (mm), solar radiation in Joules and 1000h fuel moisture from gridMET. We refer to this as the *weather data*.
 
 Other features we considered but decided against:
-- *SSURGO*, detailed static information about soil across the United States. We considered using it as a source of static categorical information for the land surrounding each sensor, but the data was hard to organize and preliminary EDA demonstrated it had little effect on model performance.
-- *OpenET Database*, a wonderful dataset with detailed evapotranspiration data. We already had rudimentary evapotranspiration data from gridMET, and felt the difficulty of incorporating this additional datastream outweighed the potential accuracy boost it might provide.
-- *Point source polluters*. In addition to agricultural contaminants, there exist discrete point sources of nitrogen pollution, slaughterhouses or pig farms for instance, which provide a roughly constant stream of nitrogen into certain rivers in Iowa. We couldn't find a good single datasource documenting this data in the data-scraping phase of this project, but think the inclusion of these features would provide the single-best model improvement.
-- *USDA LTAR*: The Long Term Agricultural Network is a conglomerate of 19 different USDA-affiliated research stations studying various agricultural questions. In theory their data is publicly accessible, in practice, each site provides its own mechanism for searching and accessing their data. There are likely incredibly useful features hiding somewhere here, but we weren't able to find any.
-- *NASA SMAP*: This provides soil moisture data updated every 2-3 days at 9km resolution. We didn't bother examining it in EDA. When we began training in earnest we were surprised to find that the inclusion of 1000h fuel moisture, a tag-along fire-hazard indicator in our weather data, measurably improved our models. We reason it is a proxy for long-term hydrology of the soil, which affects the passage of nitrogen from soil to water. While we discovered this too late to incorporate NASA SMAP in our final model, it could be a useful thing to add in a future version.
-- *USDA NASS Quickstats*: A massive collection of agricultural data including yield, harvested area, production volume, fertilizer sales and irrigated area. Hard to access, much of it is contained in pdf reports, and potentially of limited usefulness due to its unpredictable collection frequency. An ambitious data scraper could likely find useful categorical labels and fertilizer proxies in here, though.
-- *Additional live sensor features*: The sensors themselves reported other features besides nitrate, things like pH, oxygenation level and flow rate. Which particular features were reported varied widely across the various sites, but many of these features could be useful if monitoring locations were filtered to ensure the feature of interest was present in the data for all sites.
+- *SSURGO*, detailed static soil information for the United States. Hard to organize, and preliminary EDA showed it had little effect on model performance.
+- *OpenET Database*, a wonderful dataset with detailed evapotranspiration data. We already had rudimentary ET from gridMET, and the difficulty of incorporating another datastream outweighed the accuracy it might have bought.
+- *Point source polluters*. Discrete sources like slaughterhouses and pig farms feed a roughly constant stream of nitrogen into certain Iowa rivers. We couldn't find a single good datasource for them, but think these features would be the single-best model improvement available.
+- *USDA LTAR*: 19 USDA-affiliated research stations. Publicly accessible in theory; in practice each site has its own mechanism for finding and downloading data. There are likely useful features hiding here, but we couldn't surface any.
+- *NASA SMAP*: soil moisture every 2-3 days at 9 km. We skipped it in EDA, then found during training that 1000h fuel moisture — a tag-along fire-hazard indicator in the weather data — measurably improved our models, presumably as a proxy for long-term soil hydrology, which governs how nitrogen moves from soil to water. Too late for this version; an obvious addition to the next.
+- *USDA NASS Quickstats*: yield, harvested area, production volume, fertilizer sales, irrigated area. Hard to access, much of it in PDF reports, and collected on an unpredictable schedule. An ambitious scraper could probably find categorical labels and fertilizer proxies in here.
+- *Additional live sensor features*: the sensors also report pH, oxygenation, flow rate and more, but which ones vary widely by site. Useful if you first filtered the monitoring locations down to those reporting the feature you want.
 
 ## Organization of the Data
 
@@ -190,7 +208,7 @@ Irrelevant/relevant area erroneously included/discluded from a drainage basin co
 
 1. *snap to reference*: use a USGS API to lookup precomputed drainage basins by snapping the GPS coordinates of a sensor to the nearest reference point. This worked well for most sites, but failed horribly for sensors placed on small streams near intersections with major rivers: in the worst cases this led to the drainage basin of a small local sensor incorrectly including all of Montana.
 2. *authority lookup*: use the unique identifier of a site (its so called `site_uid`) to lookup the drainage basin directly from either a federal or state authority. This worked quite well for every USGS site but quite badly for the IWQIS sites.
-3. *compute the basin algorithmically*: the IWQIS monitoring site provides a feature for displaying a drainage basin for an arbitrary pin drop on the map, and it almost works. It runs client-side in Javascript, so we used Claude to scrape through the site source and reconstruct the algorithm (it uses a GeoTIFF aligned to a reference grid with the direction of flow at every cell rounded to one of the 8 cardinal directions, and then finds the boundary of a basin via depth-first-search).
+3. *compute the basin algorithmically*: the IWQIS monitoring site provides a feature for displaying a drainage basin for an arbitrary pin drop on the map, and it almost works. It runs client-side in Javascript, so we used Claude to scrape through the site source and reconstruct the algorithm (it uses a GeoTIFF aligned to a reference grid with the direction of flow at every cell rounded to one of the 8 cardinal directions, and then finds a basin by flooding upstream from the outlet breadth-first, one frontier at a time).
 
 We then went through and manually selected a basin for each site using one of these three methods, defaulting to 1 and 2 and only resorting to 3 when the other two were nonsensical. After this process there were *still* four sites with basins which included large amounts of downstream area or failed to include the sensor location itself. These four sites were all state operated, so we used either 1 or 3 to calculate basins for pins dropped near the offending locations and then chose those basins which seemed most reasonable and/or most closely matched the one displayed by IWQIS. At the end of this process we doubted the supposed irrefutability of the IWQIS's basins, and think that ours might be marginally more accurate.
 
@@ -202,6 +220,6 @@ The weather grid was far larger than either the surplus or crop grids, so the ob
 
 We first calculated the Voronoi cells for the weather reporting locations. Then we aggregated the surplus data to the weather grid weighted by the area of intersection of surplus grid cells and the weather Voronoi cells, possible using the GeoPandas and Shapely python packages.
 
-The aggregation was easier for crops, we simply summed the total number of pixels of each CDL category in each weather grid cell. To avoid keeping all 254 categories, many of which were redundant (Corn, Sweet Corn, and Pop Corn are all separate categories) we applied an intermediate filter to combine categories. Our final crop category list was "Corn", "Soybeans", "HayPasture" (things like Alfalfa), "Small Grains", "Fallow", "Nonag" (catch all for ~0 Nitrogen contributors) and "Other" for all CDL categories not directly addressed.
+The aggregation was easier for crops, we simply summed the total number of pixels of each CDL category in each weather grid cell. To avoid keeping all 254 categories, many of which were redundant (Corn, Sweet Corn, and Pop Corn are all separate categories) we applied an intermediate filter to combine categories. Our final crop category list is eight classes: "Corn", "Soybeans", "Alfalfa", "Hay_Pasture", "Small_Grains", "Fallow", "Nonag" (catch all for ~0 Nitrogen contributors) and "Other" for all CDL categories not directly addressed.
 
 At the end of this we had a global weather grid parquet with corresponding grid-aggregated crop and surplus files. We additionally included one grid file per monitoring location containing the portion of the weather grid covering the site's drainage basin. Each of these site-grid files included the fraction of area of each cell contained in the basin as well as an estimate of the distance from the centroid of each cell to the sensor, calculated using an algorithm adapted from the resources in basin-calculation-method (3) above.

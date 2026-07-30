@@ -10,12 +10,6 @@ TLDR; Yes, you can.
 - [Link to an interactive demo of our widget/model](https://erdos-projects.github.io/summer26-sustainability-of-agriculture/) (please play around with it!)
 
 We build two separate XGBoost models, a classifier which identifies nitrate violations and a regressor which models maximum daily nitrate values. We provide a Dash widget to interact with our data and run forecasts, inspired by the [IWQIS water quality app](https://iwqis.iowawis.org/app/?iwqis=/sensors-map) (the demo site linked above is a light version of this widget running a stripped-down pair of our models).
-  - [Results](#results)
-  - [Quickstart](#quickstart)
-  - [Running the app \& notebooks](#running-the-app--notebooks)
-  - [Repo Structure](#repo-structure)
-  - [What's committed vs. downloaded](#whats-committed-vs-downloaded)
-  - [Documentation](#documentation)
 
 ## Results
 **Goal:** drop a pin in an arbitrary location in Iowa's waterways and on any given day, make two predictions:
@@ -24,7 +18,7 @@ We build two separate XGBoost models, a classifier which identifies nitrate viol
 
 **Training:** Our two XGBoost models are trained on data from 81 live nitrate sensors (158,215 sensor-days) along with geographic crop, nitrogen-surplus and weather data clipped to each sensor's drainage basin. We validate our models against sites with no hydrological connection to the training sites, see [Roberts et al. 2017, *Ecography* 40:913–929](https://nsojournals.onlinelibrary.wiley.com/doi/abs/10.1111/ecog.02881) as a precedent for example. This means our results are conservative; these models likely perform better than reported.
 
-**Classifier Results:** On basins withheld from training, the classifier reaches 0.86 ROC AUC and 0.69 average precision against a 26% violation base rate — a 2.7× improvement over chance ranking. We ship it with a table of $F_\beta$-optimal operating points: the row at $\beta = 3.5$ shows that we catch 97% of true violation days if we're willing to tollerate 65% of our positive predictions being false alarms.
+**Classifier Results:** On basins withheld from training, the classifier reaches 0.86 ROC AUC and 0.69 average precision against a 26% violation base rate — a 2.7× improvement over chance ranking. (These figures and the regressor's below are the deployed `light` pair; the full `recipe` models score marginally higher — see [`kpis.md`](kpis.md).) We ship it with a table of $F_\beta$-optimal operating points: the row at $\beta = 3.5$ shows that we catch 97% of true violation days if we're willing to tolerate 65% of our positive predictions being false alarms.
 
 | $\beta$ | recall | fdr | precision | accuracy |
 | --- | --- | --- | --- | --- | 
@@ -34,9 +28,9 @@ We build two separate XGBoost models, a classifier which identifies nitrate viol
 | **3.5** | **0.9732** | **0.6528** | 0.3472 | 0.5212 |
 | 4.0 | 0.9773 | 0.6607 | 0.3393 | 0.5033 |
 
-**Regressor Results:** On basins withheld from training, the regressor explains 40% of daily variance (R² = 0.401) with a typical error of 4.4 mg/L. That splits into two very different abilities: it tracks a basin's variation over time reasonably well (within-site R² = 0.41) but ranks one basin's overall level against another's only weakly (between-site R² = 0.20 ± 0.08) — the harder half, and the one that matters most for ungauged sites.
+**Regressor Results:** On basins withheld from training, the regressor explains 37% of daily variance (R² = 0.371) with a typical error of 4.4 mg/L. That splits into two very different abilities: it tracks a basin's variation over time reasonably well (within-site R² = 0.41) but ranks one basin's overall level against another's only weakly (between-site R² = 0.20 ± 0.08) — the harder half, and the one that matters most for ungauged sites.
 
-**Improvements:** Currently our virtual sensors are modeled according to the most drastic possible deployment scenario: we presume they have no access to no *physical* water sensors, and therefore they make predictions using only daily weather data, annual land-use data, and static geographic data. If we were to instead treat these virtual sensors as a supplement to an existing network of live sensors, as exists in Iowa and indeed the rest of the Continental United States, then we would gain access to a slew of additional features which would vastly improve our predictions. This would unlock not only live nitrate values elsewhere in the hydrological network but also other useful covariates such as water turbitidy, discharge rate, and chlorophyll fluorescence which are known to affect water-borne nitrate. Basic statistics tests demonstrate that including network-enabled features in our models would *drastically* improve our 
+**Improvements:** Our virtual sensors are modeled under the most demanding deployment scenario: no access to *physical* water sensors at all, so predictions draw only on daily weather, annual land-use, and static geographic data. Treating them instead as a supplement to an existing sensor network — as exists in Iowa and across the Continental US — would unlock live nitrate readings elsewhere in the hydrological network, along with covariates known to affect water-borne nitrate: turbidity, discharge rate, and chlorophyll fluorescence. Basic statistical tests indicate that these network-enabled features would *drastically* improve our predictions.
 
 ## Quickstart
 
@@ -51,13 +45,13 @@ conda activate sustag
 
 2. Download the weather layer from https://utexas.box.com/s/xvoktu11q2s06c0rlpz39wz7itbn5sur and extract the `weather_global_*.parquet` files into **`src/data/interim/`** (~4.6 GB). This is the only large data not committed to git — everything else the models, notebooks, and widget read is already in the clone. It is technically possible to build without this step, but it will take a long time.
 
-3. (optional) Navigate to `src/build/` and run
+3. (optional) From the repo root, run
 
 ```
-python make_data.py
+python -m src.build.make_data
 ```
 
-to ensure everything is there. (NOTE: Running this will download weather data from the USGS, and if it exceeds a certain amount, you will need to obtain an API key to proceed. See the instructions in `src/build/api-key-example.toml` if this occurs.)
+to ensure everything is there. (NOTE: Running this will download weather data from the USGS, and if it exceeds a certain amount, you will need to obtain an API key to proceed. See the instructions in `src/build/api-keys-example.toml` if this occurs.)
 
 You should now be set up! Run the app or notebooks below.
 
@@ -106,11 +100,9 @@ The following additional notebooks (all in `notebooks/`) were written as demos f
 
 ## What's committed vs. downloaded
 
-A fresh clone already contains most of the data: per-site **water/nitrate**, **basins**, the tiny cell-aggregated **crop / surplus / grid globals**, and the **surplus display assets**. The only large artifact not in git is **`weather_global` (~4.6 GB)** plus a few small `processed/` dirs — that's what the data download provides (extract it into `src/data/`). So everything runs against committed data except the weather layer until the bundle is in place.
+A fresh clone already contains most of the data: per-site **water/nitrate**, **basins**, the tiny cell-aggregated **crop / surplus / grid globals**, and the **surplus display assets**. The only large artifact not in git is **`weather_global` (~4.6 GB)**, which Quickstart step 2 downloads.
 
-The **trained models** live in **`deploy/models/`** — the deployed boosters `isaac_REG2` / `isaac_CLF2` and their `.meta.json` sidecars, committed so the widget and deploy path work on a fresh clone. (This is the replacement for the former top-level `artifacts/` directory; new training runs also write a copy under `src/models/models/`.)
-
-A *full* rebuild from raw (`make_data.py`) additionally needs `src/build/api-keys.toml` (a USGS token) and the CDL / gTREND sources — see [`src/README.md`](src/README.md)'s "Catastrophic rebuild" for per-source steps.
+The **trained models** live in **`deploy/models/`** — the deployed boosters `light_REG` / `light_CLF` (plus the older full-recipe `isaac_REG2` / `isaac_CLF2`) and their `.meta.json` sidecars, committed so the widget and deploy path work on a fresh clone. (This is the replacement for the former top-level `artifacts/` directory; new training runs also write a copy under `src/models/models/`.)
 
 ## Documentation
 
