@@ -36,6 +36,8 @@ Cross-site nitrate climatology (cached; all built from the all-sites daily mean)
 Most cross-site series share _state_daily_base() (the all-sites daily-mean nitrate) and are cached in data/_cache.
 """
 
+import re
+
 import pandas as pd
 import numpy as np
 from functools import lru_cache
@@ -198,6 +200,59 @@ def agg_surplus_normalized(site_uid="", site_data=None, edges=_DEFAULT_DIST_EDGE
 
     Output column: surplus_kgha. No exp/lam distance weighting -- a mean is already scale-free."""
     return _bucket_mean_intensity(site_uid, site_data, edges)
+
+
+# ── long-run composition: the per-year shares reduced OVER YEARS ──────────────
+# Crops and surplus join per YEAR, so the model only ever sees one year's land cover -- a snapshot carrying that year's weather, rotation phase and price response. What separates two basins over the long run is their CHARACTERISTIC land use, and nothing else in the feature set is a function of the TIME SERIES of the CDL raster. These are one scalar per site (and per COMID), so they stay precomputable for the widget: extra columns on a row already shipped, no new per-day storage.
+
+# The reduction window is the TRAINING SPAN -- nitrate observations run 2008..2026 across the 83-site cohort -- intersected with what each block carries: crops 2008..2025, surplus 2008..2017. Reducing over the years the model is actually trained on is what makes "characteristic land use" mean anything.
+#
+# The 2008 floor is also load-bearing for a reason that is invisible from the column values. crops_global node coverage is NOT constant across the full record: 2000 holds 9,765 of 19,103 nodes with NW/W Iowa missing, rising through 14,369 in 2003-2005 to full coverage at 2006. agg_crops_normalized divides by the row's own class total, so a half-covered year still yields a perfectly plausible composition OF A DIFFERENT SUB-BASIN. Reducing across that boundary would average partial-basin compositions with full ones in a geographically systematic way, which would make the sd block a longitude proxy -- and against Iowa's east-west nitrate gradient a longitude proxy LOOKS like signal. From 2008 coverage is exactly 19,103 nodes every year (surplus 19,085 every year it has), so the floor removes the failure mode rather than bounding it.
+#
+# The two blocks therefore reduce over windows of different LENGTH (18 years against 10). That is deliberate: they are never compared to each other, and truncating crops to surplus's 2017 would discard eight clean years to buy a symmetry nothing reads.
+LONGRUN_YEARS = range(2008, 2027)
+
+# Every stat the reducer emits. The shipped subset per task lives in recipes.LONGRUN_STATS; the static build packs all of them (see build_forecast.LONGRUN_PACK_STATS) so the modelling choice can change without another reach pass.
+LONGRUN_STAT_NAMES = ("mean", "sd")
+
+_BUCKET_SUFFIX = re.compile(r"(_b\d+)$")
+
+
+def _stat_name(col, stat):
+    """pct_corn_b0 -> pct_corn_mean_b0. Anchored, so the stat lands before the RING and not inside a base name that happens to contain _b<digits>; unbucketed columns (edges=()) just get it appended."""
+    return _BUCKET_SUFFIX.sub(rf"_{stat}\1", col, count=1) if _BUCKET_SUFFIX.search(col) else f"{col}_{stat}"
+
+
+def longrun_from_blocks(cb, sb, years=LONGRUN_YEARS, min_frac=0.8):
+    """Long-run basin composition: the per-year crop/surplus shares reduced over LONGRUN_YEARS, one scalar per (column, stat).
+
+    Takes the ALREADY-FLATTENED per-year frames _agg_block_compute built (cb: pct_corn_b0..., sb: surplus_kgha_norm_b0..., each with a `year` column) rather than re-calling the aggregators, so the reduction is free and cannot disagree with the per-year columns it sits beside. The reach pass leans on this: it passes a SiteData, which bypasses the uid cache, so a second aggregation there would roughly double a ~140 ms/reach build over 16,760 reaches.
+
+    Returns {stat: {column: scalar}} -- BOTH stats always, keyed by stat so a caller selects a block without parsing names back apart (see longrun_select and recipes.LONGRUN_STATS). Computing both is what keeps `stats` out of _agg_block_cached's key, so a task-level change to which block ships does not fragment the cache or invalidate a reach row. Inputs are the shared read-only lru_cache frames -- never mutated here.
+
+    A ring occupied in only a handful of years is the trap this guards: .mean() skips NaN, so 2-of-18 reduces to a 2-year mean that reads exactly like a full one. Columns below `min_frac` of the available years go NaN, and sd additionally needs 3 (ddof=1 makes n=1 NaN and n=2 meaningless). A ring occupied in NO year has no column at all -- the pivot never creates it -- which is the same absent-ring convention every other bucketed block follows.
+    """
+    keep = set(years)
+    out = {s: {} for s in LONGRUN_STAT_NAMES}
+    for frame in (cb, sb):
+        if frame is None or "year" not in frame.columns:
+            continue
+        f = frame[frame["year"].isin(keep)]
+        cols = [c for c in f.columns if c != "year"]
+        if f.empty or not cols:
+            continue
+        floor = max(2, int(np.ceil(min_frac * len(f))))  # len(f) is one row per year post-flatten
+        n, mean, sd = f[cols].count(), f[cols].mean(), f[cols].std()
+        for c in cols:
+            ok = n[c] >= floor
+            out["mean"][_stat_name(c, "mean")] = float(mean[c]) if ok else np.nan
+            out["sd"][_stat_name(c, "sd")] = float(sd[c]) if ok and n[c] >= 3 else np.nan
+    return out
+
+
+def longrun_select(longrun, stats):
+    """Flatten longrun_from_blocks' {stat: {col: val}} down to the blocks `stats` names."""
+    return {c: v for s in stats for c, v in longrun.get(s, {}).items()}
 
 
 # ── antecedent-weather integrators (basin-wide rolling sums) ──────────────────

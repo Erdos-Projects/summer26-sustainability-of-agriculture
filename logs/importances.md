@@ -1,3 +1,292 @@
+# CLF Model 28
+
+Recipe: light_CLF
+Date: ?
+| features | gain | perm |
+| --- | --- | --- |
+| rest_of_state_nitrate_lag1 | 0.0777 | 0.0626 |
+| pct_corn_mean_b2 | 0.0912 | 0.0114 |
+| surplus_kgha_norm_mean_b2 | 0.0326 | 0.0102 |
+| fuel_moisture_1000h_b2 | 0.0064 | 0.0099 |
+| max_dist_to_sensor | 0.0219 | 0.0054 |
+| mean_dist_to_sensor | 0.0164 | 0.0052 |
+| doy_sin2 | 0.0058 | 0.0052 |
+| pct_corn_mean_b1 | 0.0706 | 0.0048 |
+| surplus_kgha_norm_mean_b1 | 0.0215 | 0.0043 |
+| pct_hay_pasture_mean_b2 | 0.0475 | 0.0028 |
+| pct_nonag_b2 | 0.0075 | 0.0025 |
+| rest_of_state_nitrate_lag3 | 0.0522 | 0.0024 |
+| doy_sin | 0.0157 | 0.0022 |
+| pct_corn_b2 | 0.0217 | 0.0019 |
+| doy_cos | 0.0073 | 0.0019 |
+| pct_nonag_mean_b2 | 0.0152 | 0.0017 |
+| pct_alfalfa_b0 | 0.0068 | 0.0013 |
+| log_basin_area | 0.0162 | 0.0011 |
+| pct_nonag_mean_b1 | 0.0150 | 0.0010 |
+| Corn_expT2000 | 0.0068 | 0.0007 |
+| pct_other_b2 | 0.0059 | 0.0007 |
+| pct_fallow_mean_b1 | 0.0165 | 0.0007 |
+| lon | 0.0087 | 0.0006 |
+| Soybeans_expT2000 | 0.0065 | 0.0006 |
+| pct_small_grains_mean_b0 | 0.0079 | 0.0006 |
+| pct_alfalfa_b2 | 0.0054 | 0.0005 |
+| pct_alfalfa_mean_b2 | 0.0136 | 0.0005 |
+| pct_hay_pasture_b2 | 0.0083 | 0.0004 |
+| Small_Grains_expT2000 | 0.0041 | 0.0003 |
+| pct_fallow_b2 | 0.0056 | 0.0003 |
+| pct_alfalfa_mean_b0 | 0.0106 | 0.0002 |
+| Hay_Pasture_expT2000 | 0.0059 | 0.0002 |
+| fuel_moisture_1000h_b1 | 0.0071 | 0.0002 |
+| surplus_kgha_norm_b2 | 0.0089 | 0.0002 |
+| surplus_kgha_norm_mean_b0 | 0.0083 | 0.0002 |
+| pct_alfalfa_mean_b1 | 0.0076 | 0.0002 |
+| doy_cos2 | 0.0033 | 0.0001 |
+| pct_small_grains_mean_b1 | 0.0051 | 0.0001 |
+| Other_expT2000 | 0.0050 | 0.0001 |
+| pct_soybeans_b2 | 0.0046 | 0.0001 |
+| pct_small_grains_b0 | 0.0053 | 0.0001 |
+| Nonag_expT2000 | 0.0102 | 0.0001 |
+| pct_soybeans_b1 | 0.0042 | 0.0001 |
+| pct_soybeans_mean_b0 | 0.0077 | 0.0001 |
+| pct_other_mean_b0 | 0.0072 | 0.0000 |
+| pct_nonag_mean_b0 | 0.0343 | 0.0000 |
+| pct_fallow_b0 | 0.0053 | 0.0000 |
+| pct_other_b0 | 0.0042 | -0.0000 |
+| pct_fallow_mean_b0 | 0.0064 | -0.0000 |
+| pct_corn_mean_b0 | 0.0139 | -0.0000 |
+| pct_soybeans_b0 | 0.0118 | -0.0000 |
+| pct_alfalfa_b1 | 0.0057 | -0.0001 |
+| Fallow_expT2000 | 0.0048 | -0.0001 |
+| pct_corn_b1 | 0.0073 | -0.0001 |
+| surplus_kgha_norm_b0 | 0.0048 | -0.0001 |
+| fuel_moisture_1000h_b0 | 0.0038 | -0.0001 |
+| pct_corn_b0 | 0.0043 | -0.0001 |
+| surplus_kgha_norm_b1 | 0.0047 | -0.0001 |
+| pct_other_mean_b2 | 0.0073 | -0.0001 |
+| pct_hay_pasture_mean_b0 | 0.0059 | -0.0002 |
+| pct_other_b1 | 0.0045 | -0.0002 |
+| pct_small_grains_b1 | 0.0040 | -0.0002 |
+| pct_soybeans_mean_b1 | 0.0082 | -0.0003 |
+| pct_other_mean_b1 | 0.0051 | -0.0003 |
+| pct_hay_pasture_mean_b1 | 0.0082 | -0.0003 |
+| pct_hay_pasture_b0 | 0.0068 | -0.0003 |
+| pct_nonag_b0 | 0.0198 | -0.0003 |
+| pct_fallow_b1 | 0.0070 | -0.0004 |
+| pct_fallow_mean_b2 | 0.0073 | -0.0004 |
+| pct_nonag_b1 | 0.0076 | -0.0005 |
+| pct_soybeans_mean_b2 | 0.0107 | -0.0005 |
+| lat | 0.0087 | -0.0006 |
+| surplus_kgha_expT2000 | 0.0074 | -0.0007 |
+| pct_small_grains_b2 | 0.0046 | -0.0010 |
+| pct_small_grains_mean_b2 | 0.0185 | -0.0010 |
+| pct_hay_pasture_b1 | 0.0077 | -0.0012 |
+
+---
+
+# REG Model 27
+
+Recipe: light_REG
+Date: ?
+| features | gain | perm |
+| --- | --- | --- |
+| rest_of_state_nitrate_lag1 | 0.0872 | 0.1512 |
+| roll_n_avg_except_this7d | 0.0675 | 0.0435 |
+| pct_corn_mean_b0 | 0.0994 | 0.0252 |
+| pct_corn_mean_b1 | 0.0739 | 0.0224 |
+| fuel_moisture_1000h_b2 | 0.0128 | 0.0105 |
+| pct_fallow_mean_b0 | 0.0200 | 0.0065 |
+| fuel_moisture_1000h_b1 | 0.0070 | 0.0062 |
+| surplus_kgha_norm_mean_b2 | 0.0224 | 0.0048 |
+| pct_other_mean_b0 | 0.0130 | 0.0038 |
+| pct_hay_pasture_mean_b2 | 0.0228 | 0.0038 |
+| pct_corn_b2 | 0.0105 | 0.0037 |
+| doy_sin2 | 0.0037 | 0.0032 |
+| pct_alfalfa_b2 | 0.0048 | 0.0029 |
+| doy_sin | 0.0068 | 0.0029 |
+| pct_soybeans_mean_b0 | 0.0121 | 0.0028 |
+| surplus_kgha_norm_mean_b1 | 0.0198 | 0.0027 |
+| Nonag_expT2000 | 0.0112 | 0.0024 |
+| lon | 0.0062 | 0.0023 |
+| pct_hay_pasture_b2 | 0.0206 | 0.0022 |
+| pct_corn_mean_b2 | 0.0143 | 0.0020 |
+| pct_nonag_mean_b1 | 0.0114 | 0.0019 |
+| surplus_kgha_norm_b2 | 0.0062 | 0.0018 |
+| pct_corn_b1 | 0.0315 | 0.0018 |
+| pct_soybeans_b1 | 0.0050 | 0.0017 |
+| pct_other_b1 | 0.0038 | 0.0017 |
+| pct_small_grains_b2 | 0.0047 | 0.0015 |
+| pct_fallow_mean_b1 | 0.0083 | 0.0014 |
+| pct_fallow_b2 | 0.0038 | 0.0013 |
+| pct_other_mean_b2 | 0.0243 | 0.0013 |
+| surplus_kgha_expT2000 | 0.0057 | 0.0013 |
+| pct_soybeans_b0 | 0.0040 | 0.0012 |
+| Soybeans_expT2000 | 0.0056 | 0.0011 |
+| mean_dist_to_sensor | 0.0066 | 0.0011 |
+| pct_fallow_b1 | 0.0044 | 0.0010 |
+| Fallow_expT2000 | 0.0039 | 0.0009 |
+| pct_other_b2 | 0.0043 | 0.0006 |
+| Hay_Pasture_expT2000 | 0.0056 | 0.0006 |
+| pct_small_grains_mean_b2 | 0.0144 | 0.0006 |
+| pct_nonag_b2 | 0.0035 | 0.0005 |
+| pct_nonag_mean_b0 | 0.0136 | 0.0005 |
+| Small_Grains_expT2000 | 0.0033 | 0.0003 |
+| pct_alfalfa_mean_b2 | 0.0117 | 0.0003 |
+| fuel_moisture_1000h_b0 | 0.0030 | 0.0003 |
+| pct_hay_pasture_mean_b1 | 0.0113 | 0.0003 |
+| pct_corn_b0 | 0.0098 | 0.0002 |
+| pct_nonag_b1 | 0.0119 | 0.0002 |
+| pct_alfalfa_mean_b1 | 0.0063 | 0.0002 |
+| pct_nonag_b0 | 0.0092 | 0.0002 |
+| pct_nonag_mean_b2 | 0.0059 | 0.0002 |
+| pct_soybeans_b2 | 0.0024 | 0.0002 |
+| pct_other_b0 | 0.0062 | 0.0001 |
+| max_dist_to_sensor | 0.0060 | 0.0001 |
+| doy_cos2 | 0.0007 | 0.0001 |
+| pct_alfalfa_b1 | 0.0037 | 0.0000 |
+| pct_fallow_b0 | 0.0037 | -0.0001 |
+| pct_fallow_mean_b2 | 0.0042 | -0.0001 |
+| Other_expT2000 | 0.0042 | -0.0001 |
+| pct_other_mean_b1 | 0.0036 | -0.0001 |
+| pct_soybeans_mean_b2 | 0.0270 | -0.0001 |
+| surplus_kgha_norm_b1 | 0.0034 | -0.0003 |
+| pct_small_grains_b1 | 0.0034 | -0.0003 |
+| pct_soybeans_mean_b1 | 0.0109 | -0.0003 |
+| surplus_kgha_norm_mean_b0 | 0.0143 | -0.0004 |
+| Corn_expT2000 | 0.0095 | -0.0004 |
+| surplus_kgha_norm_b0 | 0.0034 | -0.0005 |
+| pct_alfalfa_mean_b0 | 0.0090 | -0.0006 |
+| doy_cos | 0.0026 | -0.0008 |
+| pct_hay_pasture_mean_b0 | 0.0086 | -0.0009 |
+| rest_of_state_nitrate_lag3 | 0.0304 | -0.0009 |
+| log_basin_area | 0.0117 | -0.0014 |
+| pct_hay_pasture_b1 | 0.0060 | -0.0017 |
+| pct_small_grains_b0 | 0.0039 | -0.0017 |
+| pct_small_grains_mean_b1 | 0.0121 | -0.0020 |
+| pct_alfalfa_b0 | 0.0038 | -0.0021 |
+| pct_small_grains_mean_b0 | 0.0088 | -0.0032 |
+| pct_hay_pasture_b0 | 0.0050 | -0.0038 |
+| lat | 0.0119 | -0.0039 |
+
+---
+
+# CLF Model 26
+
+Recipe: recipe_CLF
+Date: ?
+| features | gain | perm |
+| --- | --- | --- |
+| rest_of_state_nitrate_lag1 | 0.0716 | 0.0226 |
+| pct_corn_b2 | 0.0548 | 0.0166 |
+| fuel_moisture_1000h_b2 | 0.0075 | 0.0089 |
+| pct_nonag_b2 | 0.0238 | 0.0082 |
+| mean_dist_to_sensor | 0.0462 | 0.0070 |
+| doy_sin2 | 0.0069 | 0.0060 |
+| max_dist_to_sensor | 0.0665 | 0.0046 |
+| doy_sin | 0.0075 | 0.0044 |
+| lon | 0.0336 | 0.0029 |
+| pct_hay_pasture_b2 | 0.0240 | 0.0029 |
+| lat | 0.0266 | 0.0025 |
+| pct_alfalfa_b2 | 0.0167 | 0.0025 |
+| surplus_kgha_norm_b2 | 0.0164 | 0.0024 |
+| pct_alfalfa_b0 | 0.0167 | 0.0018 |
+| rest_of_state_nitrate_lag2 | 0.0355 | 0.0015 |
+| pct_corn_b1 | 0.0424 | 0.0014 |
+| doy_cos | 0.0076 | 0.0013 |
+| Hay_Pasture_expT2000 | 0.0162 | 0.0012 |
+| Soybeans_expT2000 | 0.0171 | 0.0012 |
+| pct_nonag_b1 | 0.0215 | 0.0010 |
+| log_basin_area | 0.0248 | 0.0007 |
+| pct_other_b2 | 0.0110 | 0.0006 |
+| pct_nonag_b0 | 0.0364 | 0.0006 |
+| pct_soybeans_b2 | 0.0133 | 0.0005 |
+| Small_Grains_expT2000 | 0.0105 | 0.0005 |
+| surplus_kgha_norm_b1 | 0.0127 | 0.0004 |
+| fuel_moisture_1000h_b0 | 0.0046 | 0.0004 |
+| pct_corn_b0 | 0.0239 | 0.0004 |
+| Corn_expT2000 | 0.0150 | 0.0003 |
+| Other_expT2000 | 0.0105 | 0.0003 |
+| pct_fallow_b2 | 0.0118 | 0.0002 |
+| fuel_moisture_1000h_b1 | 0.0058 | 0.0002 |
+| surplus_kgha_expT2000 | 0.0120 | 0.0002 |
+| pct_other_b1 | 0.0099 | 0.0001 |
+| pct_soybeans_b0 | 0.0141 | 0.0001 |
+| doy_cos2 | 0.0048 | -0.0000 |
+| Nonag_expT2000 | 0.0194 | -0.0000 |
+| surplus_kgha_norm_b0 | 0.0138 | -0.0000 |
+| Fallow_expT2000 | 0.0123 | -0.0000 |
+| pct_fallow_b0 | 0.0147 | -0.0001 |
+| pct_soybeans_b1 | 0.0136 | -0.0001 |
+| pct_small_grains_b0 | 0.0224 | -0.0002 |
+| pct_other_b0 | 0.0130 | -0.0002 |
+| rest_of_state_nitrate_lag5 | 0.0090 | -0.0003 |
+| rest_of_state_nitrate_lag3 | 0.0263 | -0.0004 |
+| pct_hay_pasture_b0 | 0.0133 | -0.0005 |
+| pct_fallow_b1 | 0.0109 | -0.0005 |
+| pct_alfalfa_b1 | 0.0105 | -0.0006 |
+| pct_small_grains_b2 | 0.0108 | -0.0007 |
+| pct_small_grains_b1 | 0.0128 | -0.0009 |
+| pct_hay_pasture_b1 | 0.0170 | -0.0028 |
+
+---
+
+# REG Model 25
+
+Recipe: recipe_REG
+Date: ?
+| features | gain | perm |
+| --- | --- | --- |
+| rest_of_state_nitrate_lag1 | 0.1328 | 0.1318 |
+| roll_n_avg_except_this7d | 0.0836 | 0.0552 |
+| pct_corn_b1 | 0.0674 | 0.0214 |
+| fuel_moisture_1000h_b2 | 0.0258 | 0.0125 |
+| pct_corn_b2 | 0.0384 | 0.0069 |
+| pct_hay_pasture_b2 | 0.0546 | 0.0064 |
+| fuel_moisture_1000h_b1 | 0.0087 | 0.0060 |
+| pct_alfalfa_b2 | 0.0355 | 0.0059 |
+| pct_nonag_b1 | 0.0271 | 0.0046 |
+| pct_soybeans_b1 | 0.0163 | 0.0041 |
+| doy_sin | 0.0155 | 0.0041 |
+| log_basin_area | 0.0230 | 0.0029 |
+| doy_sin2 | 0.0056 | 0.0027 |
+| pct_hay_pasture_b1 | 0.0313 | 0.0023 |
+| lon | 0.0187 | 0.0021 |
+| Corn_expT2000 | 0.0219 | 0.0020 |
+| Other_expT2000 | 0.0122 | 0.0015 |
+| Nonag_expT2000 | 0.0205 | 0.0011 |
+| lat | 0.0230 | 0.0010 |
+| Hay_Pasture_expT2000 | 0.0138 | 0.0009 |
+| surplus_kgha_norm_b2 | 0.0097 | 0.0009 |
+| surplus_kgha_expT2000 | 0.0106 | 0.0007 |
+| fuel_moisture_1000h_b0 | 0.0053 | 0.0007 |
+| pct_nonag_b2 | 0.0074 | 0.0007 |
+| Small_Grains_expT2000 | 0.0066 | 0.0004 |
+| pct_fallow_b1 | 0.0052 | 0.0003 |
+| doy_cos2 | 0.0023 | 0.0003 |
+| pct_fallow_b2 | 0.0075 | 0.0002 |
+| pct_small_grains_b2 | 0.0146 | 0.0002 |
+| pct_other_b0 | 0.0118 | 0.0001 |
+| pct_fallow_b0 | 0.0065 | 0.0000 |
+| surplus_kgha_norm_b1 | 0.0101 | 0.0000 |
+| pct_alfalfa_b1 | 0.0070 | -0.0002 |
+| pct_other_b2 | 0.0065 | -0.0003 |
+| pct_corn_b0 | 0.0417 | -0.0003 |
+| pct_soybeans_b0 | 0.0093 | -0.0003 |
+| surplus_kgha_norm_b0 | 0.0069 | -0.0004 |
+| max_dist_to_sensor | 0.0211 | -0.0005 |
+| pct_soybeans_b2 | 0.0078 | -0.0007 |
+| doy_cos | 0.0060 | -0.0009 |
+| pct_other_b1 | 0.0099 | -0.0011 |
+| Fallow_expT2000 | 0.0066 | -0.0012 |
+| Soybeans_expT2000 | 0.0150 | -0.0020 |
+| pct_small_grains_b1 | 0.0057 | -0.0022 |
+| pct_alfalfa_b0 | 0.0073 | -0.0025 |
+| pct_nonag_b0 | 0.0324 | -0.0028 |
+| pct_small_grains_b0 | 0.0066 | -0.0030 |
+| pct_hay_pasture_b0 | 0.0104 | -0.0037 |
+| mean_dist_to_sensor | 0.0267 | -0.0037 |
+
+---
+
 # CLF Model 24
 
 Recipe: light_CLF

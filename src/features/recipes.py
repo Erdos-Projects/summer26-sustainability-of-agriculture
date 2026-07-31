@@ -9,22 +9,25 @@ Treat the permutation-importance reasoning in this file with care generally: per
 CURRENT FEATURE SETS
 --------------------
 
-At full bucket depth: recipe_CLF 51, light_CLF 48, recipe_REG 49, light_REG 45. "/b" marks a block that repeats per distance bucket:
+At full bucket depth, EXCLUDING the long-run block: recipe_CLF 51, light_CLF 49, recipe_REG 49, light_REG 50. Long-run adds 9 x buckets x len(LONGRUN_STATS[task]) on top -- 27 per stat at three rings -- so the totals move whenever that constant does. "/b" marks a block that repeats per distance bucket:
 
     static              lat, lon, mean_dist_to_sensor    (+ log_basin_area, max_dist_to_sensor)
     calendar (4)        doy_sin, doy_cos, doy_sin2, doy_cos2
     cross-site          rest_of_state_nitrate_lag1       (+ lag2, lag3, lag5 for CLF)
     cross-site roll (1) roll_n_avg_except_this7d         (REG only)
-    weather (1/b)       fuel_moisture_1000h              (light: never bucketed)
+    weather (1/b)       fuel_moisture_1000h              (bucketed in BOTH families -- see LIGHT_WEATHER_EDGES)
     crops, share (8/b)  pct_{alfalfa,corn,fallow,hay_pasture,nonag,other,small_grains,soybeans}
     crops, exp (7)      {Corn,Fallow,Hay_Pasture,Nonag,Other,Small_Grains,Soybeans}_expT<lam>
     surplus (1/b + 1)   surplus_kgha_norm per bucket, surplus_kgha_expT<lam>
+    long-run (9/b/stat) pct_<class>_<stat>_b{k}, surplus_kgha_norm_<stat>_b{k}   (stat in LONGRUN_STATS)
+
+The long-run block is the per-year crop and surplus shares reduced over features.LONGRUN_YEARS -- one scalar per site, so its width is 9 x buckets x len(LONGRUN_STATS[task]) and NOT a function of the calendar. It is the only block that sees the TIME SERIES of the CDL raster rather than one year of it, and being site-constant it cannot move within-site skill at all; it exists for the between-site metrics. It also fills a real hole: surplus_global stops at 2017 while training rows run to 2026, so the per-year surplus columns are NaN on roughly two thirds of the pooled rows and the reduced ones are not.
 
 Dropped from BOTH families on replicated negative permutation importance: the eight weather variables other than fuel moisture (WEATHER_KEEP), Alfalfa_expT (EXPT_DROP), and rest_of_state_nitrate_lag{2,3,5} for REG (REG_LAGS). doy_cos2 is KEPT despite reading ~0.00% -- it is the other half of the semiannual pair, and the tree simply prefers splitting on sin2.
 
 The *_expT blocks are never bucketed, in either family (see _agg_block_compute). The exp-decay tag carries its lambda, so a retuned decay length changes the column NAMES -- deploy/predict.py raises on that rather than NaN-filling it.
 
-WATCH OUT: every recipe's column COUNT is basin-dependent, because a bucket only appears if some cell falls in it. Measured on a compact basin against one spanning all three rings: recipe_REG 39 / 49, light_REG 36 / 45, recipe_CLF 41 / 51, light_CLF 39 / 48. deploy/predict.py handles this by reindexing to booster.feature_names and NaN-filling the absent rings -- and ONLY the absent rings; see _assert_no_skew. A per-COMID feature store does the same, emitting the full bucketed row per reach with NaN where a ring is empty, which is still one static row per reach.
+WATCH OUT: every recipe's column COUNT is basin-dependent, because a bucket only appears if some cell falls in it. The long-run block is bucketed too, so it varies the same way -- a basin occupying two rings emits 18 of its 27 columns per stat, not 27 with nine NaNs. deploy/predict.py handles this by reindexing to booster.feature_names and NaN-filling the absent rings -- and ONLY the absent rings; see _assert_no_skew. A per-COMID feature store does the same, emitting the full bucketed row per reach with NaN where a ring is empty, which is still one static row per reach.
 """
 
 from src.features.features import (
@@ -38,6 +41,8 @@ from src.features.features import (
     rolling_nitrate_avg_except_this,
     doy_climatology_pure_signal,
     site_static,
+    longrun_from_blocks,
+    longrun_select,
     nitrate_daily_rolling,
     nitrate_violations_rolling,
     nitrate_anomaly_z,
@@ -73,6 +78,13 @@ EXPT_DROP = ("Alfalfa",)
 REG_LAGS = (1,)
 CLF_LAGS = (1, 2, 3, 5)
 
+# Which long-run reductions each task consumes (features.longrun_from_blocks emits both). The block is the per-year crop/surplus shares reduced over features.LONGRUN_YEARS, broadcast alongside site_static -- one scalar per site, so it cannot move within-site skill at all and is aimed squarely at the between-site metrics.
+#
+# The static build packs BOTH stats regardless (build_forecast.LONGRUN_PACK_STATS), and the browser resolves columns by name against the booster's own feature list, so narrowing either tuple is a retrain rather than another reach pass.
+#
+# rotation_index is deliberately absent. It is measured dead in the sibling repo (exps 32/32c): +0.80 correlated with pct_corn_sd and worse on both tasks, because differencing the BASIN MEAN cancels the field-scale rotation it is meant to catch -- half the fields flipping corn->soy while the other half flip back leaves the mean almost unmoved.
+LONGRUN_STATS = {"reg": ("mean",), "clf": ("mean",)}
+
 # Weather rolling-average ladder: a target window W gets a trailing mean over every k in this
 # ladder with k <= W. k=1 ("today") is already the daily weather block, so only k>1 add
 # columns -- e.g. W=7 -> roll3d + roll7d, W=3 -> roll3d, W=1 -> none.
@@ -92,13 +104,17 @@ def _site_uid_of(site):
     return site if isinstance(site, str) else site.site_uid
 
 
-def _add_static(site, d, drop=()):
-    """Append the time-invariant site descriptors. `drop` omits some of them: the light recipes cut the ones whose permutation importance went negative once the crop/surplus blocks were normalized (see LIGHT_STATIC_DROP)."""
-    for k, v in site_static(**_site_kwargs(site)).items():
-        if k in drop:
-            continue
-        d[k] = v
-    return d
+def _add_static(site, d, drop=(), extra=None):
+    """Append the time-invariant site descriptors, then `extra` (the long-run composition block, already narrowed to the task's stats). `drop` omits some descriptors: the light recipes cut the ones whose permutation importance went negative once the crop/surplus blocks were normalized (see LIGHT_STATIC_DROP).
+
+    Assigned as scalars rather than merged, so merge_on_date's duplicate guard has already run by the time we get here -- a name colliding with a merged column would replace it with a constant, in silence, leaving a frame of exactly the right shape. Hence the explicit check.
+    """
+    scalars = {k: v for k, v in site_static(**_site_kwargs(site)).items() if k not in drop}
+    scalars.update(extra or {})
+    clash = sorted(set(scalars) & set(d.columns))
+    if clash:
+        raise ValueError(f"static block would overwrite merged column(s): {clash}")
+    return d.assign(**scalars)
 
 
 def _weather_windows(window):
@@ -182,7 +198,10 @@ def _agg_block_compute(site, edges, vel, lam, weather_edges=None, weather=True):
     sb = flatten_buckets(_tag_values(agg_surplus_normalized(**kw, edges=e), "_norm", keep=KGHA))
     sb_exp = flatten_buckets(_tag_values(agg_surplus(**kw, edges=(), lam=lam, exp=True), f"_expT{lam}", keep=KGHA))
 
-    return wb, cb, cb_exp, sb, sb_exp
+    # Reduced from cb/sb rather than re-aggregated, so it costs nothing and cannot disagree with the per-year columns beside it. Both stats always; the task picks its block via LONGRUN_STATS, which therefore stays out of this function's cache key.
+    lr = longrun_from_blocks(cb, sb)
+
+    return wb, cb, cb_exp, sb, sb_exp, lr
 
 
 @lru_cache(maxsize=None)
@@ -226,7 +245,18 @@ def _cross_site_nitrate(site, lags=(1, 2, 3, 5), rolls=(7, 14, 30, 60)):
     return _cross_site_nitrate_compute(site, lags, rolls)
 
 
-def _covariate_block(site, n, edges, vel, lam, window, roll_nitrate_windows=(7, 14, 30, 60), lags=CLF_LAGS):
+def _covariate_block(
+    site,
+    n,
+    edges,
+    vel,
+    lam,
+    window,
+    roll_nitrate_windows=(7, 14, 30, 60),
+    lags=CLF_LAGS,
+    longrun_stats=(),
+    statics=None,
+):
     """The feature scaffold: lagged whole-basin weather, the crop composition and both surplus
     aggregations (memoized via _agg_block), the pure calendar signal, the cross-site nitrate lags,
     and the window-scaled rolling weather (see ROLL_WEATHER_LADDER). Returns a fresh list each call.
@@ -242,7 +272,9 @@ def _covariate_block(site, n, edges, vel, lam, window, roll_nitrate_windows=(7, 
 
     The weather and expT blocks are filtered exactly as the light recipes filter them (WEATHER_KEEP, EXPT_DROP): the evidence for both cuts came from the FULL-recipe runs, so applying it only to light would have been arbitrary. Trimming weather here removes 24 of the 27 weather columns.
     """
-    wb, cb, cb_exp, sb, sb_exp = _agg_block(site, edges, vel, lam)
+    wb, cb, cb_exp, sb, sb_exp, lr = _agg_block(site, edges, vel, lam)
+    if statics is not None:
+        statics.update(longrun_select(lr, longrun_stats))
     wb = _keep_weather(wb)
     lagged_avgs, roll_n_all = _cross_site_nitrate(site, lags=lags)
     doy = doy_climatology_pure_signal(n)
@@ -253,20 +285,40 @@ def _covariate_block(site, n, edges, vel, lam, window, roll_nitrate_windows=(7, 
     return feats
 
 
-def _best_features_REG(site, n, window=1):
+def _best_features_REG(site, n, window=1, statics=None):
     """Best known REG feature list (no target). Three-ring geometry (see REG_EDGES -- a deliberate
     trade against exp18); rolling cross-site nitrate trimmed to the 7d window (REG1.1 importance
     concentrates there; 14/30/60d were near-zero); cross-site lags trimmed to lag1 (2/3/5 are all
     within +-0.35% perm); no antecedent-precip (it hurts REG, exp17)."""
-    return _covariate_block(site, n, REG_EDGES, REG_VEL, REG_LAM, window, roll_nitrate_windows=(7,), lags=REG_LAGS)
+    return _covariate_block(
+        site,
+        n,
+        REG_EDGES,
+        REG_VEL,
+        REG_LAM,
+        window,
+        roll_nitrate_windows=(7,),
+        lags=REG_LAGS,
+        longrun_stats=LONGRUN_STATS["reg"],
+        statics=statics,
+    )
 
 
-def _best_features_CLF(site, n, window=1, roll_nitrate_windows=()):
+def _best_features_CLF(site, n, window=1, roll_nitrate_windows=(), statics=None):
     """Best known CLF feature list (no target). Riparian 2km inner bucket (exp18/exp19, +0.039
     lofo_prauc -- the classifier's near-field flushing signal); rolling cross-site nitrate omitted
     by default (it hurts CLF -- see audit); the full lag ladder, which CLF unlike REG does use."""
     return _covariate_block(
-        site, n, CLF_EDGES, CLF_VEL, CLF_LAM, window, roll_nitrate_windows=roll_nitrate_windows, lags=CLF_LAGS
+        site,
+        n,
+        CLF_EDGES,
+        CLF_VEL,
+        CLF_LAM,
+        window,
+        roll_nitrate_windows=roll_nitrate_windows,
+        lags=CLF_LAGS,
+        longrun_stats=LONGRUN_STATS["clf"],
+        statics=statics,
     )
 
 
@@ -284,15 +336,16 @@ def _assemble(site, task, spine, window, target=None, light=False):
     n = pd.Series(index=pd.DatetimeIndex(spine), dtype="float64")
     if task not in ("reg", "clf"):
         raise ValueError(f"Expected 'reg' or 'clf', got {task}")
+    statics = {}
     if light:
-        feat = _light_features(site, n, task)
+        feat = _light_features(site, n, task, statics=statics)
     elif task == "reg":
-        feat = _best_features_REG(site, n, window)
+        feat = _best_features_REG(site, n, window, statics=statics)
     else:
-        feat = _best_features_CLF(site, n, window)
+        feat = _best_features_CLF(site, n, window, statics=statics)
     frames = feat if target is None else [target, *feat]
     drop = LIGHT_STATIC_DROP[task] if light else ()
-    return _add_static(site, merge_on_date(frames, spine=n.index), drop=drop)
+    return _add_static(site, merge_on_date(frames, spine=n.index), drop=drop, extra=statics)
 
 
 def build_feature_frame(site, task="reg", spine=None, window=1, light=False):
@@ -394,6 +447,9 @@ LIGHT_LAM = {"reg": REG_LAM, "clf": CLF_LAM}
 # the arm with {1,3}. Two extra columns against only 20 basin families is exactly where LOFO frays.
 LIGHT_LAGS = {"reg": (1, 3), "clf": (1, 3)}
 
+# The light pair's long-run block. Kept separate from LONGRUN_STATS for the same reason as every other LIGHT_* constant: the two families are tuned independently, and the light pair is the one that ships.
+LIGHT_LONGRUN_STATS = {"reg": ("mean",), "clf": ("mean",)}
+
 # Nothing is dropped from the static block. It USED to cut log_basin_area and max_dist_to_sensor on
 # replicated negative permutation importance -- and that was measured against loso_r2, which is ~60%
 # within-site variance, so it systematically under-weights exactly what a pure between-site feature
@@ -403,14 +459,16 @@ LIGHT_LAGS = {"reg": (1, 3), "clf": (1, 3)}
 LIGHT_STATIC_DROP = {"reg": (), "clf": ()}
 
 
-def _light_features(site, n, task):
+def _light_features(site, n, task, statics=None):
     """The light feature scaffold: whole-basin weather (one variable), both crop encodings, both surplus encodings, the pure calendar signal, and the cross-site nitrate neighbours.
 
     Same blocks and the same code path as _covariate_block, so the light and full recipes cannot drift apart in how a block is computed. What is left of the difference: the static drops above, and the fact that weather opts out of the distance buckets. `window` is fixed at 1 -- the rolling-weather ladder is a no-op there, and antecedent weather would reintroduce exactly the per-basin daily storage the light set exists to avoid.
     """
-    wb, cb, cb_exp, sb, sb_exp = _agg_block(
+    wb, cb, cb_exp, sb, sb_exp, lr = _agg_block(
         site, LIGHT_EDGES[task], LIGHT_VEL[task], LIGHT_LAM[task], weather_edges=LIGHT_WEATHER_EDGES[task]
     )
+    if statics is not None:
+        statics.update(longrun_select(lr, LIGHT_LONGRUN_STATS[task]))
     lagged_avgs, roll_n_all = _cross_site_nitrate(site, lags=LIGHT_LAGS[task], rolls=(7, 60))
     doy = doy_climatology_pure_signal(n)
     # Every block except wb is static per COMID, so bucketing them is free: they cost one precomputed row per reach, not bytes per day. Only the weather block is filtered and unbucketed.
@@ -447,17 +505,18 @@ def _spike_target_maker(site, task="reg", window=SPIKE_WINDOW, k=SPIKE_K, min_ob
     `own_ar_lags` appends the site's OWN past nitrate at those day-lags (autoregression). Empty by
     default (recipe_SPIKE, transfer-safe); recipe_SPIKE_AR turns it on for gauged-site modelling."""
     n = daily_nitrate(site).rename("nitrate_con")
+    statics = {}
     if task == "reg":
-        feat = _best_features_REG(site, n)
+        feat = _best_features_REG(site, n, statics=statics)
         target = nitrate_anomaly_z(site, window=window, min_obs=min_obs).rename("nitrate_con")
     elif task == "clf":
-        feat = _best_features_CLF(site, n)
+        feat = _best_features_CLF(site, n, statics=statics)
         target = nitrate_spike(site, window=window, k=k, min_obs=min_obs).rename("violation")
     else:
         raise ValueError(f"Expected 'reg' or 'clf', got {task}")
     if own_ar_lags:  # the site's own past nitrate -- causal under chronological CV, gauged-site only
         feat = [*feat, *(lagged_sensor_nitrate([site], shift=L) for L in own_ar_lags)]
-    return _add_static(site, merge_on_date([target, *feat], spine=n.index))
+    return _add_static(site, merge_on_date([target, *feat], spine=n.index), extra=statics)
 
 
 def recipe_SPIKE(task, window=SPIKE_WINDOW, k=SPIKE_K, min_obs=SPIKE_MIN_OBS):

@@ -274,10 +274,19 @@
         const coef = {reg: take(Float32Array, n * nBuckets * rank, 4), clf: take(Float32Array, n * nBuckets * rank, 4)};
         const reg = take(Float32Array, n * perTask, 4);
         const clf = take(Float32Array, n * perTask, 4);
+        // The long-run block sits at the TAIL with its two per-task widths as the final 8 bytes, so
+        // every offset above is independent of it -- a chunk written by a newer packer still decodes
+        // correctly here even if this reader knew nothing about the block. Widths of 0 (or a chunk
+        // predating it) simply yield empty arrays, and plan() then resolves nothing to "longrun".
+        let nLR = {reg: 0, clf: 0};
+        if (buf.byteLength >= o + 8) {
+            nLR = {reg: h.getInt32(buf.byteLength - 8, true), clf: h.getInt32(buf.byteLength - 4, true)};
+        }
+        const longrun = {reg: take(Float32Array, n * nLR.reg, 4), clf: take(Float32Array, n * nLR.clf, 4)};
         const at = new Map();
         for (let i = 0; i < n; i++) at.set(comid[i], i);
         return {n, rank, nYears, nBuckets, nCrops, perYear, perTask, comid, statics, lags, offset, coef,
-                blocks: {reg, clf}, at};
+                blocks: {reg, clf}, longrun, nLR, at};
     }
 
     function decodeModes(buf) {
@@ -338,6 +347,13 @@
         for (let b = 0; b < nb; b++) weather.set(`${wbase}_b${b}`, b);
         if (nb === 1) weather.set(wbase, 0);  // an unbucketed weather block carries no _b suffix
 
+        // Long-run composition: year-invariant, so it is indexed by reach alone, and its names come
+        // from the manifest for the same reason expT's do -- which reductions ship is a recipe
+        // setting (recipes.LIGHT_LONGRUN_STATS), and changing it must not need a JS edit.
+        const lrNames = (meta.longrun_cols || {})[task] || [];
+        const lrWidth = chunk.nLR ? chunk.nLR[task] : 0;
+        const lrByName = new Map(lrWidth === lrNames.length ? lrNames.map((nm, k) => [nm, i * lrWidth + k]) : []);
+
         return feat.map((name) => {
             const s = STATIC_FIELDS.indexOf(name);
             if (CALENDAR.indexOf(name) >= 0) return {kind: "calendar", name: name};
@@ -346,6 +362,7 @@
             if (yearly.has(name)) return {kind: "yearly", at: yearly.get(name)};
             if (cross_cols_has(name)) return {kind: "cross", name: name};
             if (expByName.has(name)) return {kind: "expT", at: expByName.get(name)};
+            if (lrByName.has(name)) return {kind: "longrun", at: lrByName.get(name)};
             return {kind: null, name: name};
         });
     }
@@ -395,6 +412,7 @@
                 else if (p.kind === "static") v = chunk.statics[p.at];
                 else if (p.kind === "weather") v = fm[p.bucket];
                 else if (p.kind === "yearly" || p.kind === "expT") v = block[p.at];
+                else if (p.kind === "longrun") v = chunk.longrun[task][p.at];
                 else if (p.kind === "cross") v = ci === undefined ? NaN : cross.cols[p.name][ci];
                 x[f] = v === undefined ? NaN : v;
             }

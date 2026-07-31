@@ -100,6 +100,65 @@ def _compare(py, js) -> dict:
     }
 
 
+def check_longrun(comid, lat, lon, year) -> dict:
+    """Packed long-run block vs the recipe's own, column by column, for one reach. {} when sound.
+
+    The curve comparison below cannot do this job. A boosted model is often near-insensitive to a handful of its ~80 columns, so a wholesale long-run misalignment can land inside a tolerance sized for the rank-64 weather approximation -- and if the block were packed all-NaN, the two sides would agree trivially, NaN against NaN. This reads the actual floats out of the shipped chunk and demands they equal what recipes builds, EXACTLY: unlike weather there is no approximation here to excuse a difference, so anything but bit-equality after a float32 round-trip is a packing or ordering bug.
+    """
+    import struct
+
+    from src.features import recipes
+    from widget.static.build_forecast import N_BUCKETS, longrun_cols
+
+    chunk_dir = _WIDGET / "assets" / "data" / "forecast" / "reaches"
+    meta = json.loads((chunk_dir.parent / "reach_chunks.json").read_text())
+    names = meta.get("longrun_cols")
+    if not names:
+        return {"error": "reach_chunks.json carries no longrun_cols; repack with build_bundle --only reaches"}
+
+    for p in sorted(chunk_dir.glob("*.bin")):
+        buf = p.read_bytes()
+        n, rank, n_years, n_buckets, n_crops = struct.unpack_from("<5i", buf, 0)
+        ids = list(struct.unpack_from(f"<{n}i", buf, 20))
+        if comid not in ids:
+            continue
+        i = ids.index(comid)
+        w_reg, w_clf = struct.unpack_from("<2i", buf, len(buf) - 8)
+        per_year = n_crops * n_buckets + n_buckets + n_crops + 1
+        end = len(buf) - 8
+        base = end - 4 * n * (w_reg + w_clf)
+        out = {}
+        for task, width, off in (("reg", w_reg, base), ("clf", w_clf, base + 4 * n * w_reg)):
+            cols = names[task]
+            if len(cols) != width:
+                out[task] = f"manifest lists {len(cols)} columns, chunk packs {width}"
+                continue
+            packed = dict(zip(cols, struct.unpack_from(f"<{width}f", buf, off + 4 * i * width)))
+            sd = _site_data(comid, lat, lon, year)
+            # An explicit spine: a virtual site has no water, so the default (daily_nitrate's index) has
+            # nothing to build from. The long-run columns are site-constant, so which dates these are
+            # does not matter -- only that the frame builds.
+            spine = pd.date_range(f"{year}-01-01", f"{year}-12-31", freq="D")
+            frame = recipes.build_feature_frame(sd, task=task, spine=spine, light=True)
+            bad = []
+            for c, pv in packed.items():
+                if c not in frame.columns:
+                    continue  # not a column this recipe emits (an absent ring, or a stat it does not take)
+                fv = np.float32(frame[c].iloc[0])
+                if np.isnan(fv) and np.isnan(pv):
+                    continue
+                if not (np.isnan(fv) or np.isnan(pv)) and np.float32(pv) == fv:
+                    continue
+                bad.append(f"{c}: packed {pv!r} vs recipe {float(fv)!r}")
+            checked = sum(1 for c in packed if c in frame.columns)
+            if bad:
+                out[task] = f"{len(bad)}/{checked} columns differ: " + "; ".join(bad[:4])
+            elif not checked:
+                out[task] = f"none of the {width} packed columns appear in the recipe frame"
+        return out
+    return {"error": f"COMID {comid} is not in any packed chunk"}
+
+
 def main(n=6, year=None, beta=2.0, comids=None) -> int:
     import bundle
     import model_interface
@@ -160,6 +219,18 @@ def main(n=6, year=None, beta=2.0, comids=None) -> int:
               f"mean {np.mean([r['clf_mean'] for r in rows]):.4f}")
         taus = {(r["tau_py"], r["tau_js"]) for r in rows}
         print(f"  operating point tau (python, browser): {sorted(taus)}")
+
+    # Run on the FIRST case only: it re-derives the recipe frame per task, and one reach is enough
+    # because a packing or ordering fault is global -- the layout is shared by every chunk.
+    if cases:
+        c0 = cases[0]
+        lr = check_longrun(c0["comid"], c0["lat"], c0["lon"], year)
+        if lr:
+            print(f"\n  long-run block ({c0['comid']}): MISMATCH")
+            for k, v in lr.items():
+                print(f"    {k}: {v}")
+            return 1
+        print(f"\n  long-run block ({c0['comid']}): exact match against the recipe, both tasks")
     return 0
 
 

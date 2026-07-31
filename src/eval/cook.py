@@ -482,19 +482,54 @@ def _per_site_score(y: np.ndarray | pd.Series, pred: np.ndarray | pd.Series, tas
     return r2_score(y, pred) if (len(y) > 1 and np.std(y) > 0) else np.nan
 
 
+TAIL_FRAC = 0.10  # the worst DECILE -- the outlier question. Wider fracs stop seeing the tail: see _tail_rank.
+
+
+def _tail_rank(site_means: pd.DataFrame, frac: float = TAIL_FRAC) -> dict[str, float]:
+    """How well the site ranking finds the WORST sites, which between_r2 does not answer.
+
+    between_r2 is an R^2 over site means, so it is dominated by the bulk and says nothing about which sites sit at the top -- and a boosted ensemble shrinks extremes toward the mean, so it can score respectably while flattening exactly the sites a siting or triage decision cares about. Two numbers, both read off the held-out (LOFO) site means, so they describe ungauged basins rather than fitted ones:
+
+        site_ap      Average precision for "this site is in the worst `frac`", scored by its predicted mean. Chance is `frac` itself, so read it against that and not against 0. Preferred over ROC-AUC for the same reason lofo_prauc is: on an imbalanced label ROC-AUC flatters badly.
+        captured     Of the excess the best possible shortlist would find, the share this one does: (mean actual over the PREDICTED worst k - cohort mean) / (mean actual over the TRUE worst k - cohort mean). 0 is a random shortlist, 1 is the best achievable. The only one in the target's own units, so the only one a stakeholder reads directly.
+    A shrinkage diagnostic (the slope of actual on predicted across the flagged sites) is deliberately NOT here. Measured on the 79-site REG cohort it ran 1.120 / 0.517 / 1.075 at frac 0.1 / 0.25 / 0.5 -- non-monotone in frac, which a stable property is not, because it fits a line through k=8 noisy points. In a fixed-frac score column that is noise with a name. _experiment21.py computes it across the whole ladder, which is where it can actually be read.
+
+    WATCH THE FRAC. At frac=0.5 these ask "which half of the state is the problem half" -- well powered at ~80 sites, and a real screening question. They are NOT tail-sensitive there: measured against a synthetic model whose top 15% is deliberately compressed, site_ap and captured both score it HIGHER than a uniformly-good model (0.995 vs 0.955 and 0.991 vs 0.879), because the compression happens inside the top half and a half-split cannot see it. At frac=0.1 the same pair separates them 2.7x the right way. Pass frac=0.1 when the question is genuinely about outliers.
+
+    n < 10 sites, or a cohort with no spread in the site means, returns NaN rather than a number built on nothing.
+    """
+    keys = ("site_ap", "captured")
+    n = len(site_means)
+    if n < 10:
+        return dict.fromkeys(keys, float("nan"))
+    y, p = site_means["y"].to_numpy(float), site_means["p"].to_numpy(float)
+    k = max(1, int(round(frac * n)))
+    order_y, order_p = np.argsort(-y), np.argsort(-p)
+    label = np.zeros(n, int)
+    label[order_y[:k]] = 1
+    cohort, best = y.mean(), y[order_y[:k]].mean()
+    got = y[order_p[:k]].mean()
+    return {
+        "site_ap": float(average_precision_score(label, p)) if label.min() != label.max() else float("nan"),
+        "captured": float((got - cohort) / (best - cohort)) if best != cohort else float("nan"),
+    }
+
+
 def _decomposition(y: np.ndarray, oof: np.ndarray, site: np.ndarray, task: Task) -> dict[str, float]:
-    """between / within / macro decomposition of ONE out-of-fold prediction vector."""
+    """between / within / macro decomposition of ONE out-of-fold prediction vector, plus the tail-ranking pair."""
     ok = ~(np.isnan(y) | np.isnan(oof))
     if ok.sum() < 2:
         keys = ("between_rate_r2", "macro_auc") if task == "clf" else ("between_r2", "within_r2", "macro_r2")
-        return {k: float("nan") for k in keys}
+        return {k: float("nan") for k in (*keys, "site_ap", "captured")}
     tab = pd.DataFrame({"y": y[ok], "p": oof[ok], "g": site[ok]})
     site_means = tab.groupby("g")[["y", "p"]].mean()
     per_site = tab.groupby("g").apply(lambda d: _per_site_score(d.y, d.p, task))
+    tail = _tail_rank(site_means)
     if task == "clf":
         return dict(
             between_rate_r2=r2_score(site_means.y, site_means.p),
             macro_auc=float(np.nanmedian(per_site)),
+            **tail,
         )
     sm = tab.groupby("g")["y"].transform("mean").to_numpy()
     pm = tab.groupby("g")["p"].transform("mean").to_numpy()
@@ -502,6 +537,7 @@ def _decomposition(y: np.ndarray, oof: np.ndarray, site: np.ndarray, task: Task)
         between_r2=r2_score(site_means.y, site_means.p),
         within_r2=r2_score(tab.y.to_numpy() - sm, tab.p.to_numpy() - pm),
         macro_r2=float(np.nanmedian(per_site)),
+        **tail,
     )
 
 

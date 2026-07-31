@@ -20,9 +20,9 @@ Evaluated on **basins the model never saw in training**, the honest test for a l
 
 | | |
 |---|---|
-| Ranks violation days | **2.7× better than chance** (average precision 0.69, against a 26% base rate) |
-| Catches violations | **88%** of them, with 53% of alarms false, at the default β = 2 |
-| Predicts concentration | **R² 0.37**, typical error 4.4 mg/L |
+| Ranks violation days | **2.75× better than chance** (average precision 0.71, against a 26% base rate) |
+| Catches violations | **90%** of them, with 54% of alarms false, at the default β = 2 |
+| Predicts concentration | **R² 0.43**, typical error 4.2 mg/L |
 
 Trained on 81 sensors and 158,215 sensor-days, validated across 20 hydrologically independent basin families.
 
@@ -34,7 +34,7 @@ It also assumes stringent data restrictions: it does not make use of the data pr
 
 ## Under the hood
 
-Everything you are looking at runs in your browser. All 16,760 stream reaches were delineated ahead of time and their features precomputed, the gradient-boosted trees are repacked into a binary blob and walked in JavaScript, and the page itself is a static snapshot. The model is light enough that this barely affects performance.
+Everything you are looking at runs in your browser. All 16,760 stream reaches were delineated ahead of time and their features precomputed, the gradient-boosted trees are repacked into a binary blob and walked in JavaScript. The model is light enough that this barely affects performance (which itself is somewhat surprising). The page itself is a static snapshot of the project as it existed on [2026-07-30].
 
 Ongoing work is occuring at this [forked repo](https://github.com/ikmartin/sustag), and we aim to deploy those (heaftier) models on a dedicated server.
 

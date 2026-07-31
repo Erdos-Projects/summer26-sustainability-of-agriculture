@@ -1,4 +1,4 @@
-# sustag — Virtual Waterborne Nitrate Sensors in Iowa
+# README
 
 Iowa grows a lot of corn and puts a lot of fertilizer in the ground. Nitrogen from that fertilizer becomes nitrate in Iowa's water and gives people cancer, which is bad. [Real time nitrate sensors exist](https://iwqis.iowawis.org/) to monitor the nitrate in the water supply, but they break frequently and are currently being hit by funding cuts. 
 
@@ -18,19 +18,18 @@ We build two separate XGBoost models, a classifier which identifies nitrate viol
 
 **Training:** Our two XGBoost models are trained on data from 81 live nitrate sensors (158,215 sensor-days) along with geographic crop, nitrogen-surplus and weather data clipped to each sensor's drainage basin. We validate our models against sites with no hydrological connection to the training sites, see [Roberts et al. 2017, *Ecography* 40:913–929](https://nsojournals.onlinelibrary.wiley.com/doi/abs/10.1111/ecog.02881) as a precedent for example. This means our results are conservative; these models likely perform better than reported.
 
-**Classifier Results:** On basins withheld from training, the classifier reaches 0.86 ROC AUC and 0.69 average precision against a 26% violation base rate — a 2.7× improvement over chance ranking. (These figures and the regressor's below are the deployed `light` pair; the full `recipe` models score marginally higher — see [`kpis.md`](kpis.md).) We ship it with a table of $F_\beta$-optimal operating points: the row at $\beta = 3.5$ shows that we catch 97% of true violation days if we're willing to tolerate 65% of our positive predictions being false alarms.
+**Classifier Results:** On basins withheld from training, the classifier reaches 0.87 ROC AUC and 0.71 average precision against a 25.8% violation base rate — a 2.75× improvement over chance ranking. We ship it with a table of $F_\beta$-optimal operating points: the row at $\beta = 4$ shows that **we catch 97% of true violation days at the cost of a 64% false alarm rate**.
 
-| $\beta$ | recall | fdr | precision | accuracy |
-| --- | --- | --- | --- | --- | 
-| 1.0 | 0.7579 | 0.4339 | 0.5661 | 0.7877 |
-| 2.0 | 0.8804 | 0.5332 | 0.4668 | 0.7098 |
-| 3.0 | 0.9565 | 0.6300 | 0.3700 | 0.5687 |
-| **3.5** | **0.9732** | **0.6528** | 0.3472 | 0.5212 |
-| 4.0 | 0.9773 | 0.6607 | 0.3393 | 0.5033 |
+| $\beta$ | recall | false alarm rate | precision |
+| --- | :---: | :---: | :---: |
+| 1.0 | 0.7360 | 0.3877 | 0.6123 |
+| 2.0 | 0.9027 | 0.5399 | 0.4601 |
+| 3.0 | 0.9475 | 0.5977 | 0.4023 |
+| **4.0** | **0.9704** | **0.6424** | 0.3576 |
 
-**Regressor Results:** On basins withheld from training, the regressor explains 37% of daily variance (R² = 0.371) with a typical error of 4.4 mg/L. That splits into two very different abilities: it tracks a basin's variation over time reasonably well (within-site R² = 0.41) but ranks one basin's overall level against another's only weakly (between-site R² = 0.20 ± 0.08) — the harder half, and the one that matters most for ungauged sites.
+**Regressor Results:** On basins withheld from training, the regressor explains 43% of daily variance (R² = 0.425) with a typical error of 4.2 mg/L. That splits into two abilities: it tracks a basin's variation over time (within-site R² = 0.42) and ranks one basin's overall level against another's (between-site R² = 0.40 ± 0.08). See [`Results & metrics`](kpis.md) for more.
 
-**Improvements:** Our virtual sensors are modeled under the most demanding deployment scenario: no access to *physical* water sensors at all, so predictions draw only on daily weather, annual land-use, and static geographic data. Treating them instead as a supplement to an existing sensor network — as exists in Iowa and across the Continental US — would unlock live nitrate readings elsewhere in the hydrological network, along with covariates known to affect water-borne nitrate: turbidity, discharge rate, and chlorophyll fluorescence. Basic statistical tests indicate that these network-enabled features would *drastically* improve our predictions.
+**Future Improvements:** Our virtual sensors are modeled under the most demanding deployment scenario: no access to *physical* water sensors at all, so predictions draw only on daily weather, annual land-use, and static geographic data. Treating them instead as a supplement to an existing sensor network — as exists in Iowa and across the Continental US — would unlock live nitrate readings elsewhere in the hydrological network, along with covariates known to affect water-borne nitrate: turbidity, discharge rate, and chlorophyll fluorescence. Basic statistical tests indicate that these network-enabled features would *drastically* improve our predictions.
 
 ## Quickstart
 

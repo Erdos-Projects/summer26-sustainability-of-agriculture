@@ -15,6 +15,7 @@ THE WEATHER TRICK. fuel_moisture_1000h is the one input that is COMID x DATE, an
 
 import shutil
 import sys
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -49,9 +50,44 @@ WEATHER_RANK = 64
 #   1: initial (single whole-basin weather projection)
 #   2: weather projection is per distance bucket, and weather_lag_days is a list
 #   3: weather_lag_days is indexed BY bucket, one entry per ring, aligned with the weather list
-ROW_SCHEMA = 3
+#   4: per-task long-run composition block (features.longrun_from_blocks), year-invariant
+ROW_SCHEMA = 4
+
+# Which long-run reductions the reach store CARRIES, as opposed to which ones a model consumes (recipes.LONGRUN_STATS / LIGHT_LONGRUN_STATS). Deliberately the superset: forecast.js resolves columns by name against the booster's own feature list, so an unused packed block costs bytes and nothing else -- while narrowing it here would make every change of modelling mind another 16,760-reach pass. At 3 rings and 9 values that is 108 f32 a reach across both tasks, about +7 MB over the whole store.
+LONGRUN_PACK_STATS = ("mean", "sd")
 
 
+def _features_mod():
+    from src.features import features
+
+    return features
+
+
+@lru_cache(maxsize=1)
+def _forecast_years():
+    """build_bundle.FORECAST_YEARS, imported lazily -- build_bundle imports THIS module, so a top-level import is a cycle."""
+    from widget.static.build_bundle import FORECAST_YEARS
+
+    return tuple(FORECAST_YEARS)
+
+
+@lru_cache(maxsize=1)
+def _longrun_source_years():
+    """{block: [year, ...]} actually available to the long-run reduction, per global table.
+
+    The declared window (features.LONGRUN_YEARS) is an upper bound, not what gets reduced: crops stop at 2025 and surplus at 2017. Hashing what is REALLY there is what makes a data refresh invalidate -- a new crop year lands inside the declared window, so the window alone would not move and every cached reach row would keep its stale mean.
+    """
+    import pandas as pd
+
+    keep = set(_features_mod().LONGRUN_YEARS)
+    out = {}
+    for block, rel in (("crops", "crops_global.parquet"), ("surplus", "surplus_global.parquet")):
+        y = pd.read_parquet(_ROOT / "src" / "data" / "interim" / rel, columns=["year"])["year"]
+        out[block] = sorted(int(v) for v in y.unique() if int(v) in keep)
+    return out
+
+
+@lru_cache(maxsize=1)
 def recipe_fingerprint():
     """    A short hash of every light-recipe setting that changes what reach_row emits.
 
@@ -65,7 +101,7 @@ def recipe_fingerprint():
     import hashlib
     import json as _json
 
-    from src.features import recipes
+    from src.features import features, recipes
 
     cfg = {
         "edges": {k: list(v) for k, v in recipes.LIGHT_EDGES.items()},
@@ -75,6 +111,12 @@ def recipe_fingerprint():
         "expT_drop": list(recipes.EXPT_DROP),
         "weather_keep": list(recipes.WEATHER_KEEP),
         "rank": WEATHER_RANK,
+        # The long-run block reduces over a WINDOW, so the window is part of what a row means. Both the declared window and the realized per-block year sets go in: a data refresh that adds a crop year inside the training span would shift every reduced value while leaving the declared window untouched, and _is_current would keep serving the old rows.
+        "longrun_years": [min(features.LONGRUN_YEARS), max(features.LONGRUN_YEARS)],  # declared window
+        "longrun_stats": list(LONGRUN_PACK_STATS),
+        "longrun_source_years": _longrun_source_years(),
+        # reach_row trims the per-year blocks to these, so a change repacks every reach as NaN for the new year unless it invalidates. Pre-existing gap, closed here.
+        "forecast_years": sorted(_forecast_years()),
     }
     return hashlib.sha256(_json.dumps(cfg, sort_keys=True).encode()).hexdigest()[:12]
 
@@ -246,10 +288,14 @@ def reach_row(comid, sd, outlet_lat, outlet_lon, basis, tasks, years):
 
     for task, (edges, vel, lam) in tasks.items():
         w_edges = recipes.LIGHT_WEATHER_EDGES[task]
-        _, cb, cb_exp, sb, sb_exp = recipes._agg_block(
+        _, cb, cb_exp, sb, sb_exp, lr = recipes._agg_block(
             sd, edges, vel, lam, weather_edges=w_edges, weather=False
         )
+        # Reduced inside _agg_block from the UNTRIMMED frames, so it sees the whole record and applies
+        # its own window (features.LONGRUN_YEARS) -- not the three forecast years `trim` is about to
+        # cut down to. Both stats are kept; pack_chunk takes LONGRUN_PACK_STATS from them.
         out[task] = {
+            "longrun": lr,
             "crops": trim(cb).to_dict("records"),
             "crops_expT": trim(cb_exp).to_dict("records"),
             "surplus": trim(sb).to_dict("records"),
@@ -367,6 +413,24 @@ def _row_values(row, task, years, crop_classes):
     return out
 
 
+def longrun_cols(crop_classes, stats=LONGRUN_PACK_STATS):
+    """Long-run column names in packed order: per stat, the crop classes by ring, then surplus by ring.
+
+    Generated from the DECLARED geometry, never read off a row -- which is the difference between this and _expT_cols. The exp-decay block is built at edges=(), so every reach carries identical keys and sampling one is safe. This block is bucketed and rings go missing constantly (a basin with no cell inside CLF's 2 km has no b0), so a sampled reach would ship a short name list against the fixed N_BUCKETS stride the packer writes -- misaligning every long-run column for every reach in the bundle, while check_feature_skew still reports clean because the names it does ship all resolve.
+    """
+    out = []
+    for stat in stats:
+        out += [f"pct_{cls.lower()}_{stat}_b{b}" for cls in crop_classes for b in range(N_BUCKETS)]
+        out += [f"surplus_kgha_norm_{stat}_b{b}" for b in range(N_BUCKETS)]
+    return out
+
+
+def _longrun_values(row, task, crop_classes, stats=LONGRUN_PACK_STATS):
+    """One reach's long-run block, flattened in longrun_cols' order. An absent ring is NaN, as everywhere else."""
+    lr = row[task].get("longrun") or {}
+    return [lr.get(stat, {}).get(c, np.nan) for stat in stats for c in longrun_cols(crop_classes, (stat,))]
+
+
 def pack_chunk(rows, years, crop_classes, rank):
     """    Pack one spatial chunk of reaches into the layout forecast.js reads.
 
@@ -375,6 +439,8 @@ def pack_chunk(rows, years, crop_classes, rank):
     WEATHER IS PER RING AND PER TASK. fuel_moisture_1000h is bucketed by distance exactly as the crop and surplus blocks are -- the light models want fuel_moisture_1000h_b0/_b1/_b2 -- and the two tasks cut their rings at different distances, so each is a different functional of the same shared modes. That costs 2 * n_buckets * (1 + rank) floats a reach instead of 1 + rank, which is most of what a reach weighs and still nothing beside shipping the node-space field.
 
     An absent ring is NaN, which is what the recipe emits for it and what the booster routes down its default branch -- the same treatment predict() gives a missing distance bucket.
+
+    THE LONG-RUN BLOCK IS APPENDED AT THE TAIL, and its two per-task widths are the FINAL 8 bytes, rather than the header growing to carry them. That is deliberate. Every offset above is computed from a 20-byte header -- forecast.js::decodeChunk hardcodes `o = 20` and check_forecast.py reads the COMID array at a literal offset 20 -- so widening the header would shift the whole body under readers that have no version field to notice with. The parity harness would not crash on that; it would read 8 bytes into the COMID array and compare plausible-looking garbage, taking out the one value-level check exactly when it is needed. At the tail, an old reader decodes everything it knows about correctly and simply never looks at the new bytes.
     """
     rows = sorted(rows, key=lambda r: r["comid"])
     n = len(rows)
@@ -399,10 +465,25 @@ def pack_chunk(rows, years, crop_classes, rank):
         np.array([_row_values(r, task, years, crop_classes) for r in rows], np.float32).tobytes()
         for task in ("reg", "clf")
     )
+    lr_names = longrun_cols(crop_classes)
+    longrun = b"".join(
+        np.array([_longrun_values(r, task, crop_classes) for r in rows], np.float32).tobytes()
+        for task in ("reg", "clf")
+    )
+    # The two widths, at the very END. Both tasks are the same width today, but they are declared per
+    # task so a future per-task stats split needs no layout change.
+    widths = np.array([len(lr_names), len(lr_names)], np.int32).tobytes()
     assert len(lags) == 2 * n * N_BUCKETS, "packed lags do not match the declared layout"
     assert len(coefs) == 2 * n * N_BUCKETS * rank * 4, "packed weather does not match the declared layout"
     assert len(blocks) == 2 * n * per_task * 4, "packed block size does not match the declared layout"
-    return head + comid + statics + lags + offsets + coefs + blocks
+    # A real raise, not an assert: python -O strips asserts, and a long-run width mismatch misaligns
+    # EVERY long-run column for every reach while check_feature_skew still reports clean.
+    if len(longrun) != 2 * n * len(lr_names) * 4:
+        raise ValueError(
+            f"packed long-run block is {len(longrun)} bytes, expected {2 * n * len(lr_names) * 4} "
+            f"({n} reaches x 2 tasks x {len(lr_names)} cols x 4)"
+        )
+    return head + comid + statics + lags + offsets + coefs + blocks + longrun + widths
 
 
 def pack_basin(basin):
@@ -508,10 +589,17 @@ def build_reaches(out, years, crop_classes, write_bin, cache_dir, rows_dir, basi
 
     sizes["forecast/reach_chunks.json"] = _write_json_via(
         out / "forecast" / "reach_chunks.json",
+        # row_schema/recipe are carried through from the ROWS so build_bundle can tell a stale PACK from a
+        # current one. Its skip check is otherwise existence-based, and build_reaches rewrites rows in place
+        # under the same names -- so without this stamp a schema bump leaves 17,044 present-but-superseded
+        # files and the repack is skipped in silence. See build_bundle._reaches_stale.
         {"bbox": CHUNK_BBOX, "grid": CHUNK_GRID, "chunks": sorted(by_chunk), "n_reaches": len(files),
+         "row_schema": ROW_SCHEMA, "recipe": fingerprint,
          "years": list(years), "crop_classes": crop_classes, "n_buckets": N_BUCKETS, "rank": rank,
          "weather_cols": list(recipes.WEATHER_KEEP),
-         "expT_cols": _expT_cols(next(iter(by_chunk.values()))[0], crop_classes)},
+         "expT_cols": _expT_cols(next(iter(by_chunk.values()))[0], crop_classes),
+         # Generated from the declared geometry, NOT sampled from a row like expT_cols -- see longrun_cols. Names only: json.dumps writes a bare NaN token that JSON.parse rejects outright, so one value in here would blank the whole forecast.
+         "longrun_cols": {task: longrun_cols(crop_classes) for task in ("reg", "clf")}},
         write_bin,
     )
     return sizes

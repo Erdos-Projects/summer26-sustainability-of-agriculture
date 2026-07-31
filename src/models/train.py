@@ -45,42 +45,35 @@ REAL_XGB_CLF = dict(
 #
 # A recipe with no `n_estimators` here is UNTUNED and cannot be fitted. That is deliberate: the tree count is only meaningful for the config it was tuned WITH, so taking it from anywhere other than this dict risks pairing one sweep's count with another sweep's depth. tune.py's models/lofo_tune.csv is the tuner's own scoreboard, not an input to training.
 RECIPE_XGB = {
-    # lofo_r2 = 0.3922
+    # lofo_r2=0.4440
     "recipe_REG": {
-        "n_estimators": 290,
-        "max_depth": 5,
-        "learning_rate": 0.02,
-        "reg_lambda": 1062.936,
-        "min_child_weight": 7.08624,
-        "subsample": 0.9,
-        "colsample_bytree": 0.5,
+        "n_estimators": 920,
+        "max_depth": 4,
+        "learning_rate": 0.01,
+        "reg_lambda": 1181.04,
+        "min_child_weight": 78.736,
+        "subsample": 0.5,
     },
-    # lofo_prauc=0.6959
-    # top of ladder for depth, more probing needed
-    "recipe_CLF": {
-        "n_estimators": 240,
-        "max_depth": 7,
-        "learning_rate": 0.05,
-        "reg_lambda": 5.253353,
-        "min_child_weight": 0.525335,
-        "colsample_bytree": 0.5,
-    },
-    # lofo_r2 = 0.3946
+    # lofo_auc=0.8710
+    # lofo_prauc=0.7175
+    "recipe_CLF": {"n_estimators": 570, "max_depth": 5, "reg_lambda": 1.050671, "min_child_weight": 1.050671},
+    # lofo_r2=0.4415
     "light_REG": {
-        "n_estimators": 640,
-        "max_depth": 5,
-        "reg_lambda": 826.728,
-        "min_child_weight": 5.51152,
-        "colsample_bytree": 0.5,
+        "n_estimators": 890,
+        "max_depth": 4,
+        "learning_rate": 0.01,
+        "reg_lambda": 1181.04,
+        "min_child_weight": 78.736,
+        "subsample": 0.5,
     },
-    # lofo_auc=0.8581
-    # lofo_prauc=0.6931
+    # lofo_auc=0.8723
+    # lofo_prauc=0.7203
     "light_CLF": {
-        "n_estimators": 1080,
-        "max_depth": 5,
-        "reg_lambda": 1.050671,
-        "min_child_weight": 157.600602,
-        "colsample_bytree": 0.5,
+        "n_estimators": 870,
+        "max_depth": 4,
+        "learning_rate": 0.02,
+        "reg_lambda": 315.201205,
+        "min_child_weight": 105.067068,
     },
 }
 

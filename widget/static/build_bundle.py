@@ -143,6 +143,27 @@ def _days_since_epoch(idx) -> np.ndarray:
     return ((pd.DatetimeIndex(idx) - _EPOCH) // pd.Timedelta(days=1)).to_numpy(dtype=np.int32)
 
 
+def _reaches_stale():
+    """Why the packed reach chunks are out of date, or None. Existence cannot see this.
+
+    The rest of the skip logic asks only whether a group's files are PRESENT, which is right for artifacts that change when their inputs are added or removed. The reach chunks are different: build_reaches.py rewrites the per-COMID rows in place under the same names, so a schema bump or a recipe retune leaves 17,044 perfectly present files holding superseded bytes -- and the pack is then skipped, shipping the previous feature store as if it were current. That is the same class of silent staleness ROW_SCHEMA and recipe_fingerprint exist to catch one stage earlier; this carries the stamp through to the packed output so it is caught here too.
+    """
+    path = OUT / "forecast" / "reach_chunks.json"
+    if not path.exists():
+        return None  # nothing packed yet; the existence check already handles that
+    from widget.static.build_forecast import ROW_SCHEMA, recipe_fingerprint
+
+    meta = json.loads(path.read_text())
+    if meta.get("row_schema") != ROW_SCHEMA:
+        return f"packed at row schema {meta.get('row_schema')}, rows are now schema {ROW_SCHEMA}; repacking"
+    if meta.get("recipe") != recipe_fingerprint():
+        return f"packed against recipe {meta.get('recipe')}, rows are now {recipe_fingerprint()}; repacking"
+    return None
+
+
+_STALE_CHECKS = {"reaches": _reaches_stale}
+
+
 def _sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()[:16]
 
@@ -550,9 +571,13 @@ def main(only=None, force=False, list_only=False) -> None:
     for name in todo:
         if name not in BUILDERS:
             raise SystemExit(f"unknown artifact group {name!r}; choose from {sorted(BUILDERS)}")
-        if not force and name in groups and all((OUT / f).exists() for f in groups[name]):
+        stale = _STALE_CHECKS.get(name)
+        why_stale = stale() if stale else None
+        if not force and name in groups and all((OUT / f).exists() for f in groups[name]) and not why_stale:
             print(f"── {name}: up to date ({len(groups[name])} files), skipping")
             continue
+        if why_stale:
+            print(f"── {name}: {why_stale}", flush=True)
         print(f"── {name}: building ...", flush=True)
         sizes = BUILDERS[name]()
         groups[name] = sorted(sizes)
