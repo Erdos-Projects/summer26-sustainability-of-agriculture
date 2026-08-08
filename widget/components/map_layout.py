@@ -103,7 +103,7 @@ def _build_selection_section():
                     dcc.RadioItems(
                         id="selection-mode",
                         options=[
-                            {"label": " Pin Drop", "value": "pin"},
+                            {"label": " Pin drop", "value": "pin"},
                             {"label": " Point", "value": "point"},
                         ],
                         value=colors.default("selection-mode"),
@@ -135,12 +135,12 @@ def _build_selection_section():
         heading="Selection",
         body=[
             html.Strong("Tool Select", style={"fontSize": "11px"}),
-            html.P("Pin Drop -- click on the map to drop a coordinate pin.", style=_HP),
+            html.P("Pin drop -- click on the map to drop a coordinate pin.", style=_HP),
             html.P("Point -- (default) select a monitoring site by clicking its marker.", style=_HP),
             html.Strong("Sites Selected", style={"fontSize": "11px"}),
             html.P("List of selected sites. Click the site name to display its timeseries.", style=_HP),
             html.P("Site -- the unique site identifier", style=_HP),
-            html.P("Sparsity (%) -- % of rows with non-nan nitrate_concentration", style=_HP),
+            html.P("Sparsity (%) -- % of rows with non-NaN nitrate_concentration", style=_HP),
             html.P("Start -- earliest collection date", style=_HP),
             html.P("End -- last collection date", style=_HP),
             html.P("Lifespan -- difference in years between start and end", style={**_HP, "margin": "2px 0 0 0"}),
@@ -226,7 +226,7 @@ def _build_graph_display_section():
             html.P(
                 "Overlays thin vertical lines at each solstice and equinox (Mar 21, Jun 21, Sep 21, Dec 21).", style=_HP
             ),
-            html.Strong("Aggregate Interval", style={"fontSize": "11px"}),
+            html.Strong("Aggregation Interval", style={"fontSize": "11px"}),
             html.P(
                 [
                     "Resampling period for the timeseries. See ",
@@ -240,10 +240,10 @@ def _build_graph_display_section():
                 ],
                 style=_HP,
             ),
-            html.Strong("Agg Method (Water / Rain)", style={"fontSize": "11px"}),
+            html.Strong("Aggregation", style={"fontSize": "11px"}),
             html.P(
-                "How values within each interval are combined — chosen separately for water (nitrate) and rain "
-                "(precipitation): sum, mean, max, or min.",
+                "How values within each interval are combined, separately for nitrate and precipitation. Fixed "
+                "when the bundle is built, so this is a readout rather than a control.",
                 style={**_HP, "margin": "2px 0 0 0"},
             ),
         ],
@@ -269,7 +269,7 @@ def _build_forecast_section():
             html.Div(
                 [
                     html.P(
-                        "Drop a pin (Pin drop mode in Explore Tab), pick a year, and run the model to predict "
+                        "Drop a pin (Pin drop mode in the Explore tab), pick a year, and run the model to predict "
                         "nitrate at that ungauged point.",
                         style={**_HP, "marginTop": "6px"},
                     ),
@@ -468,7 +468,7 @@ def _build_map_display_section():
             ),
             html.Strong("Year", style={"fontSize": "11px"}),
             html.P(
-                "Picks which annual surplus / crop layer (2000-2017) colours the rain-grid cells.",
+                "Picks which annual surplus / crop layer (2000-2017) colors the rain-grid cells.",
                 style={**_HP, "margin": "2px 0 0 0"},
             ),
         ],

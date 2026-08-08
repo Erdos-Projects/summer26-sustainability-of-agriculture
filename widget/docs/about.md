@@ -1,10 +1,10 @@
 # Virtual nitrate sensors for Iowa
 
-Iowa's rivers carry nitrate from fertiliser runoff. Above **10 mg/L** the water is deemed unsafe to drink, and the sensor network that measures it is sparse, expensive, and shrinking under budget cuts — most of the state is simply unmonitored.
+Iowa's rivers carry nitrate from fertilizer runoff. Above **10 mg/L** the water is deemed unsafe to drink, and the sensor network that measures it is sparse, expensive, and shrinking under budget cuts — most of the state is simply unmonitored.
 
 This tool aims to answer the question a missing sensor would: **on a given day, at a place with no instrument, how much nitrate is in the water and is it over the limit?** It uses only public data — weather, satellite land cover, and soil nitrogen surplus — so it works anywhere in the state.
 
-This was completed at the Summer 2026 Erdos Institute Data Science Bootcamp. Team members [Isaac Martin](https://web.ma.utexas.edu/users/ikmartin/), Rajpreet Kaur and Erin Bevilacqua. Ongoing work occuring in a separate repo, this tool remains a static representation of our work and a proof-of-concept.
+This was completed at the Summer 2026 Erdos Institute Data Science Bootcamp. Team members: [Isaac Martin](https://web.ma.utexas.edu/users/ikmartin/), Rajpreet Kaur, and Erin Bevilacqua. Ongoing work is occurring in a separate repo; this tool remains a static representation of our original work and a proof-of-concept.
 
 ## Try it
 
@@ -34,8 +34,8 @@ It also assumes stringent data restrictions: it does not make use of the data pr
 
 ## Under the hood
 
-Everything you are looking at runs in your browser. All 16,760 stream reaches were delineated ahead of time and their features precomputed, the gradient-boosted trees are repacked into a binary blob and walked in JavaScript. The model is light enough that this barely affects performance (which itself is somewhat surprising). The page itself is a static snapshot of the project as it existed on [2026-07-30].
+Everything you are looking at runs in your browser. All 16,760 stream reaches were delineated ahead of time and their features precomputed; the gradient-boosted trees are repacked into a binary blob and walked in JavaScript. The model is light enough that this barely affects performance (which itself is somewhat surprising). The page itself is a static snapshot of the project as it existed on 2026-07-30.
 
-Ongoing work is occuring at this [forked repo](https://github.com/ikmartin/sustag), and we aim to deploy those (heaftier) models on a dedicated server.
+Ongoing work is occurring at this [forked repo](https://github.com/ikmartin/sustag), and we aim to deploy those (heftier) models on a dedicated server.
 
 Read the [executive summary](executive_summary.md) for the full account, [kpis.md](kpis.md) for how the scores are defined, or the [source on GitHub](https://github.com/Erdos-Projects/summer26-sustainability-of-agriculture).

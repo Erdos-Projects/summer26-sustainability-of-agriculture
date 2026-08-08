@@ -4,13 +4,13 @@ Primary KPI: **can we flag a nitrate-violation day (≥ 10 mg/L) at a location w
 
 Secondary KPI: Same question but with a regression target, **can we predict nitrate concentration (mg/L) timeseries at unseen sites?** This is the regression (REG) task.
 
-We discuss our results below with a comparison to the figures we discuss in our presentation video. Below that are sections describing our cross-validation strategy and the definitions for all the metrics we use to score our models.
+We discuss our results below, comparing them to the figures quoted in our presentation video. Below that are sections describing our cross-validation strategy and the definitions for all the metrics we use to score our models.
 
 # Results
 
-Here are tables of our metrics, presented alongside the figures quoted in our presentationa. The comparison is unfair in favor of the older models in two ways:
+Here are tables of our metrics, presented alongside the figures quoted in our presentation. The comparison is unfair in favor of the older models in two ways:
 - The default cross-validation technique at the time of the video was LOSO (optimistic) whereas the figures we report here default to LOFO (conservative). See the CV section below for a full discussion.
-- The figures we report in this widget come from our `light_REG` and `light_CLF` models. These were optimized specifically to run in-browser, but sacrifice some performance over what is possible.
+- The figures we report in this widget come from our `light_REG` and `light_CLF` models. These were optimized specifically to run in-browser, but sacrifice some performance relative to what is possible.
 
 Nonetheless, our light models still vastly outperform the old models:
 
@@ -44,35 +44,35 @@ In words:
 - Both the classifier and the regressor could be used to identify a shortlist of unmonitored, potentially dangerous sites to then go and field test prior to sensor installation.
 
 In numbers:
-- `LOFO-PR AUC at 0.71:` The main metric. This measures the classifier's ability to pick out the days that are true positives. It should be compared to the base violation rate, which is 0.2584 in this case, so the classifier is 2.75× better than chance at identifying violation days (on average across all thresholds). At our default threshold choice, it means our model can be trusted to detect **90% of actual violation days anywhere in Iowa**, but that 54% of the alarms it raises will be false (see the β-table below). At more aggressive tuning, you catch 97% of true positives at a 64% false alarm rate.
+- `LOFO PR-AUC at 0.71:` The main metric. This measures the classifier's ability to pick out the days that are true positives. It should be compared to the base violation rate, which is 0.2584 in this case, so the classifier is 2.75× better than chance at identifying violation days (on average across all thresholds). At our default threshold choice, the model can be trusted to detect **90% of actual violation days anywhere in Iowa**, but 54% of the alarms it raises will be false (see the β-table below). At more aggressive tuning, you catch 97% of true positives at a 64% false alarm rate.
 - `LOFO R²:` Our regression model explains 43% of day-to-day variation at unseen sites. Don't trust it for precise nitrate values, but it is a good indicator of trends.
 - `between-site + site AP + captured:` Both the classifier and the regressor are good at picking out particularly dangerous sites; the classifier is better. You can use them to identify a shortlist of potentially unmonitored dangerous sites.
 
-# Cross Validation
+# Cross-validation
 
-We evaluate our methods using various scores (see below) using a few different cross validation metrics:
+We evaluate our methods with various scores (see below) under a few different cross-validation schemes:
 - **LOFO -- Leave One FAMILY Out:** primary CV technique, splits train/test based on hydrological connection. A hydrologically connected family of sites is always kept together across the split. Most robust to data leakage. Is a conservative metric. All metrics listed are this unless otherwise specified with a prefix. We actually use GroupKFold with $k = 5$ for this, 85/15.
-- **LOSO -- Leave One Site Out:** secondary CV technique, performs train/test split without reference to hydrological connection. It still never splits data from a site across train/test; sites are highly autocorrelated so this essentially trivializes the problem -- you train a model to memorize each site and then learn to identify which site it is looking at from the static geographic features. Also GroupKFold with $k = 5$, attempt to meet, 85/15.
+- **LOSO -- Leave One Site Out:** secondary CV technique, performs train/test split without reference to hydrological connection. It still never splits data from a site across train/test; sites are highly autocorrelated so this essentially trivializes the problem -- you train a model to memorize each site and then learn to identify which site it is looking at from the static geographic features. Also GroupKFold with $k = 5$, again aiming for an 85/15 split.
 - **True_LOFO:** Same thing as LOFO but we actually hold one whole family out for testing rather than doing GroupKFold.
-- **LODO_d -- Leave One Distance family Out:** A mix between True_LOFO and True_LOSO, hold out one site for testing, train on everything which is either not connected to the site OR is at least $d$ meteres away by flow distance.
+- **LODO_d -- Leave One Distance family Out:** A mix between True_LOFO and LOSO, hold out one site for testing, train on everything which is either not connected to the site OR is at least $d$ meters away by flow distance.
 
 # Metrics for CLF (violation ≥ 10 mg/L)
 
-Headline pair is **`lofo_prauc_lift`** + **`lofo_auc`**. The former is **`prauc`** below divided by the base-violation rate — how much the CLF model outperforms coin-flipping. Formulas and descriptions are given below. Note these definitions are independent of cv technique; for most we only track `lofo_` values, but we track `loso_auc` as a comparison point to `lofo_auc`.
+Headline pair is **`lofo_prauc_lift`** + **`lofo_auc`**. The former is **`prauc`** below divided by the base-violation rate — how much the CLF model outperforms coin-flipping. Formulas and descriptions are given below. Note these definitions are independent of CV technique; for most we only track `lofo_` values, but we track `loso_auc` as a comparison point to `lofo_auc`.
 
 Take the pooled table of (truth y, prediction p, site g) over all 158,215 rows and 81 sites, in 20 basin families.
 
 ##### `prauc` — "of the rows the model flags hardest, how many are real?"
 Average precision: sweep every threshold and integrate precision against the recall it buys, so a rare positive class is never rewarded for the true negatives it gets for free.
-$$\mathrm{AP} = \sum_k \big(R_k - R_{k-1}\big), P_k, \qquad P_k = \mathrm{Prec}(\tau_k),\ R_k = \mathrm{TPR}(\tau_k)$$
+$$\mathrm{AP} = \sum_k \big(R_k - R_{k-1}\big)\, P_k, \qquad P_k = \mathrm{Prec}(\tau_k),\ R_k = \mathrm{TPR}(\tau_k)$$
 
 ##### `prauc_lift` — "how much better than guessing?"
-Average precision divided by the base rate, which is what a random ranker scores. Imbalance-normalised, so it reads the same way at any prevalence — but bounded above by $1/\pi$ (3.88 here), so it is not comparable across cohorts whose base rates differ.
+Average precision divided by the base rate, which is what a random ranker scores. Imbalance-normalized, so it reads the same way at any prevalence — but bounded above by $1/\pi$ (3.88 here), so it is not comparable across cohorts whose base rates differ.
 $$\text{lift} = \mathrm{AP}/\pi, \qquad \pi = \tfrac{1}{N}\sum_i y_i$$
 
 ##### `auc` — "does a random violation outrank a random non-violation?"
 ROC-AUC: the probability that a randomly drawn positive row scores above a randomly drawn negative one, integrated over the entire ranking including thresholds nobody would deploy.
-$$\mathrm{AUC} = \Pr\big(p_i > p_j ,\big|, y_i = 1,\ y_j = 0\big) = \int_0^1 \mathrm{TPR}, d(\mathrm{FPR})$$
+$$\mathrm{AUC} = \Pr\big(p_i > p_j \,\big|\, y_i = 1,\ y_j = 0\big) = \int_0^1 \mathrm{TPR}\, d(\mathrm{FPR})$$
 
 ##### `br2 (between_rate_r2)` — "which basins are the bad ones?"
 Collapse each site to its observed violation rate and its mean predicted probability, then take R² over those 81 points, unweighted by row count.
@@ -84,7 +84,7 @@ $$\text{macro-AUC} = \operatorname*{median}_{s} \mathrm{AUC}_s$$
 
 ##### `f2 (recall_at_f2)` — "at the shipped alarm setting, what share of violations do we catch?"
 Pick the threshold that maximizes $F_\beta$ at $\beta = 2$ (recall weighted $4\times$ precision, the deployed operating point) and read off the true-positive rate there.
-$$\tau_2 = \operatorname*{arg,max}_\tau \frac{5\,\mathrm{Prec}(\tau)\,\mathrm{TPR}(\tau)}{4\,\mathrm{Prec}(\tau) + \mathrm{TPR}(\tau)}\, \qquad \text{recall@}F_2 = \mathrm{TPR}(\tau_2)$$
+$$\tau_2 = \operatorname*{arg\,max}_\tau \frac{5\,\mathrm{Prec}(\tau)\,\mathrm{TPR}(\tau)}{4\,\mathrm{Prec}(\tau) + \mathrm{TPR}(\tau)}\, \qquad \text{recall@}F_2 = \mathrm{TPR}(\tau_2)$$
 
 ##### `fdr_at_f2` — "at that same setting, what share of the alarms are false?"
 The complement of precision at the identical $\tau_2$, which is why it must always be quoted beside f2 — recall bought by lowering the threshold shows up here as cost.
@@ -104,12 +104,12 @@ $$\pi = \tfrac{1}{N}\sum_i y_i = 0.258$$
 A measure of the model's accuracy in ranking the top 10% worst sites (highest average nitrate). Same as the formula described in detail below for the regression target, but here we rank sites by *violation rate* rather than average nitrate concentration.
 
 ##### `captured` — "how much of the achievable badness would a shortlist find?"
-Compare the badness of the sites predicted to be worst to the badness of the actual worst sitse. Take the $k$ sites the model ranks worst, call them $\mathcal P$, and let ($\mathcal T$) be the actual $k$ worst sites. Let $\bar y_s$ be the average violation rate of site $s$ (actual, not predicted) and let $m$ be the average violation rate across all sites. Then calculate
+Compare the badness of the sites predicted to be worst to the badness of the actual worst sites. Take the $k$ sites the model ranks worst, call them $\mathcal P$, and let $\mathcal T$ be the actual $k$ worst sites. Let $\bar y_s$ be the average violation rate of site $s$ (actual, not predicted) and let $m$ be the average violation rate across all sites. Then calculate
 $$\text{captured} = \frac{\sum_{s \in \mathcal P} \bar y_s - m}{\sum_{s \in \mathcal T} \bar y_s - m}.$$
 0 is a random shortlist, 1 the best achievable.
 
 # Metrics for REG (nitrate mg/L)
-These are more self explanatory. The primary one is `lofo_r2` which captures the same thing as `rmse`. The triple `between_r2`, `within_r2` and `macro_r2` are for measuring inter-site dynamics in various ways.
+These are more self-explanatory. The primary one is `lofo_r2` which captures the same thing as `rmse`. The triple `between_r2`, `within_r2` and `macro_r2` are for measuring inter-site dynamics in various ways.
 
 ##### `lofo_r2` — "how much of the total nitrate variance is explained?"
 Ordinary R² over all 158,215 pooled rows against the global mean, so it is row-weighted and long-record sites dominate it.
@@ -130,12 +130,12 @@ This is a measure of the model's ability to rank the magnitude of sites collecti
 ##### `within_r2` — "when does it spike?"
 Broadcast each site's mean back to its rows and subtract it from both truth and prediction, then take R² on what's left:
 $$R^2_{\text{within}} = 1 - \frac{\sum_i \big[(y_i - \bar y_{s(i)}) - (p_i - \bar p_{s(i)})\big]^2}{\sum_i (y_i - \bar y_{s(i)})^2}$$
-Measures whether, when the site diverges from its mean, the predictions also diverge from their mean. This is why it's intended to gauge the model's spike detection ability.
+Measures whether, when the site diverges from its mean, the predictions also diverge from their mean, which is what makes it a gauge of the model's spike-detection ability.
 
 ##### `macro_r2` — "how does the typical site do?"
 Compute R² separately on each site's own rows, then take the median across sites. Sites where R² is undefined (a single row, or zero variance in the truth) drop out of the median rather than counting as zero:
 $$\text{macro-}R^2 = \operatorname*{median}_{s} R^2_s$$
-So this is same as `lofo_r2` but restricted to the median site.
+So this is the same as `lofo_r2` but restricted to the median site.
 
 ##### `site_ap` — "are the worst basins at the top of the list?"
 A measure of the model's accuracy in ranking the top 10% worst sites (highest average nitrate). Order all sites from worst to best (highest to lowest average nitrate) so that site $s_1$ has the highest nitrate average, site $s_2$ the second highest, etc. Now order them by the predicted values produced during the GroupKFold split, so that for a site $s$, $\ell_{s}$ is its rank as predicted by the model during CV. Then for the actual top offending sites $s_1,...,s_k$, calculate the average:
@@ -157,15 +157,15 @@ For these values, the average precision is $0.5817$, whereas randomly guessing w
 Note this is a conservative estimate: when the model is asked to predict WQS0114, the top offending site at $18.93$ mg/L, the worst it has seen is $16.21$ mg/L, and it fails to extrapolate. Every other top 10 site has WQS0114 available in training and the model is able to successfully identify those sites as worse.
 
 ##### `captured` — "how much of the achievable badness would a shortlist find?"
-Compare the badness of the sites predicted to be worst to the badness of the actual worst sitse. Take the $k$ sites the model ranks worst, call them $\mathcal P$, and let ($\mathcal T$) be the actual $k$ worst sites. Let $\bar y_s$ be the average nitrate of site $s$ and let $m$ be the average of all averages. Then calculate
+Compare the badness of the sites predicted to be worst to the badness of the actual worst sites. Take the $k$ sites the model ranks worst, call them $\mathcal P$, and let $\mathcal T$ be the actual $k$ worst sites. Let $\bar y_s$ be the average nitrate of site $s$ and let $m$ be the average of all averages. Then calculate
 $$\text{captured} = \frac{\sum_{s \in \mathcal P} \bar y_s - m}{\sum_{s \in \mathcal T} \bar y_s - m}.$$
 0 is a random shortlist, 1 the best achievable.
 
 # Deployed operating point (β-table)
 
-What actually ships in the widget is a **recall-emphasis knob β**, not a fixed cutoff. For each β, `src/models/tune_threshold.py` sweeps the LOFO out-of-fold, picks an optimal threshold $\tau$, and records the recall/precision there; the table + base rate are saved along with the model.
+What actually ships in the widget is a **recall-emphasis knob β**, not a fixed cutoff. For each β, `src/models/tune_threshold.py` sweeps the LOFO out-of-fold predictions, picks an optimal threshold $\tau$, and records the recall/precision there; the table + base rate are saved along with the model.
 
-Here is the β-table for the classifier in this widget, `light_CLF`. The value of β determines the threshold τ, as well as the recall rate and the false detection rate (FDR).
+Here is the β-table for the classifier in this widget, `light_CLF`. The value of β determines the threshold τ, as well as the recall rate and the false discovery rate (FDR).
 
 | β | τ | recall | FDR |
 |---|---|---|---|

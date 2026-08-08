@@ -97,12 +97,12 @@ EXPLORE_DEFAULTS = {
     "aggregate-interval": "1D",  # must be one of bundle.series_intervals()
     # map display overlays
     "hydro-toggle": ["show"],
-    "basin-preferred-toggle": [],
+    "basin-preferred-toggle": ["show"],
     "basin-all-toggle": [],
-    "rain-grid-toggle": [],
+    "rain-grid-toggle": ["show"],
     "surplus-year-slider": 2017,  # shared: picks the crop/surplus year the rain-grid cells show
     # presentation display options
-    "grid-color-mode": "surplus",
+    "grid-color-mode": "crop",
     # map layers / debug
     "tile-selector": "street",
     "iem-bbox-toggle": [],

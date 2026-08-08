@@ -1,6 +1,6 @@
 # Executive Summary
 
-**Project members:** Erin Bevilacqua, Xiaoying He, Rajpreet Kaur, Jay Lee, Isaac Martin
+**Project members:** Erin Bevilacqua, Rajpreet Kaur, Isaac Martin
 
 **Github Repo:** <https://github.com/Erdos-Projects/summer26-sustainability-of-agriculture>
 
@@ -22,7 +22,7 @@ Final tuned results below, reported using CV designed to prevent leakage from ne
 
 - **Classification (violation flagging):** ROC-AUC 0.87, PR-AUC 0.71 against a 25.8% base rate (2.75× better than chance), and per-site AUC 0.90 — excellent at timing when a basin spikes. A Brier score of 0.123 (vs. a 0.191 base-rate floor, a 36% skill improvement) confirms well-calibrated probabilities. Tuned toward recall, it catches 90% of violations at a 54% false-discovery rate, with a knob to trade recall against precision.
 
-- **Regression (concentration):** R² ≈ 0.43 (up from the 0.24 baseline), ~4.2 mg/L typical error. To account for the high variability in average site nitrate values we report two mean-normalized scores: within-basin R² (0.42) calculates R² after subtracting a site's mean from both the prediction and the actual, and between-basin R² (0.40) compares the predicted and actual site means. The second was long the weaker of the two — the regressor could tell you when a basin would spike but not how bad an unseen basin was in absolute terms. Adding long-run land-use composition roughly doubled it, from 0.20, which is what moved the headline R² as well.
+- **Regression (concentration):** R² ≈ 0.43 (up from the 0.24 baseline), ~4.2 mg/L typical error. To account for the high variability in average site nitrate values, we report two mean-normalized scores: within-basin R² (0.42) calculates R² after subtracting a site's mean from both the prediction and the actual, and between-basin R² (0.40) compares the predicted and actual site means. The second was long the weaker of the two — the regressor could tell you when a basin would spike but not how bad an unseen basin was in absolute terms. Adding long-run land-use composition roughly doubled it, from 0.20, which is what moved the headline R² as well.
 
 These numbers are the deployed `light_CLF` and `light_REG` models — the pair restricted to the feature set a browser can assemble at an arbitrary point, and therefore exactly what the widget runs. They were retrained on 2026-07-30 with the long-run composition block; the full `recipe_*` models have not been, so they currently score *below* the light pair (PR-AUC 0.695, R² 0.380). See [`kpis.md`](kpis.md) for both.
 
@@ -31,7 +31,7 @@ An F-test confirmed nitrate's seasonality survives controlling for rainfall seas
 
 Key limitations: a sparse sensor fleet, annual crop/soil snapshots that miss within-season change, and extrapolation risk at unfamiliar basins — and nitrate ultimately depends on more than weather and crops. Natural next steps: point-source pollution data (livestock manure, which location may be proxying for), soil/tile-drainage data, fertilizer timing, and graph models exploiting hydrological network structure.
 
-The work is deployed as a public web widget at <https://erdos-projects.github.io/summer26-sustainability-of-agriculture/>: drop a pin anywhere in Iowa and it snaps to the nearest mapped stream reach, whose drainage basin and ~50-feature set were computed in advance. It then scores the models entirely in browser to return predicted-nitrate and violation-probability curves — no local history needed — with a tunable recall/precision knob.
+The work is deployed as a public web widget at <https://erdos-projects.github.io/summer26-sustainability-of-agriculture/>: drop a pin anywhere in Iowa and it snaps to the nearest mapped stream reach, whose drainage basin and ~50-feature set were computed in advance. It then scores the models entirely in-browser to return predicted-nitrate and violation-probability curves — no local history needed — with a tunable recall/precision knob.
 
 **Executive Impact:**
 Nitrate predictions let three groups act sooner and more precisely than the current sparse sensor network allows. Water utilities can begin treatment before a spike hits rather than reacting after the fact. Regulatory agencies can target monitoring and remediation dollars toward high-risk unmonitored locations rather than spreading resources evenly. Farmers can time fertilizer application around forecasted rain to reduce runoff. The model is not a substitute for physical sensors in regulatory compliance contexts, but in a state where budget cuts mean the realistic alternative at most locations is no information at all, an imperfect, well-calibrated prediction represents a substantial upgrade in situational awareness.

@@ -3,7 +3,7 @@
 ## Code
 
 - **[Project repository](https://github.com/Erdos-Projects/summer26-sustainability-of-agriculture)** — everything behind this site: the data pipeline, the models, and the widget itself.
-- **[Ongoing work](https://github.com/ikmartin/sustag)** — the fork where development continues, aimed at deploying robust virtual sensor models on a dedicated server aimed specifically at supplementing the live, in-situ nitrate detectors deployed across the continental United States. 
+- **[Ongoing work](https://github.com/ikmartin/sustag)** — the fork where development continues, aimed at deploying robust virtual sensor models on a dedicated server, intended specifically to supplement the live, in-situ nitrate detectors deployed across the continental United States.
 
 ## This tool
 
