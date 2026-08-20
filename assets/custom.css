@@ -1,0 +1,20 @@
+/* Hide the native Leaflet.draw toolbar; draw modes are triggered
+   programmatically via the custom buttons in the tools panel. */
+.leaflet-draw.leaflet-control {
+    display: none !important;
+}
+
+/* Hide the attribution box. NOTE: the tile layers are OpenStreetMap and Esri World Imagery
+   (map_common.TILE_URLS), both of which require visible attribution on a public site -- see the
+   comment on TILE_URLS for the compliant alternative. */
+.leaflet-control-attribution {
+    display: none !important;
+}
+
+/* Shrink polygon/rectangle vertex handles to ~half the default (8px → 4px). */
+.leaflet-editing-icon {
+    width: 4px !important;
+    height: 4px !important;
+    margin-left: -2px !important;
+    margin-top: -2px !important;
+}
